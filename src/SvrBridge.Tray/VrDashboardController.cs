@@ -5,19 +5,22 @@ namespace SvrBridge.Tray;
 internal sealed class VrDashboardController
 {
     private readonly OpenVrInput _openVr;
-    private readonly Action<ShortcutConfig> _shortcutCreated;
+    private readonly Action<ShortcutConfig> _shortcutSaved;
     private readonly Action<string> _shortcutDeleted;
     private readonly List<ShortcutConfig> _shortcuts;
     private readonly IReadOnlyList<StreamerBotAction> _actions;
     private readonly VrActionBrowser _actionBrowser;
     private readonly VrDashboardScrollLimiter _scrollLimiter = new();
+
     private DashboardPage _page;
+    private ControllerSetup _setup = ControllerSetup.Unknown;
     private StreamerBotAction? _selectedAction;
     private ControllerInputBinding? _firstInput;
-    private ChordMode _gestureMode;
-    private int _holdMs = 1000;
-    private ControllerHand _selectedHand;
-    private ControllerSetup _setup = ControllerSetup.Unknown;
+    private ControllerInputBinding? _secondInput;
+    private ChordMode _gestureMode = ChordMode.SinglePress;
+    private int _doublePressWindowMs = 500;
+    private int _holdMs = 2000;
+    private bool _recordingArmed;
     private string? _editingShortcutId;
 
     public VrDashboardController(
@@ -25,14 +28,14 @@ internal sealed class VrDashboardController
         IReadOnlyList<ShortcutConfig> shortcuts,
         IReadOnlyList<StreamerBotAction> actions,
         bool activate,
-        Action<ShortcutConfig> shortcutCreated,
+        Action<ShortcutConfig> shortcutSaved,
         Action<string> shortcutDeleted)
     {
         _openVr = openVr;
         _shortcuts = shortcuts.ToList();
         _actions = actions;
         _actionBrowser = new VrActionBrowser(actions);
-        _shortcutCreated = shortcutCreated;
+        _shortcutSaved = shortcutSaved;
         _shortcutDeleted = shortcutDeleted;
         ShowList(activate);
     }
@@ -51,6 +54,11 @@ internal sealed class VrDashboardController
                 HandleScroll(interaction.ScrollY);
             }
         }
+
+        if (_page == DashboardPage.RecordInput)
+        {
+            CaptureRecordedInput(snapshot);
+        }
     }
 
     private void HandleClick(float x, float y)
@@ -62,198 +70,208 @@ internal sealed class VrDashboardController
 
         switch (_page)
         {
-            case DashboardPage.List when y >= 780:
-                _actionBrowser.Reset();
-                _page = DashboardPage.ActionPicker;
-                ShowActionPicker();
+            case DashboardPage.List:
+                HandleListClick(x, y);
                 break;
-            case DashboardPage.List when y >= 160:
-                {
-                    var index = (int)((y - 160) / 105);
-                    var rowY = 160 + (index * 105);
-                    if (index < 0
-                        || index >= Math.Min(6, _shortcuts.Count)
-                        || y >= rowY + 92)
-                    {
-                        break;
-                    }
-
-                    var shortcut = _shortcuts[index];
-                    if (x >= 1210)
-                    {
-                        _shortcuts.RemoveAt(index);
-                        _shortcutDeleted(shortcut.Id);
-                        ShowList();
-                    }
-                    else if (x >= 1090)
-                    {
-                        BeginEdit(shortcut);
-                    }
-
-                    break;
-                }
-            case DashboardPage.ActionPicker when y >= 780 && x < 440:
-                if (_actionBrowser.BackToGroups())
-                {
-                    ShowActionPicker();
-                }
-                else
-                {
-                    ShowList();
-                }
-
+            case DashboardPage.GestureType:
+                HandleGestureTypeClick(y);
                 break;
-            case DashboardPage.ActionPicker when y >= 780 && x < 890:
-                if (_actionBrowser.ScrollPage(-1))
-                {
-                    ShowActionPicker();
-                }
-
-                break;
-            case DashboardPage.ActionPicker when y >= 780:
-                if (_actionBrowser.ScrollPage(1))
-                {
-                    ShowActionPicker();
-                }
-
-                break;
-            case DashboardPage.ActionPicker when y < 165:
+            case DashboardPage.Tolerance:
+                HandleToleranceClick(x, y);
                 break;
             case DashboardPage.ActionPicker:
-                {
-                    var index = (int)((y - 165) / 91);
-                    var wasShowingGroups = _actionBrowser.IsShowingGroups;
-                    var action = _actionBrowser.OpenRow(index);
-                    if (wasShowingGroups && !_actionBrowser.IsShowingGroups)
-                    {
-                        ShowActionPicker();
-                    }
-                    else if (action is not null)
-                    {
-                        _selectedAction = action;
-                        _page = DashboardPage.QuickInputPicker;
-                        ShowQuickInputPicker();
-                    }
-
-                    break;
-                }
-            case DashboardPage.QuickInputPicker when y >= 780 && x < 430:
-                if (_editingShortcutId is null)
-                {
-                    _page = DashboardPage.ActionPicker;
-                    ShowActionPicker();
-                }
-                else
-                {
-                    ShowList();
-                }
-
+                HandleActionPickerClick(x, y);
                 break;
-            case DashboardPage.QuickInputPicker when y >= 780 && x < 890:
-                _actionBrowser.Reset();
-                _page = DashboardPage.ActionPicker;
+            case DashboardPage.RecordInput when y >= 780:
+                ShowPreviousSetupPage();
+                break;
+            case DashboardPage.Review:
+                HandleReviewClick(x, y);
+                break;
+        }
+    }
+
+    private void HandleListClick(float x, float y)
+    {
+        if (y >= 780)
+        {
+            BeginCreate();
+            return;
+        }
+
+        if (y < 160)
+        {
+            return;
+        }
+
+        var index = (int)((y - 160) / 105);
+        var rowY = 160 + (index * 105);
+        if (index < 0
+            || index >= Math.Min(6, _shortcuts.Count)
+            || y >= rowY + 92)
+        {
+            return;
+        }
+
+        var shortcut = _shortcuts[index];
+        if (x >= 1210)
+        {
+            _shortcuts.RemoveAt(index);
+            _shortcutDeleted(shortcut.Id);
+            ShowList();
+        }
+        else if (x >= 1090)
+        {
+            BeginEdit(shortcut);
+        }
+    }
+
+    private void HandleGestureTypeClick(float y)
+    {
+        if (y >= 780)
+        {
+            ShowList();
+            return;
+        }
+
+        if (y < 180)
+        {
+            return;
+        }
+
+        var index = (int)((y - 180) / 135);
+        switch (index)
+        {
+            case 0:
+                _gestureMode = ChordMode.SinglePress;
+                StartRecording();
+                break;
+            case 1:
+                _gestureMode = ChordMode.Simultaneous;
+                StartRecording();
+                break;
+            case 2:
+                _gestureMode = ChordMode.DoublePress;
+                ShowTolerance();
+                break;
+            case 3:
+                _gestureMode = ChordMode.LongPress;
+                ShowTolerance();
+                break;
+        }
+    }
+
+    private void HandleToleranceClick(float x, float y)
+    {
+        if (y >= 780)
+        {
+            if (x < 600)
+            {
+                ShowGestureTypes();
+            }
+            else
+            {
+                StartRecording();
+            }
+
+            return;
+        }
+
+        if (y is < 300 or > 520 || x is < 180 or > 1220)
+        {
+            return;
+        }
+
+        var ratio = Math.Clamp((x - 180f) / 1040f, 0f, 1f);
+        if (_gestureMode == ChordMode.DoublePress)
+        {
+            _doublePressWindowMs =
+                (int)Math.Round((200 + (ratio * 1000)) / 100d) * 100;
+        }
+        else
+        {
+            _holdMs =
+                (int)Math.Round((500 + (ratio * 4500)) / 250d) * 250;
+        }
+
+        ShowTolerance();
+    }
+
+    private void HandleActionPickerClick(float x, float y)
+    {
+        if (y >= 780 && x < 440)
+        {
+            if (_actionBrowser.BackToGroups())
+            {
                 ShowActionPicker();
-                break;
-            case DashboardPage.QuickInputPicker when y >= 780:
-                _page = DashboardPage.GesturePicker;
-                ShowGesturePicker();
-                break;
-            case DashboardPage.QuickInputPicker when y < 165:
-                break;
-            case DashboardPage.QuickInputPicker:
-                {
-                    var index = (int)((y - 165) / 91);
-                    var options = QuickInputOptions();
-                    if (index >= 0 && index < options.Count)
-                    {
-                        if (x >= 900)
-                        {
-                            _gestureMode = ChordMode.LongPress;
-                            _holdMs = 2000;
-                            CompleteRecording(options[index], options[index]);
-                        }
-                        else if (x >= 500)
-                        {
-                            _gestureMode = ChordMode.DoublePress;
-                            CompleteRecording(options[index], options[index]);
-                        }
-                    }
+            }
+            else
+            {
+                ShowReview();
+            }
 
-                    break;
-                }
-            case DashboardPage.GesturePicker when y >= 780:
-                _page = DashboardPage.QuickInputPicker;
-                ShowQuickInputPicker();
-                break;
-            case DashboardPage.GesturePicker when y < 165:
-                break;
-            case DashboardPage.GesturePicker:
-                {
-                    var index = (int)((y - 165) / 90);
-                    switch (index)
-                    {
-                        case 0:
-                            StartInputSelection(ChordMode.DoublePress);
-                            break;
-                        case 1:
-                            StartInputSelection(ChordMode.LongPress, 1000);
-                            break;
-                        case 2:
-                            StartInputSelection(ChordMode.LongPress, 2000);
-                            break;
-                        case 3:
-                            StartInputSelection(ChordMode.LongPress, 3000);
-                            break;
-                        case 4:
-                            StartInputSelection(ChordMode.Modifier);
-                            break;
-                        case 5:
-                            StartInputSelection(ChordMode.Simultaneous);
-                            break;
-                    }
+            return;
+        }
 
-                    break;
-                }
-            case DashboardPage.InputHandPicker when y >= 780:
-                if (_firstInput is null)
-                {
-                    _page = DashboardPage.GesturePicker;
-                    ShowGesturePicker();
-                }
-                else
-                {
-                    _firstInput = null;
-                    ShowHandPicker();
-                }
+        if (y >= 780 && x < 890)
+        {
+            if (_actionBrowser.ScrollPage(-1))
+            {
+                ShowActionPicker();
+            }
 
-                break;
-            case DashboardPage.InputHandPicker when y is >= 230 and < 410:
-                _selectedHand = ControllerHand.Left;
-                _page = DashboardPage.InputButtonPicker;
-                ShowButtonPicker();
-                break;
-            case DashboardPage.InputHandPicker when y is >= 430 and < 610:
-                _selectedHand = ControllerHand.Right;
-                _page = DashboardPage.InputButtonPicker;
-                ShowButtonPicker();
-                break;
-            case DashboardPage.InputButtonPicker when y >= 780:
-                _page = DashboardPage.InputHandPicker;
-                ShowHandPicker();
-                break;
-            case DashboardPage.InputButtonPicker when y < 165:
-                break;
-            case DashboardPage.InputButtonPicker:
-                {
-                    var index = (int)((y - 165) / 91);
-                    var options = CurrentButtonOptions();
-                    if (index >= 0 && index < options.Count)
-                    {
-                        SelectInput(options[index]);
-                    }
+            return;
+        }
 
-                    break;
-                }
+        if (y >= 780)
+        {
+            if (_actionBrowser.ScrollPage(1))
+            {
+                ShowActionPicker();
+            }
+
+            return;
+        }
+
+        if (y < 165)
+        {
+            return;
+        }
+
+        var index = (int)((y - 165) / 91);
+        var wasShowingGroups = _actionBrowser.IsShowingGroups;
+        var action = _actionBrowser.OpenRow(index);
+        if (wasShowingGroups && !_actionBrowser.IsShowingGroups)
+        {
+            ShowActionPicker();
+        }
+        else if (action is not null)
+        {
+            _selectedAction = action;
+            ShowReview();
+        }
+    }
+
+    private void HandleReviewClick(float x, float y)
+    {
+        if (y < 780)
+        {
+            return;
+        }
+
+        if (x < 400)
+        {
+            StartRecording();
+        }
+        else if (x < 930)
+        {
+            _actionBrowser.Reset();
+            _page = DashboardPage.ActionPicker;
+            ShowActionPicker();
+        }
+        else if (_selectedAction is not null)
+        {
+            SaveShortcut();
         }
     }
 
@@ -272,78 +290,14 @@ internal sealed class VrDashboardController
         }
     }
 
-    private void CompleteRecording(
-        ControllerInputBinding safetyInput,
-        ControllerInputBinding actionInput)
+    private void BeginCreate()
     {
-        if (_selectedAction is null)
-        {
-            ShowList();
-            return;
-        }
-
-        var shortcut = new ShortcutConfig
-        {
-            Id = _editingShortcutId ?? Guid.NewGuid().ToString("N"),
-            Name = _selectedAction.Name,
-            Enabled = true,
-            SafetyInput = safetyInput,
-            ActionInput = actionInput,
-            Gesture = new ChordConfig
-            {
-                Mode = _gestureMode,
-                WindowMs = _gestureMode switch
-                {
-                    ChordMode.DoublePress => 500,
-                    ChordMode.Simultaneous => 300,
-                    _ => 2000
-                },
-                CooldownMs = 250,
-                HoldMs = _holdMs
-            },
-            ActionName = _selectedAction.Name,
-            ActionId = _selectedAction.Id
-        };
-        var existingIndex = _shortcuts.FindIndex(item => item.Id == shortcut.Id);
-        if (existingIndex >= 0)
-        {
-            _shortcuts[existingIndex] = shortcut;
-        }
-        else
-        {
-            _shortcuts.Add(shortcut);
-        }
-
-        _shortcutCreated(shortcut);
-        ShowList();
-    }
-
-    private void ShowList(bool activate = true)
-    {
-        _page = DashboardPage.List;
-        _selectedAction = null;
-        _firstInput = null;
         _editingShortcutId = null;
-        _openVr.UpdateDashboard(
-            VrDashboardRenderer.Render(_shortcuts),
-            activate);
+        _selectedAction = null;
+        _doublePressWindowMs = 500;
+        _holdMs = 2000;
+        ShowGestureTypes();
     }
-
-    private void ShowActionPicker() =>
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderActionPicker(_actionBrowser));
-
-    private void ShowGesturePicker() =>
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderGesturePicker(
-                _selectedAction?.Name ?? "Selected action"));
-
-    private void ShowQuickInputPicker() =>
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderQuickInputPicker(
-                _selectedAction?.Name ?? "Selected action",
-                QuickInputOptions(),
-                _editingShortcutId is not null));
 
     private void BeginEdit(ShortcutConfig shortcut)
     {
@@ -356,80 +310,199 @@ internal sealed class VrDashboardController
                               shortcut.ActionId ?? "",
                               shortcut.ActionName,
                               "Saved action");
-        _page = DashboardPage.QuickInputPicker;
-        ShowQuickInputPicker();
+        _gestureMode = shortcut.Gesture.Mode;
+        _doublePressWindowMs = shortcut.Gesture.WindowMs;
+        _holdMs = shortcut.Gesture.HoldMs;
+        ShowGestureTypes();
     }
 
-    private IReadOnlyList<ControllerInputBinding> QuickInputOptions()
+    private void StartRecording()
     {
-        var left = ControllerInputs.AvailableInputs(ControllerHand.Left, _setup);
-        var right = ControllerInputs.AvailableInputs(ControllerHand.Right, _setup);
-        return Enumerable.Range(0, 3)
-            .SelectMany(index => new[]
-            {
-                left.ElementAtOrDefault(index),
-                right.ElementAtOrDefault(index)
-            })
-            .Where(input => input is not null)
-            .Cast<ControllerInputBinding>()
-            .ToArray();
-    }
-
-    private void StartInputSelection(ChordMode mode, int holdMs = 1000)
-    {
-        _gestureMode = mode;
-        _holdMs = holdMs;
         _firstInput = null;
-        _page = DashboardPage.InputHandPicker;
-        ShowHandPicker();
+        _secondInput = null;
+        _recordingArmed = false;
+        _page = DashboardPage.RecordInput;
+        ShowRecording();
     }
 
-    private void ShowHandPicker() =>
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderHandPicker(
-                ControllerInputs.ControllerFamily(_setup),
-                _firstInput?.FriendlyName));
-
-    private void ShowButtonPicker() =>
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderButtonPicker(
-                _selectedHand,
-                CurrentButtonOptions(),
-                _firstInput?.FriendlyName));
-
-    private IReadOnlyList<ControllerInputBinding> CurrentButtonOptions() =>
-        ControllerInputs.AvailableInputs(_selectedHand, _setup)
-            .Where(input =>
-                _firstInput is null
-                || !input.Id.Equals(_firstInput.Id, StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-
-    private void SelectInput(ControllerInputBinding input)
+    private void CaptureRecordedInput(InputSnapshot snapshot)
     {
-        if (_gestureMode is ChordMode.LongPress or ChordMode.DoublePress)
+        var pressed = ControllerInputs.PressedInputs(snapshot, _setup);
+        if (!_recordingArmed)
         {
-            CompleteRecording(input, input);
+            if (pressed.Count == 0)
+            {
+                _recordingArmed = true;
+                ShowRecording();
+            }
+
             return;
         }
 
         if (_firstInput is null)
         {
-            _firstInput = input;
-            _page = DashboardPage.InputHandPicker;
-            ShowHandPicker();
+            _firstInput = pressed.FirstOrDefault();
+            if (_firstInput is null)
+            {
+                return;
+            }
+
+            if (_gestureMode != ChordMode.Simultaneous)
+            {
+                _secondInput = _firstInput;
+                ShowReview();
+                return;
+            }
+
+            _secondInput = pressed.FirstOrDefault(input =>
+                !input.Id.Equals(
+                    _firstInput.Id,
+                    StringComparison.OrdinalIgnoreCase));
+            if (_secondInput is not null)
+            {
+                ShowReview();
+            }
+            else
+            {
+                ShowRecording();
+            }
+
             return;
         }
 
-        CompleteRecording(_firstInput, input);
+        _secondInput = pressed.FirstOrDefault(input =>
+            !input.Id.Equals(
+                _firstInput.Id,
+                StringComparison.OrdinalIgnoreCase));
+        if (_secondInput is not null)
+        {
+            ShowReview();
+        }
     }
+
+    private void SaveShortcut()
+    {
+        if (_selectedAction is null
+            || _firstInput is null
+            || _secondInput is null)
+        {
+            return;
+        }
+
+        var shortcut = new ShortcutConfig
+        {
+            Id = _editingShortcutId ?? Guid.NewGuid().ToString("N"),
+            Name = _selectedAction.Name,
+            Enabled = true,
+            SafetyInput = _firstInput,
+            ActionInput = _secondInput,
+            Gesture = new ChordConfig
+            {
+                Mode = _gestureMode,
+                WindowMs = _gestureMode switch
+                {
+                    ChordMode.DoublePress => _doublePressWindowMs,
+                    ChordMode.Simultaneous => 300,
+                    _ => 2000
+                },
+                CooldownMs = 250,
+                HoldMs = _gestureMode == ChordMode.LongPress ? _holdMs : 1000
+            },
+            ActionName = _selectedAction.Name,
+            ActionId = _selectedAction.Id
+        };
+
+        var existingIndex = _shortcuts.FindIndex(item => item.Id == shortcut.Id);
+        if (existingIndex >= 0)
+        {
+            _shortcuts[existingIndex] = shortcut;
+        }
+        else
+        {
+            _shortcuts.Add(shortcut);
+        }
+
+        _shortcutSaved(shortcut);
+        ShowList();
+    }
+
+    private void ShowPreviousSetupPage()
+    {
+        if (_gestureMode is ChordMode.DoublePress or ChordMode.LongPress)
+        {
+            ShowTolerance();
+        }
+        else
+        {
+            ShowGestureTypes();
+        }
+    }
+
+    private void ShowList(bool activate = true)
+    {
+        _page = DashboardPage.List;
+        _selectedAction = null;
+        _firstInput = null;
+        _secondInput = null;
+        _editingShortcutId = null;
+        _openVr.UpdateDashboard(
+            VrDashboardRenderer.Render(_shortcuts),
+            activate);
+    }
+
+    private void ShowGestureTypes()
+    {
+        _page = DashboardPage.GestureType;
+        _openVr.ShowDashboard(
+            VrDashboardRenderer.RenderGestureTypePicker(
+                _editingShortcutId is not null));
+    }
+
+    private void ShowTolerance()
+    {
+        _page = DashboardPage.Tolerance;
+        _openVr.ShowDashboard(
+            VrDashboardRenderer.RenderTolerancePicker(
+                _gestureMode,
+                _gestureMode == ChordMode.DoublePress
+                    ? _doublePressWindowMs
+                    : _holdMs));
+    }
+
+    private void ShowRecording()
+    {
+        _openVr.ShowDashboard(
+            VrDashboardRenderer.RenderInputRecorder(
+                _gestureMode,
+                _recordingArmed,
+                _firstInput));
+    }
+
+    private void ShowReview()
+    {
+        _page = DashboardPage.Review;
+        _openVr.ShowDashboard(
+            VrDashboardRenderer.RenderShortcutReview(
+                _gestureMode,
+                _firstInput,
+                _secondInput,
+                _selectedAction,
+                _doublePressWindowMs,
+                _holdMs,
+                _editingShortcutId is not null));
+    }
+
+    private void ShowActionPicker() =>
+        _openVr.ShowDashboard(
+            VrDashboardRenderer.RenderActionPicker(_actionBrowser));
 
     private enum DashboardPage
     {
         List,
+        GestureType,
+        Tolerance,
         ActionPicker,
-        QuickInputPicker,
-        GesturePicker,
-        InputHandPicker,
-        InputButtonPicker
+        RecordInput,
+        Review
     }
 }

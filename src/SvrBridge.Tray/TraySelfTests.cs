@@ -195,22 +195,11 @@ internal static class TraySelfTests
             preview.Width == 1400 && preview.Height == 900,
             "The grouped VR action picker rendered at the wrong size.");
 
-        var quickInputPath = VrDashboardRenderer.RenderQuickInputPicker(
-            "Change scene",
-            [
-                SvrBridge.Core.ControllerInputBinding.Physical(
-                    SvrBridge.Core.ControllerHand.Left,
-                    1,
-                    "Left Menu Button"),
-                SvrBridge.Core.ControllerInputBinding.Physical(
-                    SvrBridge.Core.ControllerHand.Right,
-                    1,
-                    "Right Menu Button")
-            ]);
-        using var quickInputPreview = new Bitmap(quickInputPath);
+        var gestureTypePath = VrDashboardRenderer.RenderGestureTypePicker(false);
+        using var quickInputPreview = new Bitmap(gestureTypePath);
         Assert(
             quickInputPreview.Width == 1400 && quickInputPreview.Height == 900,
-            "The quick VR input picker rendered at the wrong size.");
+            "The VR gesture type picker rendered at the wrong size.");
 
         var doublePressInput =
             SvrBridge.Core.ControllerInputBinding.Physical(
@@ -242,34 +231,38 @@ internal static class TraySelfTests
             listPreview.Width == 1400 && listPreview.Height == 900,
             "The editable VR shortcut list rendered at the wrong size.");
 
-        var gesturePath = VrDashboardRenderer.RenderGesturePicker("Change scene");
+        var gesturePath = VrDashboardRenderer.RenderTolerancePicker(
+            SvrBridge.Core.ChordMode.DoublePress,
+            500);
         using var gesturePreview = new Bitmap(gesturePath);
         Assert(
             gesturePreview.Width == 1400 && gesturePreview.Height == 900,
-            "The VR gesture picker rendered at the wrong size.");
+            "The VR tolerance slider rendered at the wrong size.");
 
-        var handPath = VrDashboardRenderer.RenderHandPicker("HTC Vive controllers");
+        var handPath = VrDashboardRenderer.RenderInputRecorder(
+            SvrBridge.Core.ChordMode.Simultaneous,
+            true,
+            doublePressInput);
         using var handPreview = new Bitmap(handPath);
         Assert(
             handPreview.Width == 1400 && handPreview.Height == 900,
-            "The VR controller picker rendered at the wrong size.");
+            "The VR input recorder rendered at the wrong size.");
 
-        var buttonPath = VrDashboardRenderer.RenderButtonPicker(
-            SvrBridge.Core.ControllerHand.Left,
-            [
-                SvrBridge.Core.ControllerInputBinding.Physical(
-                    SvrBridge.Core.ControllerHand.Left,
-                    1,
-                    "Left Menu Button"),
-                SvrBridge.Core.ControllerInputBinding.Physical(
-                    SvrBridge.Core.ControllerHand.Left,
-                    2,
-                    "Left Grip")
-            ]);
+        var buttonPath = VrDashboardRenderer.RenderShortcutReview(
+            SvrBridge.Core.ChordMode.DoublePress,
+            doublePressInput,
+            doublePressInput,
+            new SvrBridge.Core.StreamerBotAction(
+                "toggle-microphone",
+                "Toggle microphone",
+                "VR"),
+            500,
+            2000,
+            false);
         using var buttonPreview = new Bitmap(buttonPath);
         Assert(
             buttonPreview.Width == 1400 && buttonPreview.Height == 900,
-            "The VR button picker rendered at the wrong size.");
+            "The VR shortcut review rendered at the wrong size.");
     }
 
     private static void TestVrScrollLimiter()

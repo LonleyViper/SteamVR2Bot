@@ -106,6 +106,8 @@ internal static class Program
         Console.WriteLine(
             config.Chord.Mode switch
             {
+                ChordMode.SinglePress =>
+                    "Gesture: press Button One.",
                 ChordMode.Modifier =>
                     "Gesture: hold Button One, then press Button Two.",
                 ChordMode.LongPress =>

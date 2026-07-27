@@ -12,6 +12,7 @@ internal static class SelfTests
     {
         TestModifierChord();
         TestSimultaneousChord();
+        TestSinglePress();
         TestLongPress();
         TestDoublePress();
         TestCooldown();
@@ -149,6 +150,37 @@ internal static class SelfTests
         });
         Assert(!tooSlow.Update(true, false, 100), "First slow button must not fire.");
         Assert(!tooSlow.Update(true, true, 301), "Buttons outside the window must not fire.");
+    }
+
+    private static void TestSinglePress()
+    {
+        var detector = new ChordDetector(new ChordConfig
+        {
+            Mode = ChordMode.SinglePress,
+            CooldownMs = 0
+        });
+
+        Assert(detector.Update(true, true, 100), "Single press did not fire.");
+        Assert(!detector.Update(true, true, 150), "Held single press fired more than once.");
+        Assert(!detector.Update(false, false, 200), "Single press fired on release.");
+        Assert(detector.Update(true, true, 300), "Single press did not re-arm.");
+
+        var hotReloaded = new ChordDetector(
+            new ChordConfig
+            {
+                Mode = ChordMode.SinglePress,
+                CooldownMs = 0
+            },
+            requireReleaseBeforeArmed: true);
+        Assert(
+            !hotReloaded.Update(true, true, 100),
+            "A held input fired immediately after a hot reload.");
+        Assert(
+            !hotReloaded.Update(false, false, 150),
+            "Release after a hot reload fired.");
+        Assert(
+            hotReloaded.Update(true, true, 200),
+            "Hot-reloaded input did not arm after release.");
     }
 
     private static void TestCooldown()

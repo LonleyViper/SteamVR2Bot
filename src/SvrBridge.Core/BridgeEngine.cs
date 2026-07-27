@@ -29,10 +29,13 @@ public sealed class BridgeEngine
 
     private readonly IOpenVrSessionFactory _openVrSessionFactory;
     private readonly object _inputGate = new();
+    private readonly object _shortcutGate = new();
     private IOpenVrSession? _currentInput;
     private IOpenVrSession? _dashboardInput;
     private CancellationTokenSource? _dashboardMonitorCancellation;
     private string? _streamerBotAttentionDetail;
+    private ShortcutConfig[] _runtimeShortcuts = [];
+    private long _runtimeShortcutVersion;
 
     public BridgeEngine(IOpenVrSessionFactory? openVrSessionFactory = null)
     {
@@ -51,6 +54,7 @@ public sealed class BridgeEngine
         var actionManifest = OpenVrInput.ResolveActionManifest(config.ActionManifestPath);
         var retryAttempt = 0;
         _streamerBotAttentionDetail = null;
+        ReplaceRuntimeShortcuts(config.GetShortcuts());
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -92,6 +96,14 @@ public sealed class BridgeEngine
             BridgeState.Stopped,
             "Stopped",
             "The controller shortcut is not running.");
+    }
+
+    public void UpdateShortcuts(IReadOnlyList<ShortcutConfig> shortcuts)
+    {
+        ReplaceRuntimeShortcuts(shortcuts);
+        Log(
+            "runtime.shortcuts_updated",
+            $"{shortcuts.Count} shortcut{(shortcuts.Count == 1 ? "" : "s")} applied without restarting SteamVR.");
     }
 
     public async Task TestActionAsync(
@@ -164,7 +176,10 @@ public sealed class BridgeEngine
         SetStatus(
             BridgeState.Starting,
             "Listening for your controller input…",
-            mode is ChordMode.LongPress or ChordMode.DoublePress
+            mode
+                is ChordMode.SinglePress
+                or ChordMode.LongPress
+                or ChordMode.DoublePress
                 ? "Release all buttons, then press the button you want to use."
                 : "Release the buttons, then hold the first input and press the second.");
 
@@ -186,7 +201,10 @@ public sealed class BridgeEngine
         while (first is null)
         {
             var pressed = ControllerInputs.PressedInputs(input.Poll(), setup);
-            if (mode is ChordMode.LongPress or ChordMode.DoublePress
+            if (mode
+                    is ChordMode.SinglePress
+                    or ChordMode.LongPress
+                    or ChordMode.DoublePress
                 && pressed.FirstOrDefault() is { } heldInput)
             {
                 return FinishRecording(heldInput, heldInput, setup, mode);
@@ -320,9 +338,7 @@ public sealed class BridgeEngine
 
         try
         {
-            var shortcuts = config.GetShortcuts()
-                .Where(shortcut => shortcut.Enabled)
-                .ToArray();
+            var (shortcuts, shortcutVersion) = RuntimeShortcuts();
             var detectors = shortcuts.ToDictionary(
                 shortcut => shortcut.Id,
                 shortcut => new ChordDetector(shortcut.Gesture));
@@ -342,7 +358,10 @@ public sealed class BridgeEngine
                 currentSetup = openVr.GetControllerSetup();
             }
 
-            PublishControllerSetup(currentSetup, config, ref previousSetupSignature);
+            PublishControllerSetup(
+                currentSetup,
+                shortcuts,
+                ref previousSetupSignature);
 
             while (!cancellationToken.IsCancellationRequested)
             {
@@ -361,7 +380,7 @@ public sealed class BridgeEngine
 
                     PublishControllerSetup(
                         currentSetup,
-                        config,
+                        shortcuts,
                         ref previousSetupSignature);
                     bindingRefresh.Restart();
                 }
@@ -380,6 +399,19 @@ public sealed class BridgeEngine
                     previous = snapshot;
                 }
 
+                var latestShortcuts = RuntimeShortcuts();
+                if (latestShortcuts.Version != shortcutVersion)
+                {
+                    shortcuts = latestShortcuts.Shortcuts;
+                    shortcutVersion = latestShortcuts.Version;
+                    detectors = shortcuts.ToDictionary(
+                        shortcut => shortcut.Id,
+                        shortcut => new ChordDetector(
+                            shortcut.Gesture,
+                            requireReleaseBeforeArmed: true));
+                    SetReadyStatus(currentSetup, shortcuts);
+                }
+
                 foreach (var shortcut in shortcuts)
                 {
                     if (detectors[shortcut.Id].Update(
@@ -389,8 +421,8 @@ public sealed class BridgeEngine
                     {
                         await DeliverActionAsync(
                             streamerBot,
-                            config,
                             shortcut,
+                            shortcuts,
                             currentSetup,
                             cancellationToken);
                     }
@@ -465,8 +497,8 @@ public sealed class BridgeEngine
 
     private async Task DeliverActionAsync(
         StreamerBotClient streamerBot,
-        AppConfig config,
         ShortcutConfig shortcut,
+        ShortcutConfig[] shortcuts,
         ControllerSetup setup,
         CancellationToken cancellationToken)
     {
@@ -486,7 +518,7 @@ public sealed class BridgeEngine
             Log(
                 "streamerbot.action_confirmed",
                 $"Action confirmed: {FriendlyActionName(shortcut)}");
-            SetReadyStatus(setup, config);
+            SetReadyStatus(setup, shortcuts);
         }
         catch (StreamerBotDeliveryException exception)
         {
@@ -507,7 +539,7 @@ public sealed class BridgeEngine
 
     private void PublishControllerSetup(
         ControllerSetup setup,
-        AppConfig config,
+        ShortcutConfig[] shortcuts,
         ref string? previousSignature)
     {
         var signature = string.Join(
@@ -531,10 +563,12 @@ public sealed class BridgeEngine
             setup.Availability == BindingAvailability.NeedsSetup
                 ? BridgeLogLevel.Warning
                 : BridgeLogLevel.Info);
-        SetReadyStatus(setup, config);
+        SetReadyStatus(setup, shortcuts);
     }
 
-    private void SetReadyStatus(ControllerSetup setup, AppConfig config)
+    private void SetReadyStatus(
+        ControllerSetup setup,
+        ShortcutConfig[] enabledShortcuts)
     {
         if (_streamerBotAttentionDetail is not null)
         {
@@ -545,9 +579,6 @@ public sealed class BridgeEngine
             return;
         }
 
-        var enabledShortcuts = config.GetShortcuts()
-            .Where(shortcut => shortcut.Enabled)
-            .ToArray();
         var directPhysicalShortcuts = enabledShortcuts.Length > 0
                                       && enabledShortcuts.All(shortcut =>
                                           ControllerInputBinding.TryParsePhysical(
@@ -555,7 +586,8 @@ public sealed class BridgeEngine
                                               out _,
                                               out _)
                                           && (shortcut.Gesture.Mode
-                                                  is ChordMode.LongPress
+                                                  is ChordMode.SinglePress
+                                                  or ChordMode.LongPress
                                                   or ChordMode.DoublePress
                                               || ControllerInputBinding.TryParsePhysical(
                                                   shortcut.ActionInput.Id,
@@ -593,6 +625,26 @@ public sealed class BridgeEngine
         }
     }
 
+    private void ReplaceRuntimeShortcuts(
+        IReadOnlyList<ShortcutConfig> shortcuts)
+    {
+        lock (_shortcutGate)
+        {
+            _runtimeShortcuts = shortcuts
+                .Where(shortcut => shortcut.Enabled)
+                .ToArray();
+            _runtimeShortcutVersion++;
+        }
+    }
+
+    private (ShortcutConfig[] Shortcuts, long Version) RuntimeShortcuts()
+    {
+        lock (_shortcutGate)
+        {
+            return (_runtimeShortcuts, _runtimeShortcutVersion);
+        }
+    }
+
     private void Log(
         string eventName,
         string message,
@@ -626,18 +678,25 @@ public sealed class BridgeEngine
             "controller.gesture_recorded",
             mode switch
             {
+                ChordMode.SinglePress =>
+                    $"Recorded press of {safetyInput.FriendlyName}.",
                 ChordMode.LongPress =>
                     $"Recorded long press of {safetyInput.FriendlyName}.",
                 ChordMode.DoublePress =>
                     $"Recorded double press of {safetyInput.FriendlyName}.",
                 _ => $"Recorded {safetyInput.FriendlyName} + {actionInput.FriendlyName}."
             });
-        var singleInput = mode is ChordMode.LongPress or ChordMode.DoublePress;
+        var singleInput = mode
+            is ChordMode.SinglePress
+            or ChordMode.LongPress
+            or ChordMode.DoublePress;
         SetStatus(
             BridgeState.Stopped,
             singleInput ? "Input recorded" : "Inputs recorded",
             mode switch
             {
+                ChordMode.SinglePress =>
+                    $"Press {safetyInput.FriendlyName} to run the action.",
                 ChordMode.LongPress =>
                     $"Hold {safetyInput.FriendlyName} to run the action.",
                 ChordMode.DoublePress =>

@@ -10,20 +10,32 @@ public sealed class ChordDetector
     private bool _previousOne;
     private bool _previousTwo;
     private bool _latched;
+    private bool _waitingForRelease;
     private long _onePressedAt = long.MinValue;
     private long _twoPressedAt = long.MinValue;
     private long _lastFiredAt = long.MinValue;
 
-    public ChordDetector(ChordConfig config)
+    public ChordDetector(
+        ChordConfig config,
+        bool requireReleaseBeforeArmed = false)
     {
         _mode = config.Mode;
         _windowMs = config.WindowMs;
         _cooldownMs = config.CooldownMs;
         _holdMs = config.HoldMs;
+        _waitingForRelease = requireReleaseBeforeArmed;
     }
 
     public bool Update(bool buttonOne, bool buttonTwo, long nowMs)
     {
+        if (_waitingForRelease)
+        {
+            _previousOne = buttonOne;
+            _previousTwo = buttonTwo;
+            _waitingForRelease = buttonOne || buttonTwo;
+            return false;
+        }
+
         var onePressed = buttonOne && !_previousOne;
         var twoPressed = buttonTwo && !_previousTwo;
         var previousOnePressedAt = _onePressedAt;
@@ -38,7 +50,10 @@ public sealed class ChordDetector
             _twoPressedAt = nowMs;
         }
 
-        if (_mode is ChordMode.LongPress or ChordMode.DoublePress
+        if (_mode
+                is ChordMode.SinglePress
+                or ChordMode.LongPress
+                or ChordMode.DoublePress
                 ? !buttonOne
                 : !buttonOne || !buttonTwo)
         {
@@ -47,6 +62,7 @@ public sealed class ChordDetector
 
         var validGesture = _mode switch
         {
+            ChordMode.SinglePress => onePressed,
             ChordMode.Modifier => buttonOne && twoPressed,
             ChordMode.Simultaneous => buttonOne
                                       && buttonTwo

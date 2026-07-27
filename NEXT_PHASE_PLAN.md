@@ -248,12 +248,14 @@ Implemented on `codex/shortcut-manager`:
 - The desktop Shortcuts page supports add, record, edit, test, enable/disable,
   and remove.
 - The SteamVR dashboard lists the saved gestures and actions. Its guided wizard
-  opens at the Streamer.bot group level, expands a group into its actions,
-  supports controller scrolling and large Previous/Next controls, and presents
-  double-press and common two-second-hold choices on each input row. Less common
-  hold durations and two-button gestures remain under **More shortcut options**.
-  Each saved row now has direct pencil/edit and X/delete controls. Every change
-  saves back to the shared desktop settings.
+  begins with Single Button, Button Combo, Double Press, and Long Hold. Double
+  Press and Long Hold expose a tolerance slider. The recorder waits for all
+  inputs to be released, captures the physical input names, and shows them on a
+  review screen before Save. The action browser opens from that review screen
+  and retains controller scrolling plus large Previous/Next controls.
+- Each saved row has direct pencil/edit and X/delete controls. Saves and deletes
+  update the active shortcut detectors in place instead of rebooting the
+  SteamVR worker or dashboard.
 - Direct physical input selection is Vive-first. Other controller families retain
   the official SteamVR binding fallback until they pass the hardware matrix.
 - Vive physical inputs are backed by explicit SteamVR actions rather than the
@@ -272,19 +274,17 @@ Live gates for this checkpoint:
 
 1. Confirm the SteamVR dashboard pointer, group expansion, and controller
    scrolling in the headset.
-2. Record a second Vive shortcut in VR and confirm the automatic runtime reload
-   makes it active without a manual restart.
+2. Record a second Vive shortcut in VR and confirm it becomes active without a
+   worker or dashboard restart.
 3. Repeat the 20-attempt shell and GERONIMO matrices for both shortcuts.
 4. Test each additional controller family before adding a named preset.
 
 ## Long-press and scroll stability correction
 
-- Single physical inputs can trigger after a 1-, 2-, or 3-second hold and fire
-  only once until released.
-- The common VR path asks for one named physical button and saves a two-second
-  hold immediately. The advanced path still supports other hold durations and
-  two-button gestures without depending on raw button state while SteamVR's
-  dashboard owns input focus.
+- Single physical inputs support one press, adjustable double press, or an
+  adjustable long hold and fire only once until released.
+- Button combinations record two named physical inputs and trigger when both
+  are pressed together.
 - Scroll bursts are limited to one page redraw per 500 ms.
 - Dashboard renders rotate across image files so SteamVR never reads a PNG
   while the next redraw overwrites it.
@@ -295,8 +295,9 @@ Live gates for this checkpoint:
   automatically whenever it is open.
 - Its dashboard overlay is created automatically, so it remains available as a
   SteamVR dashboard tab without first pressing a desktop button.
-- Desktop and in-VR changes save immediately and trigger an automatic runtime
-  reload.
+- Desktop changes still rebuild connection state when necessary. In-VR shortcut
+  saves and deletes update active detectors in place without closing the
+  dashboard.
 - Manual Save, Start, Stop, and start-on-open controls were removed.
 - Dashboard clicks follow Valve's reference event pattern: the latest
   `VREvent_MouseMove` position is retained and used when

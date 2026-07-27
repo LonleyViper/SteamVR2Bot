@@ -49,7 +49,10 @@ public sealed class AppConfig
     public IReadOnlyList<ShortcutConfig> GetShortcuts() =>
         Shortcuts.Count > 0
             ? Shortcuts
-            :
+            : string.IsNullOrWhiteSpace(StreamerBot.ActionName)
+              && string.IsNullOrWhiteSpace(StreamerBot.ActionId)
+                ? []
+                :
             [
                 ShortcutConfig.FromLegacy(StreamerBot, Chord)
             ];
@@ -79,7 +82,8 @@ public enum ChordMode
     Simultaneous,
     Modifier,
     LongPress,
-    DoublePress
+    DoublePress,
+    SinglePress
 }
 
 public sealed class ChordConfig
@@ -178,6 +182,8 @@ public sealed record ShortcutConfig
     public string FriendlyGesture =>
         Gesture.Mode switch
         {
+            ChordMode.SinglePress =>
+                $"Press {SafetyInput.FriendlyName}",
             ChordMode.DoublePress =>
                 $"Double press {SafetyInput.FriendlyName}",
             ChordMode.LongPress =>
@@ -206,7 +212,10 @@ public sealed record ShortcutConfig
                 $"Choose a controller input for “{Name}”.");
         }
 
-        if (Gesture.Mode is not (ChordMode.LongPress or ChordMode.DoublePress)
+        if (Gesture.Mode
+                is not (ChordMode.SinglePress
+                or ChordMode.LongPress
+                or ChordMode.DoublePress)
             && (string.IsNullOrWhiteSpace(ActionInput.Id)
                 || SafetyInput.Id.Equals(ActionInput.Id, StringComparison.OrdinalIgnoreCase)))
         {

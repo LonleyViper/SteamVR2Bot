@@ -60,22 +60,17 @@ setup page. It shows the currently saved shortcuts and what each one runs.
 To create one without leaving VR:
 
 1. Select **Create a new shortcut**.
-2. Open a Streamer.bot action group, such as **Scenes** or **Sounds**.
-3. Scroll with the controller, or use **Previous** and **Next**, then choose the
-   action by its familiar name. Select **All groups** to go back.
-4. Choose **Double press** or **Hold 2 sec** beside the controller button you
-   want to use.
+2. Choose **Single Button**, **Button Combo**, **Double Press**, or **Long
+   Hold**.
+3. For Double Press or Long Hold, set the detection tolerance with the slider.
+4. Release every controller input, then press the input to record. A Button
+   Combo records two different inputs.
+5. Review the exact recorded input names, choose the Streamer.bot action, then
+   select **Save shortcut**.
 
-For a fast test, choose **Double press** beside **Left Menu Button**, then press
-that button twice within half a second. A two-second hold remains available as
-the more deliberate option.
-
-Choose **More shortcut options** only when you want a one- or three-second hold,
-or a two-button gesture.
-
-The shortcut is saved immediately, appears in the desktop list, and activates
-automatically. Streamer.bot actions are loaded automatically at launch; the
-desktop refresh button remains available if actions change later.
+The review page makes the left/right controller and physical input explicit
+before anything is saved. The shortcut appears in the desktop list and becomes
+active without restarting the SteamVR dashboard.
 
 Each saved row has a pencil button to change its action, input, or gesture, and
 an X button to delete it. Both changes save and activate automatically.
@@ -109,10 +104,11 @@ untested default preset is labelled as validated.
 
 Each shortcut's gesture behavior supports:
 
-- Double press one chosen input within 500 ms.
-- Hold one chosen input for 1, 2, or 3 seconds.
+- Press one chosen input once.
+- Press two chosen inputs together within 300 ms.
+- Double press one chosen input with an adjustable 200–1200 ms tolerance.
+- Hold one chosen input for an adjustable 0.5–5 seconds.
 - Hold the Safety Button, then press the Action Button.
-- Press both chosen inputs together within 300 ms.
 
 ## Streamer.bot address
 

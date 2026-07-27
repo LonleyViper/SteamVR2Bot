@@ -237,6 +237,303 @@ internal static class VrDashboardRenderer
         });
     }
 
+    public static string RenderGestureTypePicker(bool isEditing)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            graphics.DrawString(
+                isEditing ? "Edit controller shortcut" : "Create a controller shortcut",
+                fonts.Title,
+                brushes.White,
+                60,
+                42);
+            graphics.DrawString(
+                "Choose how the controller input should trigger.",
+                fonts.Subtitle,
+                brushes.Muted,
+                64,
+                108);
+
+            (string Label, string Detail)[] choices =
+            [
+                ("Single Button", "Press one controller input once"),
+                ("Button Combo", "Press two different controller inputs together"),
+                ("Double Press", "Press the same input twice within a chosen time"),
+                ("Long Hold", "Hold one input for a chosen amount of time")
+            ];
+            var y = 180;
+            foreach (var choice in choices)
+            {
+                DrawRoundedRectangle(
+                    graphics,
+                    brushes.Card,
+                    new Rectangle(60, y, 1280, 110),
+                    16);
+                graphics.DrawString(
+                    choice.Label,
+                    fonts.Heading,
+                    brushes.White,
+                    96,
+                    y + 17);
+                graphics.DrawString(
+                    choice.Detail,
+                    fonts.Body,
+                    brushes.Muted,
+                    98,
+                    y + 60);
+                graphics.DrawString("›", fonts.Title, brushes.Blue, 1250, y + 24);
+                y += 135;
+            }
+
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(60, 800, 1280, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Cancel",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(60, 800, 1280, 64));
+        });
+    }
+
+    public static string RenderTolerancePicker(ChordMode mode, int valueMs)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            var doublePress = mode == ChordMode.DoublePress;
+            graphics.DrawString(
+                doublePress ? "Double-press tolerance" : "Long-hold duration",
+                fonts.Title,
+                brushes.White,
+                60,
+                42);
+            graphics.DrawString(
+                doublePress
+                    ? "How much time can pass between the two presses?"
+                    : "How long must the input stay held?",
+                fonts.Subtitle,
+                brushes.Muted,
+                64,
+                108);
+
+            var valueText = doublePress
+                ? $"{valueMs} ms"
+                : FriendlyDuration(valueMs);
+            DrawCenteredText(
+                graphics,
+                valueText,
+                fonts.Title,
+                brushes.White,
+                new Rectangle(350, 190, 700, 80));
+
+            const int trackX = 180;
+            const int trackY = 370;
+            const int trackWidth = 1040;
+            var ratio = doublePress
+                ? Math.Clamp((valueMs - 200) / 1000f, 0f, 1f)
+                : Math.Clamp((valueMs - 500) / 4500f, 0f, 1f);
+            var knobX = trackX + (int)(trackWidth * ratio);
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(trackX, trackY, trackWidth, 22),
+                11);
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Blue,
+                new Rectangle(trackX, trackY, Math.Max(22, knobX - trackX), 22),
+                11);
+            graphics.FillEllipse(brushes.White, knobX - 20, trackY - 9, 40, 40);
+
+            graphics.DrawString(
+                doublePress ? "200 ms" : "0.5 sec",
+                fonts.Small,
+                brushes.Muted,
+                trackX,
+                trackY + 48);
+            graphics.DrawString(
+                doublePress ? "1.2 sec" : "5 sec",
+                fonts.Small,
+                brushes.Muted,
+                trackX + trackWidth - 70,
+                trackY + 48);
+            DrawCenteredText(
+                graphics,
+                "Point anywhere on the slider and click to set the value.",
+                fonts.Body,
+                brushes.Muted,
+                new Rectangle(180, 500, 1040, 70));
+
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(60, 800, 520, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Back",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(60, 800, 520, 64));
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Blue,
+                new Rectangle(600, 800, 740, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Next: record input",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(600, 800, 740, 64));
+        });
+    }
+
+    public static string RenderInputRecorder(
+        ChordMode mode,
+        bool armed,
+        ControllerInputBinding? firstInput)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            var combo = mode == ChordMode.Simultaneous;
+            graphics.DrawString(
+                combo ? "Record your button combo" : "Record your controller input",
+                fonts.Title,
+                brushes.White,
+                60,
+                42);
+            graphics.DrawString(
+                !armed
+                    ? "Release every controller button to begin."
+                    : combo && firstInput is not null
+                        ? "Now press a different second input."
+                        : combo
+                            ? "Press the first input in your combo."
+                            : "Press the input you want to use.",
+                fonts.Subtitle,
+                brushes.Muted,
+                64,
+                108);
+
+            DrawRoundedRectangle(
+                graphics,
+                armed ? brushes.Card : brushes.Disabled,
+                new Rectangle(120, 220, 1160, 360),
+                24);
+            DrawCenteredText(
+                graphics,
+                !armed
+                    ? "Waiting for all buttons to be released…"
+                    : firstInput is null
+                        ? combo
+                            ? "Press input 1"
+                            : "Press your chosen input"
+                        : $"Input 1 recorded:\n{firstInput.FriendlyName}\n\nPress input 2",
+                fonts.Heading,
+                brushes.White,
+                new Rectangle(170, 260, 1060, 280));
+
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(60, 800, 1280, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Back",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(60, 800, 1280, 64));
+        });
+    }
+
+    public static string RenderShortcutReview(
+        ChordMode mode,
+        ControllerInputBinding? firstInput,
+        ControllerInputBinding? secondInput,
+        StreamerBotAction? action,
+        int doublePressWindowMs,
+        int holdMs,
+        bool isEditing)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            graphics.DrawString(
+                isEditing ? "Review your changes" : "Review and save",
+                fonts.Title,
+                brushes.White,
+                60,
+                42);
+            graphics.DrawString(
+                "Check the recorded inputs before saving.",
+                fonts.Subtitle,
+                brushes.Muted,
+                64,
+                108);
+
+            var gesture = mode switch
+            {
+                ChordMode.SinglePress => "Single Button",
+                ChordMode.Simultaneous => "Button Combo",
+                ChordMode.DoublePress => $"Double Press • {doublePressWindowMs} ms",
+                ChordMode.LongPress => $"Long Hold • {FriendlyDuration(holdMs)}",
+                _ => mode.ToString()
+            };
+            var inputs = mode == ChordMode.Simultaneous
+                ? $"Input 1: {firstInput?.FriendlyName ?? "Not recorded"}\n" +
+                  $"Input 2: {secondInput?.FriendlyName ?? "Not recorded"}"
+                : $"Input: {firstInput?.FriendlyName ?? "Not recorded"}";
+
+            DrawReviewRow(graphics, fonts, brushes, 180, "Gesture", gesture);
+            DrawReviewRow(graphics, fonts, brushes, 310, "Recorded inputs", inputs);
+            DrawReviewRow(
+                graphics,
+                fonts,
+                brushes,
+                470,
+                "Streamer.bot action",
+                action?.FriendlyName ?? "Not chosen yet");
+
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(60, 800, 320, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Record again",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(60, 800, 320, 64));
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(400, 800, 510, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                action is null ? "Choose action" : "Change action",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(400, 800, 510, 64));
+            DrawRoundedRectangle(
+                graphics,
+                action is null ? brushes.Disabled : brushes.Blue,
+                new Rectangle(930, 800, 410, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                action is null ? "Choose an action first" : "Save shortcut",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(930, 800, 410, 64));
+        });
+    }
+
     public static string RenderGesturePicker(string actionName)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
@@ -512,6 +809,29 @@ internal static class VrDashboardRenderer
                 new Rectangle(60, 800, 1280, 64));
         });
     }
+
+    private static void DrawReviewRow(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        int y,
+        string label,
+        string value)
+    {
+        var height = label == "Recorded inputs" ? 140 : 110;
+        DrawRoundedRectangle(
+            graphics,
+            brushes.Card,
+            new Rectangle(60, y, 1280, height),
+            16);
+        graphics.DrawString(label, fonts.Small, brushes.Muted, 94, y + 14);
+        graphics.DrawString(value, fonts.Heading, brushes.White, 92, y + 45);
+    }
+
+    private static string FriendlyDuration(int milliseconds) =>
+        milliseconds % 1000 == 0
+            ? $"{milliseconds / 1000} second{(milliseconds == 1000 ? "" : "s")}"
+            : $"{milliseconds / 1000d:0.##} seconds";
 
     private static string RenderSimplePage(
         Action<Graphics, DashboardFonts, DashboardBrushes> draw)

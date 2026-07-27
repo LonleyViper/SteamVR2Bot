@@ -171,18 +171,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             await StopRuntimeLockedAsync();
-            if (_settings.GetShortcuts().Count == 0)
-            {
-                SetRunning(false);
-                OnStatusChanged(
-                    new BridgeStatus(
-                        BridgeState.Ready,
-                        "Available in SteamVR",
-                        "Add your first shortcut on the desktop or in the SteamVR dashboard."));
-                await EnsureDashboardAvailableAsync(false);
-                return;
-            }
-
             try
             {
                 UserSettingsStore.Validate(_settings);
@@ -312,7 +300,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (OperationCanceledException)
         {
-            var detail = mode is ChordMode.LongPress or ChordMode.DoublePress
+            var detail = mode
+                is ChordMode.SinglePress
+                or ChordMode.LongPress
+                or ChordMode.DoublePress
                 ? "No controller input was detected. Make sure the controller is on, then try again."
                 : "No two-input gesture was detected. Make sure both controllers are on, " +
                   "then try again. For unsupported controllers, use SteamVR input bindings.";
@@ -376,7 +367,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void SaveDashboardShortcut(ShortcutConfig shortcut)
     {
-        _mainForm.BeginInvoke(async () =>
+        _mainForm.BeginInvoke(() =>
         {
             var shortcuts = _settings.GetShortcuts()
                 .Where(item => item.Id != shortcut.Id)
@@ -397,7 +388,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     new BridgeActivity(
                         "dashboard.shortcut_saved",
                         $"Saved “{shortcut.Name}” automatically."));
-                await RestartRuntimeAsync();
+                _engine.UpdateShortcuts(updated.GetShortcuts());
             }
             catch (Exception exception)
             {
@@ -409,7 +400,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void DeleteDashboardShortcut(string shortcutId)
     {
-        _mainForm.BeginInvoke(async () =>
+        _mainForm.BeginInvoke(() =>
         {
             var existing = _settings.GetShortcuts().FirstOrDefault(item =>
                 item.Id.Equals(shortcutId, StringComparison.OrdinalIgnoreCase));
@@ -440,7 +431,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     new BridgeActivity(
                         "dashboard.shortcut_deleted",
                         $"Deleted “{existing.Name}” automatically."));
-                await RestartRuntimeAsync();
+                _engine.UpdateShortcuts(updated.GetShortcuts());
             }
             catch (Exception exception)
             {

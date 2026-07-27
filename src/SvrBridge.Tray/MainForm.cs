@@ -621,6 +621,7 @@ internal sealed class ShortcutEditorForm : Form
         _mode.Width = 310;
         _mode.Items.AddRange(
         [
+            "Press one button",
             "Double press one button",
             "Hold one button",
             "Hold first, then press second",
@@ -628,10 +629,11 @@ internal sealed class ShortcutEditorForm : Form
         ]);
         _mode.SelectedIndex = shortcut.Gesture.Mode switch
         {
-            ChordMode.DoublePress => 0,
-            ChordMode.LongPress => 1,
-            ChordMode.Modifier => 2,
-            _ => 3
+            ChordMode.SinglePress => 0,
+            ChordMode.DoublePress => 1,
+            ChordMode.LongPress => 2,
+            ChordMode.Modifier => 3,
+            _ => 4
         };
         _mode.SelectedIndexChanged += (_, _) =>
         {
@@ -662,7 +664,9 @@ internal sealed class ShortcutEditorForm : Form
         {
             _safety = ControllerInputBinding.SteamVrSafety;
             _actionInput = SelectedMode
-                is ChordMode.LongPress or ChordMode.DoublePress
+                is ChordMode.SinglePress
+                or ChordMode.LongPress
+                or ChordMode.DoublePress
                 ? ControllerInputBinding.SteamVrSafety
                 : ControllerInputBinding.SteamVrAction;
             RefreshGesture();
@@ -742,7 +746,9 @@ internal sealed class ShortcutEditorForm : Form
 
         button.Enabled = false;
         _recordingStatus.Text = SelectedMode
-            is ChordMode.LongPress or ChordMode.DoublePress
+            is ChordMode.SinglePress
+            or ChordMode.LongPress
+            or ChordMode.DoublePress
             ? "In VR: release all buttons, then press the button you want to use."
             : "In VR: release all buttons, then hold the first input and press the second.";
         try
@@ -813,6 +819,8 @@ internal sealed class ShortcutEditorForm : Form
     {
         _gesture.Text = SelectedMode switch
         {
+            ChordMode.SinglePress =>
+                $"Press {_safety.FriendlyName}",
             ChordMode.DoublePress =>
                 $"Double press {_safety.FriendlyName}",
             ChordMode.LongPress =>
@@ -826,9 +834,10 @@ internal sealed class ShortcutEditorForm : Form
 
     private ChordMode SelectedMode => _mode.SelectedIndex switch
     {
-        0 => ChordMode.DoublePress,
-        1 => ChordMode.LongPress,
-        3 => ChordMode.Simultaneous,
+        0 => ChordMode.SinglePress,
+        1 => ChordMode.DoublePress,
+        2 => ChordMode.LongPress,
+        4 => ChordMode.Simultaneous,
         _ => ChordMode.Modifier
     };
 
