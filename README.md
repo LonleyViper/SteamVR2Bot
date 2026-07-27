@@ -88,8 +88,9 @@ logical controls are:
 - **Safety Button (hold)**
 - **Action Button (press)**
 
-The bridge has already passed 20/20 attempts in the SteamVR shell and 20/20
-attempts in GERONIMO with the dashboard closed. See
+The bridge has passed 20/20 attempts in the SteamVR shell through both the
+diagnostic and tray hosts, plus 20/20 attempts in GERONIMO through the
+diagnostic host with the dashboard closed. See
 `LIVE_TEST_RESULTS.md` for the evidence.
 
 ## Status messages

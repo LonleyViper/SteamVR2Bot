@@ -358,12 +358,30 @@ The first daily-use tray slice was exercised against the same live services:
 | Bridge start through **Save and Start** | **Pass:** `Ready for your shortcut` |
 | Protected-settings round trip | **Pass:** password not stored as readable text |
 | Console authenticated mock round trip | **Pass** |
+| Physical tray-host SteamVR run | **Pass:** 20/20, no duplicate |
 
 The action picker displayed the Streamer.bot group and friendly action name, but
 saved the plain action name and stable ID. No password or authentication
 material appeared in the app activity or test output.
 
-The proven 20-attempt SteamVR shell and GERONIMO matrices above remain the live
-input baseline. A physical 20/20 regression through the new tray host is the
-next release gate; this checkpoint verified that the tray starts the extracted
-same engine and reaches the ready state.
+### Physical tray-host regression
+
+At 12:30 local time, the user performed a rapid 20-attempt run through
+`SvrBridge.Tray.exe`. No VR scene application was present when the run was
+inspected, so this is recorded as the SteamVR shell regression.
+
+| Measure | Result |
+|---|---:|
+| Raw right-trigger presses in tray activity | 20 |
+| Tray action confirmations | 20 |
+| Streamer.bot acknowledgements | 20 |
+| Unique WebSocket request IDs | 20 |
+| Streamer.bot queue entries | 20 |
+| Streamer.bot executions | 20 |
+| Duplicate or false fires | 0 |
+| Minimum inter-press gap | 392 ms |
+| Maximum inter-press gap | 517 ms |
+
+The remaining release gate is the matching physical 20/20 regression through
+the tray host while GERONIMO is the active scene application and the SteamVR
+dashboard is closed.

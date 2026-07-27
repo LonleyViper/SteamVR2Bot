@@ -173,13 +173,15 @@ Phase 1 steps 1–3 are now implemented on `codex/tray-app`:
 - The optional password is protected for the current Windows user.
 - Existing console self-tests and the protected-settings tray self-test pass.
 
-The next gate is a short live regression through the tray app:
+The live regression status through the tray app is:
 
-1. Use **Find actions** and confirm the intended action appears by name.
-2. Use **Test Streamer.bot** and confirm one visible action.
-3. Use **Set up SteamVR**, then **Save and Start**.
-4. Repeat the existing 20-attempt SteamVR shell test.
-5. Repeat the existing 20-attempt GERONIMO dashboard-closed test.
+1. **Pass:** **Find actions** returned 248 enabled actions and matched the
+   intended action by stable ID.
+2. **Pass:** **Test Streamer.bot** produced one acknowledged action.
+3. **Pass:** In-app SteamVR setup and **Save and Start** reached the ready state.
+4. **Pass:** SteamVR shell physical run produced 20/20 actions with no duplicate.
+5. **Pending:** Repeat the 20-attempt GERONIMO dashboard-closed test through the
+   tray host.
 
 After that passes, continue with Phase 1 step 4: long-running reconnect/backoff,
 restart recovery, structured local logs, and binding-unavailable detection.
