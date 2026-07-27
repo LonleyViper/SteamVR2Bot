@@ -48,7 +48,8 @@ SVR Bridge registers itself with SteamVR and starts automatically whenever the
 app is open. There is no separate Save or Start step.
 
 Closing the window keeps SVR Bridge running in the Windows notification area.
-Use its tray menu to open, start, stop, test, or exit the app.
+Use its tray menu to open the app or SteamVR dashboard, test an action, view
+logs, or exit.
 
 ## In-VR setup
 
@@ -59,10 +60,11 @@ setup page. It shows the currently saved shortcuts and what each one runs.
 To create one without leaving VR:
 
 1. Select **Record a new shortcut**.
-2. Choose the Streamer.bot action by its familiar name. Use **Next** to page
-   through a long action list.
-3. Release all controller buttons.
-4. Hold the safety input, then press the action input.
+2. Open a Streamer.bot action group, such as **Scenes** or **Sounds**.
+3. Scroll with the controller, or use **Previous** and **Next**, then choose the
+   action by its familiar name. Select **All groups** to go back.
+4. Release all controller buttons.
+5. Hold the safety input, then press the action input.
 
 The shortcut is saved immediately, appears in the desktop list, and activates
 automatically. Streamer.bot actions are loaded automatically at launch; the

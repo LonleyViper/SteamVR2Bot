@@ -66,6 +66,26 @@ public static class ControllerInputs
     }
 }
 
+public enum DashboardInteractionKind
+{
+    None,
+    Click,
+    Scroll
+}
+
+public readonly record struct DashboardInteraction(
+    DashboardInteractionKind Kind,
+    float X,
+    float Y,
+    float ScrollY)
+{
+    public static DashboardInteraction Click(float x, float y) =>
+        new(DashboardInteractionKind.Click, x, y, 0);
+
+    public static DashboardInteraction Scroll(float deltaY) =>
+        new(DashboardInteractionKind.Scroll, 0, 0, deltaY);
+}
+
 public sealed class DashboardPointerTracker
 {
     private float _x;
@@ -75,11 +95,9 @@ public sealed class DashboardPointerTracker
         int eventType,
         float eventX,
         float eventY,
-        out float clickX,
-        out float clickY)
+        out DashboardInteraction interaction)
     {
-        clickX = 0;
-        clickY = 0;
+        interaction = default;
         if (eventType == 300) // VREvent_MouseMove
         {
             _x = eventX;
@@ -87,13 +105,18 @@ public sealed class DashboardPointerTracker
             return false;
         }
 
-        if (eventType != 301) // VREvent_MouseButtonDown
+        if (eventType == 301) // VREvent_MouseButtonDown
         {
-            return false;
+            interaction = DashboardInteraction.Click(_x, _y);
+            return true;
         }
 
-        clickX = _x;
-        clickY = _y;
-        return true;
+        if (eventType == 305 && eventY != 0) // VREvent_ScrollDiscrete
+        {
+            interaction = DashboardInteraction.Scroll(eventY);
+            return true;
+        }
+
+        return false;
     }
 }

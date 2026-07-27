@@ -248,6 +248,12 @@ public sealed class OpenVrInput : IOpenVrSession
                 EnsureOverlaySuccess(
                     _overlay.Value.SetOverlayInputMethod(_dashboardHandle, 1),
                     "SetOverlayInputMethod");
+                EnsureOverlaySuccess(
+                    _overlay.Value.SetOverlayFlag(
+                        _dashboardHandle,
+                        1 << 6,
+                        true),
+                    "SetOverlayFlag(SendVRDiscreteScrollEvents)");
                 var mouseScale = new HmdVector2 { X = 1400, Y = 900 };
                 EnsureOverlaySuccess(
                     _overlay.Value.SetOverlayMouseScale(
@@ -275,10 +281,9 @@ public sealed class OpenVrInput : IOpenVrSession
         }
     }
 
-    public bool TryGetDashboardClick(out float x, out float y)
+    public bool TryGetDashboardInteraction(out DashboardInteraction interaction)
     {
-        x = 0;
-        y = 0;
+        interaction = default;
         if (_overlay is null || _dashboardHandle == 0)
         {
             return false;
@@ -298,22 +303,34 @@ public sealed class OpenVrInput : IOpenVrSession
                 var eventType = Marshal.ReadInt32(eventBuffer);
                 var eventX = BitConverter.Int32BitsToSingle(
                     Marshal.ReadInt32(eventBuffer, 16));
-                var eventY = 900 - BitConverter.Int32BitsToSingle(
+                var rawEventY = BitConverter.Int32BitsToSingle(
                     Marshal.ReadInt32(eventBuffer, 20));
+                var eventY = eventType is 300 or 301
+                    ? 900 - rawEventY
+                    : rawEventY;
                 if (!_dashboardPointer.Update(
                         eventType,
                         eventX,
                         eventY,
-                        out x,
-                        out y))
+                        out interaction))
                 {
                     continue;
                 }
 
-                // Valve's dashboard sample uses the last MouseMove position
-                // for button events; the button packet itself is not a
-                // reliable source of x/y coordinates.
-                _log($"SteamVR dashboard click: {x:0}, {y:0}.");
+                if (interaction.Kind == DashboardInteractionKind.Click)
+                {
+                    // Valve's dashboard sample uses the last MouseMove position
+                    // for button events; the button packet itself is not a
+                    // reliable source of x/y coordinates.
+                    _log(
+                        $"SteamVR dashboard click: " +
+                        $"{interaction.X:0}, {interaction.Y:0}.");
+                }
+                else
+                {
+                    _log($"SteamVR dashboard scroll: {interaction.ScrollY:0.##}.");
+                }
+
                 return true;
             }
 
@@ -457,6 +474,7 @@ public sealed class OpenVrInput : IOpenVrSession
 
         return new VrOverlayFunctions(
             GetTableDelegate<SetOverlayWidthInMetersDelegate>(pointer, 22),
+            GetTableDelegate<SetOverlayFlagDelegate>(pointer, 11),
             GetTableDelegate<PollNextOverlayEventDelegate>(pointer, 48),
             GetTableDelegate<SetOverlayInputMethodDelegate>(pointer, 50),
             GetTableDelegate<SetOverlayMouseScaleDelegate>(pointer, 52),
@@ -956,6 +974,12 @@ public sealed class OpenVrInput : IOpenVrSession
         float widthInMeters);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate VrOverlayError SetOverlayFlagDelegate(
+        ulong overlayHandle,
+        int overlayFlag,
+        [MarshalAs(UnmanagedType.I1)] bool enabled);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     [return: MarshalAs(UnmanagedType.I1)]
     private delegate bool PollNextOverlayEventDelegate(
         ulong overlayHandle,
@@ -989,6 +1013,7 @@ public sealed class OpenVrInput : IOpenVrSession
 
     private readonly record struct VrOverlayFunctions(
         SetOverlayWidthInMetersDelegate SetOverlayWidthInMeters,
+        SetOverlayFlagDelegate SetOverlayFlag,
         PollNextOverlayEventDelegate PollNextOverlayEvent,
         SetOverlayInputMethodDelegate SetOverlayInputMethod,
         SetOverlayMouseScaleDelegate SetOverlayMouseScale,

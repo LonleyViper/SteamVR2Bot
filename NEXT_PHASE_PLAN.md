@@ -248,8 +248,10 @@ Implemented on `codex/shortcut-manager`:
 - The desktop Shortcuts page supports add, record, edit, test, enable/disable,
   and remove.
 - The SteamVR dashboard lists the saved gestures and actions. Its guided wizard
-  pages through discovered actions, records two controller inputs, and saves
-  the resulting shortcut back to the shared desktop settings.
+  opens at the Streamer.bot group level, expands a group into its actions,
+  supports controller scrolling and large Previous/Next controls, records two
+  controller inputs, and saves the resulting shortcut back to the shared
+  desktop settings.
 - Direct physical recording is Vive-first. Other controller families retain
   the official SteamVR binding fallback until they pass the hardware matrix.
 - The dashboard remains inside the disposable OpenVR worker, preserving the
@@ -262,8 +264,8 @@ prevention.
 
 Live gates for this checkpoint:
 
-1. Confirm the SteamVR dashboard pointer/click coordinates and action paging in
-   the headset.
+1. Confirm the SteamVR dashboard pointer, group expansion, and controller
+   scrolling in the headset.
 2. Record a second Vive shortcut in VR and confirm the automatic runtime reload
    makes it active without a manual restart.
 3. Repeat the 20-attempt shell and GERONIMO matrices for both shortcuts.

@@ -4,6 +4,8 @@ internal static class TraySelfTests
 {
     public static void Run()
     {
+        TestVrActionBrowser();
+
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
             $"svr-bridge-settings-test-{Guid.NewGuid():N}");
@@ -106,6 +108,61 @@ internal static class TraySelfTests
                 Directory.Delete(testDirectory, recursive: true);
             }
         }
+    }
+
+    private static void TestVrActionBrowser()
+    {
+        var actions = Enumerable.Range(1, 8)
+            .Select(index => new SvrBridge.Core.StreamerBotAction(
+                $"scene-{index}",
+                $"Scene {index:00}",
+                "Scenes"))
+            .Concat(
+            [
+                new SvrBridge.Core.StreamerBotAction(
+                    "sound-1",
+                    "Air horn",
+                    "Sounds"),
+                new SvrBridge.Core.StreamerBotAction(
+                    "ungrouped-1",
+                    "Emergency stop",
+                    "None")
+            ])
+            .ToArray();
+        var browser = new VrActionBrowser(actions);
+
+        Assert(browser.IsShowingGroups, "The VR action browser did not start at groups.");
+        Assert(browser.TotalItemCount == 3, "The VR action browser grouped actions incorrectly.");
+        Assert(
+            browser.VisibleRows.Select(row => row.Label)
+                .SequenceEqual(["Scenes", "Sounds", "Ungrouped"]),
+            "VR action groups were not sorted with Ungrouped last.");
+
+        Assert(
+            browser.OpenRow(0) is null && !browser.IsShowingGroups,
+            "Opening a VR action group did not show its actions.");
+        Assert(
+            browser.TotalItemCount == 8
+            && browser.VisibleRows[0].Label == "Scene 01",
+            "The selected VR action group showed the wrong actions.");
+        Assert(
+            browser.ScrollPage(1)
+            && browser.FirstVisibleItemNumber == 3
+            && browser.LastVisibleItemNumber == 8,
+            "VR action paging did not clamp to the end of the list.");
+        Assert(
+            browser.OpenRow(5)?.Id == "scene-8",
+            "The VR action browser selected the wrong scrolled action.");
+        Assert(
+            browser.BackToGroups()
+            && browser.FirstVisibleItemNumber == 1,
+            "Returning to VR action groups did not reset scrolling.");
+
+        var previewPath = VrDashboardRenderer.RenderActionPicker(browser);
+        using var preview = new Bitmap(previewPath);
+        Assert(
+            preview.Width == 1400 && preview.Height == 900,
+            "The grouped VR action picker rendered at the wrong size.");
     }
 
     private static void Assert(bool condition, string message)

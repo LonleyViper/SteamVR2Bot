@@ -7,12 +7,11 @@ internal sealed class VrDashboardController
     private readonly OpenVrInput _openVr;
     private readonly Action<ShortcutConfig> _shortcutCreated;
     private readonly List<ShortcutConfig> _shortcuts;
-    private readonly IReadOnlyList<StreamerBotAction> _actions;
+    private readonly VrActionBrowser _actionBrowser;
     private DashboardPage _page;
     private StreamerBotAction? _selectedAction;
     private ControllerInputBinding? _firstInput;
     private bool _recordingArmed;
-    private int _actionPage;
 
     public VrDashboardController(
         OpenVrInput openVr,
@@ -23,16 +22,23 @@ internal sealed class VrDashboardController
     {
         _openVr = openVr;
         _shortcuts = shortcuts.ToList();
-        _actions = actions;
+        _actionBrowser = new VrActionBrowser(actions);
         _shortcutCreated = shortcutCreated;
         ShowList(activate);
     }
 
     public void Tick(InputSnapshot snapshot, ControllerSetup setup)
     {
-        if (_openVr.TryGetDashboardClick(out var x, out var y))
+        if (_openVr.TryGetDashboardInteraction(out var interaction))
         {
-            HandleClick(x, y);
+            if (interaction.Kind == DashboardInteractionKind.Click)
+            {
+                HandleClick(interaction.X, interaction.Y);
+            }
+            else if (interaction.Kind == DashboardInteractionKind.Scroll)
+            {
+                HandleScroll(interaction.ScrollY);
+            }
         }
 
         if (_page != DashboardPage.Recording)
@@ -86,31 +92,47 @@ internal sealed class VrDashboardController
         switch (_page)
         {
             case DashboardPage.List when y >= 780:
-                _actionPage = 0;
+                _actionBrowser.Reset();
                 _page = DashboardPage.ActionPicker;
-                _openVr.ShowDashboard(
-                    VrDashboardRenderer.RenderActionPicker(_actions, _actionPage));
+                ShowActionPicker();
                 break;
-            case DashboardPage.ActionPicker when y >= 780 && x < 700:
-                ShowList();
-                break;
-            case DashboardPage.ActionPicker when y >= 780:
-                _actionPage++;
-                if (_actionPage * 6 >= _actions.Count)
+            case DashboardPage.ActionPicker when y >= 780 && x < 440:
+                if (_actionBrowser.BackToGroups())
                 {
-                    _actionPage = 0;
+                    ShowActionPicker();
+                }
+                else
+                {
+                    ShowList();
                 }
 
-                _openVr.ShowDashboard(
-                    VrDashboardRenderer.RenderActionPicker(_actions, _actionPage));
+                break;
+            case DashboardPage.ActionPicker when y >= 780 && x < 890:
+                if (_actionBrowser.ScrollPage(-1))
+                {
+                    ShowActionPicker();
+                }
+
+                break;
+            case DashboardPage.ActionPicker when y >= 780:
+                if (_actionBrowser.ScrollPage(1))
+                {
+                    ShowActionPicker();
+                }
+
                 break;
             case DashboardPage.ActionPicker:
             {
                 var index = (int)((y - 165) / 91);
-                var actionIndex = _actionPage * 6 + index;
-                if (index >= 0 && index < 6 && actionIndex < _actions.Count)
+                var wasShowingGroups = _actionBrowser.IsShowingGroups;
+                var action = _actionBrowser.OpenRow(index);
+                if (wasShowingGroups && !_actionBrowser.IsShowingGroups)
                 {
-                    _selectedAction = _actions[actionIndex];
+                    ShowActionPicker();
+                }
+                else if (action is not null)
+                {
+                    _selectedAction = action;
                     _firstInput = null;
                     _recordingArmed = false;
                     _page = DashboardPage.Recording;
@@ -122,6 +144,19 @@ internal sealed class VrDashboardController
             case DashboardPage.Recording when y >= 780:
                 ShowList();
                 break;
+        }
+    }
+
+    private void HandleScroll(float deltaY)
+    {
+        if (_page != DashboardPage.ActionPicker || deltaY == 0)
+        {
+            return;
+        }
+
+        if (_actionBrowser.ScrollRows(deltaY > 0 ? -1 : 1))
+        {
+            ShowActionPicker();
         }
     }
 
@@ -170,6 +205,10 @@ internal sealed class VrDashboardController
     private void ShowRecording() =>
         _openVr.ShowDashboard(
             VrDashboardRenderer.RenderRecording(_firstInput?.FriendlyName));
+
+    private void ShowActionPicker() =>
+        _openVr.ShowDashboard(
+            VrDashboardRenderer.RenderActionPicker(_actionBrowser));
 
     private enum DashboardPage
     {

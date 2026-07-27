@@ -60,14 +60,21 @@ internal static class SelfTests
     {
         var tracker = new DashboardPointerTracker();
         Assert(
-            !tracker.Update(300, 640, 720, out _, out _),
+            !tracker.Update(300, 640, 720, out _),
             "A dashboard mouse move was treated as a click.");
         Assert(
-            tracker.Update(301, 0, 0, out var x, out var y),
+            tracker.Update(301, 0, 0, out var click),
             "A dashboard mouse-down event was not recognized.");
         Assert(
-            x == 640 && y == 720,
+            click.Kind == DashboardInteractionKind.Click
+            && click.X == 640
+            && click.Y == 720,
             "Dashboard click did not use the preceding mouse-move position.");
+        Assert(
+            tracker.Update(305, 0, -1, out var scroll)
+            && scroll.Kind == DashboardInteractionKind.Scroll
+            && scroll.ScrollY == -1,
+            "A dashboard scroll event was not recognized.");
     }
 
     private static void TestModifierChord()

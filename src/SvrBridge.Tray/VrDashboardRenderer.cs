@@ -122,59 +122,97 @@ internal static class VrDashboardRenderer
         return path;
     }
 
-    public static string RenderActionPicker(
-        IReadOnlyList<StreamerBotAction> actions,
-        int page)
+    public static string RenderActionPicker(VrActionBrowser browser)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
-            graphics.DrawString("Choose what it runs", fonts.Title, brushes.White, 60, 42);
+            DrawEllipsizedText(
+                graphics,
+                browser.Title,
+                fonts.Title,
+                brushes.White,
+                new RectangleF(60, 42, 1280, 58));
             graphics.DrawString(
-                actions.Count == 0
-                    ? "Refresh Streamer.bot actions on the desktop first."
-                    : "Point at an action and select it.",
+                browser.TotalItemCount == 0
+                    ? "No enabled Streamer.bot actions were found."
+                    : browser.Subtitle,
                 fonts.Subtitle,
                 brushes.Muted,
                 64,
                 104);
 
-            const int pageSize = 6;
-            var pageCount = Math.Max(1, (int)Math.Ceiling(actions.Count / (double)pageSize));
-            var safePage = Math.Clamp(page, 0, pageCount - 1);
             var y = 165;
-            foreach (var action in actions.Skip(safePage * pageSize).Take(pageSize))
+            foreach (var row in browser.VisibleRows)
             {
                 DrawRoundedRectangle(
                     graphics,
                     brushes.Card,
                     new Rectangle(60, y, 1280, 78),
                     14);
-                graphics.DrawString(
-                    action.FriendlyName,
+                DrawEllipsizedText(
+                    graphics,
+                    row.Label,
                     fonts.Body,
                     brushes.White,
-                    92,
-                    y + 23);
+                    new RectangleF(92, y + (row.Detail is null ? 22 : 9), 1080, 38));
+                if (row.Detail is not null)
+                {
+                    graphics.DrawString(
+                        row.Detail,
+                        fonts.Small,
+                        brushes.Muted,
+                        94,
+                        y + 43);
+                    graphics.DrawString("›", fonts.Heading, brushes.Blue, 1265, y + 19);
+                }
+
                 y += 91;
+            }
+
+            if (browser.TotalItemCount > 0)
+            {
+                graphics.DrawString(
+                    $"{browser.FirstVisibleItemNumber}–{browser.LastVisibleItemNumber} " +
+                    $"of {browser.TotalItemCount}",
+                    fonts.Small,
+                    brushes.Muted,
+                    1180,
+                    748);
             }
 
             DrawRoundedRectangle(
                 graphics,
                 brushes.Disabled,
-                new Rectangle(60, 800, 620, 64),
+                new Rectangle(60, 800, 360, 64),
                 16);
-            graphics.DrawString("Back", fonts.Body, brushes.White, 315, 817);
-            DrawRoundedRectangle(
+            DrawCenteredText(
                 graphics,
-                brushes.Blue,
-                new Rectangle(720, 800, 620, 64),
-                16);
-            graphics.DrawString(
-                $"Next  •  Page {safePage + 1} of {pageCount}",
+                browser.BackLabel,
                 fonts.Body,
                 brushes.White,
-                890,
-                817);
+                new Rectangle(60, 800, 360, 64));
+            DrawRoundedRectangle(
+                graphics,
+                browser.CanScrollUp ? brushes.Blue : brushes.Disabled,
+                new Rectangle(440, 800, 430, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "↑  Previous",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(440, 800, 430, 64));
+            DrawRoundedRectangle(
+                graphics,
+                browser.CanScrollDown ? brushes.Blue : brushes.Disabled,
+                new Rectangle(890, 800, 450, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Next  ↓",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(890, 800, 450, 64));
         });
     }
 
@@ -275,12 +313,43 @@ internal static class VrDashboardRenderer
         graphics.FillPath(brush, path);
     }
 
+    private static void DrawCenteredText(
+        Graphics graphics,
+        string text,
+        Font font,
+        Brush brush,
+        Rectangle bounds)
+    {
+        using var format = new StringFormat
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center
+        };
+        graphics.DrawString(text, font, brush, bounds, format);
+    }
+
+    private static void DrawEllipsizedText(
+        Graphics graphics,
+        string text,
+        Font font,
+        Brush brush,
+        RectangleF bounds)
+    {
+        using var format = new StringFormat
+        {
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+        graphics.DrawString(text, font, brush, bounds, format);
+    }
+
     private sealed class DashboardFonts : IDisposable
     {
         public Font Title { get; } = new("Segoe UI", 38, FontStyle.Bold);
         public Font Subtitle { get; } = new("Segoe UI", 18);
         public Font Heading { get; } = new("Segoe UI", 20, FontStyle.Bold);
         public Font Body { get; } = new("Segoe UI", 17);
+        public Font Small { get; } = new("Segoe UI", 14);
 
         public void Dispose()
         {
@@ -288,6 +357,7 @@ internal static class VrDashboardRenderer
             Subtitle.Dispose();
             Heading.Dispose();
             Body.Dispose();
+            Small.Dispose();
         }
     }
 
