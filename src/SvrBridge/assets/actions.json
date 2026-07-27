@@ -14,21 +14,69 @@
   "actions": [
     {
       "name": "/actions/svrbridge/in/button_one",
-      "requirement": "mandatory",
+      "requirement": "optional",
       "type": "boolean"
     },
     {
       "name": "/actions/svrbridge/in/button_two",
-      "requirement": "mandatory",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/left_menu",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/right_menu",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/left_grip",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/right_grip",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/left_trigger",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/right_trigger",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/left_trackpad",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/right_trackpad",
+      "requirement": "optional",
       "type": "boolean"
     }
   ],
   "localization": [
     {
       "language_tag": "en_US",
-      "/actions/svrbridge": "SVR Bridge",
-      "/actions/svrbridge/in/button_one": "Chord Button One / Modifier",
-      "/actions/svrbridge/in/button_two": "Chord Button Two / Trigger"
+      "/actions/svrbridge": "SteamVR2Bot",
+      "/actions/svrbridge/in/button_one": "Safety Button (hold)",
+      "/actions/svrbridge/in/button_two": "Action Button (press)",
+      "/actions/svrbridge/in/left_menu": "Left Menu Button",
+      "/actions/svrbridge/in/right_menu": "Right Menu Button",
+      "/actions/svrbridge/in/left_grip": "Left Grip",
+      "/actions/svrbridge/in/right_grip": "Right Grip",
+      "/actions/svrbridge/in/left_trigger": "Left Trigger",
+      "/actions/svrbridge/in/right_trigger": "Right Trigger",
+      "/actions/svrbridge/in/left_trackpad": "Left Trackpad",
+      "/actions/svrbridge/in/right_trackpad": "Right Trackpad"
     }
   ]
 }

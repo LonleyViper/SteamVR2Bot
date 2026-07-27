@@ -15,17 +15,21 @@ if (-not (Test-Path -LiteralPath $manifest)) {
     throw "app.vrmanifest was not found at $manifest. Run scripts\Publish-Poc.ps1 first."
 }
 
-$bridge = Join-Path $PublishDirectory "SvrBridge.exe"
+$bridge = Join-Path $PublishDirectory "diagnosticsSteamVR2Bot.Diagnostics.exe"
 if (-not (Test-Path -LiteralPath $bridge)) {
-    throw "SvrBridge.exe was not found at $bridge. Run scripts\Publish-Poc.ps1 first."
+    throw "The SteamVR2Bot diagnostic tool was not found at $bridge. Run scripts\Publish-Poc.ps1 first."
 }
 
 # vrpathreg.exe registers driver paths, not application manifests. The bridge
 # invokes IVRApplications.AddApplicationManifest with VRApplication_Utility.
-& $bridge --register-steamvr
+$actions = Join-Path $PublishDirectory "actions.json"
+& $bridge `
+    --register-steamvr `
+    --action-manifest $actions `
+    --application-manifest $manifest
 if ($LASTEXITCODE -ne 0) {
     throw "SteamVR application registration failed with exit code $LASTEXITCODE."
 }
 
 Write-Host "Registered SteamVR application manifest: $manifest"
-Write-Host "Start SteamVR, run SvrBridge.exe, then bind the two SVR Bridge actions."
+Write-Host "Start SteamVR, open SteamVR2Bot.exe, then choose Set up SteamVR."

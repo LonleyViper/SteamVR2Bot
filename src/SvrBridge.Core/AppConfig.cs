@@ -1,0 +1,249 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace SvrBridge.Core;
+
+public sealed class AppConfig
+{
+    public string? OpenVrDllPath { get; init; }
+    public string? ActionManifestPath { get; init; }
+    public int PollIntervalMs { get; init; } = 10;
+    public bool LogRawInputChanges { get; init; } = true;
+    public StreamerBotConfig StreamerBot { get; init; } = new();
+    public ChordConfig Chord { get; init; } = new();
+    public IReadOnlyList<ShortcutConfig> Shortcuts { get; init; } = [];
+
+    public static AppConfig Load(string path)
+    {
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException(
+                $"Configuration not found: {path}{Environment.NewLine}" +
+                "Copy appsettings.example.json to appsettings.json and edit it.");
+        }
+
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            ReadCommentHandling = JsonCommentHandling.Skip
+        };
+        options.Converters.Add(new JsonStringEnumConverter());
+
+        var config = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path), options)
+                     ?? throw new InvalidDataException("The configuration file is empty.");
+
+        if (config.PollIntervalMs is < 1 or > 1000)
+        {
+            throw new InvalidDataException("pollIntervalMs must be between 1 and 1000.");
+        }
+
+        config.StreamerBot.Validate();
+        config.Chord.Validate();
+        foreach (var shortcut in config.GetShortcuts())
+        {
+            shortcut.Validate();
+        }
+        return config;
+    }
+
+    public IReadOnlyList<ShortcutConfig> GetShortcuts() =>
+        Shortcuts.Count > 0
+            ? Shortcuts
+            : string.IsNullOrWhiteSpace(StreamerBot.ActionName)
+              && string.IsNullOrWhiteSpace(StreamerBot.ActionId)
+                ? []
+                :
+            [
+                ShortcutConfig.FromLegacy(StreamerBot, Chord)
+            ];
+}
+
+public sealed class StreamerBotConfig
+{
+    public string WebSocketUrl { get; init; } = "ws://127.0.0.1:8080/";
+    public string Password { get; init; } = "";
+    public string ActionName { get; init; } = "SVR POC Test";
+    public string? ActionId { get; init; }
+    public bool DryRun { get; init; } = true;
+
+    public void Validate()
+    {
+        if (!Uri.TryCreate(WebSocketUrl, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeWs && uri.Scheme != Uri.UriSchemeWss))
+        {
+            throw new InvalidDataException("streamerBot.webSocketUrl must be a ws:// or wss:// URL.");
+        }
+
+    }
+}
+
+public enum ChordMode
+{
+    Simultaneous,
+    Modifier,
+    LongPress,
+    DoublePress,
+    SinglePress
+}
+
+public sealed class ChordConfig
+{
+    public ChordMode Mode { get; init; } = ChordMode.Modifier;
+    public int WindowMs { get; init; } = 2000;
+    public int CooldownMs { get; init; } = 250;
+    public int HoldMs { get; init; } = 1000;
+
+    public void Validate()
+    {
+        if (WindowMs is < 1 or > 30_000)
+        {
+            throw new InvalidDataException("chord.windowMs must be between 1 and 30000.");
+        }
+
+        if (CooldownMs is < 0 or > 30_000)
+        {
+            throw new InvalidDataException("chord.cooldownMs must be between 0 and 30000.");
+        }
+
+        if (HoldMs is < 250 or > 30_000)
+        {
+            throw new InvalidDataException("chord.holdMs must be between 250 and 30000.");
+        }
+    }
+}
+
+public sealed record ControllerInputBinding
+{
+    public string Id { get; init; } = "";
+    public string FriendlyName { get; init; } = "";
+
+    public bool IsPressed(InputSnapshot snapshot) =>
+        Id.ToLowerInvariant() switch
+        {
+            "steamvr:safety" => snapshot.ButtonOne,
+            "steamvr:action" => snapshot.ButtonTwo,
+            _ when TryParsePhysical(Id, out var hand, out var button) =>
+                ((hand == ControllerHand.Left
+                    ? snapshot.LeftButtons
+                    : snapshot.RightButtons) & (1UL << (int)button)) != 0,
+            _ => false
+        };
+
+    public static ControllerInputBinding SteamVrSafety { get; } =
+        new() { Id = "steamvr:safety", FriendlyName = "Left Grip (SteamVR)" };
+
+    public static ControllerInputBinding SteamVrAction { get; } =
+        new() { Id = "steamvr:action", FriendlyName = "Right Trigger (SteamVR)" };
+
+    public static ControllerInputBinding Physical(
+        ControllerHand hand,
+        uint button,
+        string friendlyName) =>
+        new()
+        {
+            Id = $"{hand.ToString().ToLowerInvariant()}:{button}",
+            FriendlyName = friendlyName
+        };
+
+    public static bool TryParsePhysical(
+        string id,
+        out ControllerHand hand,
+        out uint button)
+    {
+        hand = ControllerHand.Left;
+        button = 0;
+        var pieces = id.Split(':', 2);
+        return pieces.Length == 2
+               && Enum.TryParse(pieces[0], true, out hand)
+               && uint.TryParse(pieces[1], out button)
+               && button < 64;
+    }
+}
+
+public enum ControllerHand
+{
+    Left,
+    Right
+}
+
+public sealed record ShortcutConfig
+{
+    public string Id { get; init; } = Guid.NewGuid().ToString("N");
+    public string Name { get; init; } = "New shortcut";
+    public bool Enabled { get; init; } = true;
+    public ControllerInputBinding SafetyInput { get; init; } =
+        ControllerInputBinding.SteamVrSafety;
+    public ControllerInputBinding ActionInput { get; init; } =
+        ControllerInputBinding.SteamVrAction;
+    public ChordConfig Gesture { get; init; } = new();
+    public string ActionName { get; init; } = "";
+    public string? ActionId { get; init; }
+
+    public string FriendlyGesture =>
+        Gesture.Mode switch
+        {
+            ChordMode.SinglePress =>
+                $"Press {SafetyInput.FriendlyName}",
+            ChordMode.DoublePress =>
+                $"Double press {SafetyInput.FriendlyName}",
+            ChordMode.LongPress =>
+                $"Hold {SafetyInput.FriendlyName} for {FriendlyDuration(Gesture.HoldMs)}",
+            ChordMode.Modifier =>
+                $"Hold {SafetyInput.FriendlyName}, then press {ActionInput.FriendlyName}",
+            _ =>
+                $"Press {SafetyInput.FriendlyName} and {ActionInput.FriendlyName} together"
+        };
+
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Name))
+        {
+            throw new InvalidDataException("Give every shortcut a friendly name.");
+        }
+
+        if (string.IsNullOrWhiteSpace(ActionName) && string.IsNullOrWhiteSpace(ActionId))
+        {
+            throw new InvalidDataException($"Choose a Streamer.bot action for “{Name}”.");
+        }
+
+        if (string.IsNullOrWhiteSpace(SafetyInput.Id))
+        {
+            throw new InvalidDataException(
+                $"Choose a controller input for “{Name}”.");
+        }
+
+        if (Gesture.Mode
+                is not (ChordMode.SinglePress
+                or ChordMode.LongPress
+                or ChordMode.DoublePress)
+            && (string.IsNullOrWhiteSpace(ActionInput.Id)
+                || SafetyInput.Id.Equals(ActionInput.Id, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidDataException(
+                $"Choose two different controller inputs for “{Name}”.");
+        }
+
+        Gesture.Validate();
+    }
+
+    private static string FriendlyDuration(int milliseconds) =>
+        milliseconds % 1000 == 0
+            ? $"{milliseconds / 1000} second{(milliseconds == 1000 ? "" : "s")}"
+            : $"{milliseconds / 1000d:0.#} seconds";
+
+    public static ShortcutConfig FromLegacy(
+        StreamerBotConfig streamerBot,
+        ChordConfig chord) =>
+        new()
+        {
+            Id = "legacy-steamvr-shortcut",
+            Name = string.IsNullOrWhiteSpace(streamerBot.ActionName)
+                ? "My VR shortcut"
+                : streamerBot.ActionName,
+            SafetyInput = ControllerInputBinding.SteamVrSafety,
+            ActionInput = ControllerInputBinding.SteamVrAction,
+            Gesture = chord,
+            ActionName = streamerBot.ActionName,
+            ActionId = streamerBot.ActionId
+        };
+}

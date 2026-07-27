@@ -4,9 +4,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>SvrBridge</AssemblyName>
+    <AssemblyName>SteamVR2Bot.Diagnostics</AssemblyName>
     <RootNamespace>SvrBridge</RootNamespace>
   </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SvrBridge.Core\SvrBridge.Core.csproj" />
+  </ItemGroup>
 
   <ItemGroup>
     <None Include="assets\actions.json" Link="actions.json" CopyToOutputDirectory="PreserveNewest" />

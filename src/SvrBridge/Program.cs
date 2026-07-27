@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using SvrBridge.Core;
 
 namespace SvrBridge;
 
@@ -18,8 +19,39 @@ internal static class Program
             {
                 var actionManifest = OpenVrInput.ResolveActionManifest(
                     GetArgumentValue(args, "--action-manifest"));
-                var applicationManifest = Path.Combine(AppContext.BaseDirectory, "app.vrmanifest");
+                var applicationManifest = GetArgumentValue(args, "--application-manifest")
+                                          ?? Path.Combine(AppContext.BaseDirectory, "app.vrmanifest");
                 SteamVrApplications.Register(applicationManifest, actionManifest);
+                return 0;
+            }
+
+            if (args.Contains("--inspect-bindings", StringComparer.OrdinalIgnoreCase)
+                || args.Contains("--open-bindings", StringComparer.OrdinalIgnoreCase))
+            {
+                var actionManifest = OpenVrInput.ResolveActionManifest(
+                    GetArgumentValue(args, "--action-manifest"));
+                using var openVr = new OpenVrInput(
+                    configuredDllPath: null,
+                    actionManifest);
+                _ = openVr.Poll();
+
+                if (args.Contains("--open-bindings", StringComparer.OrdinalIgnoreCase))
+                {
+                    openVr.OpenBindingUi();
+                    Console.WriteLine("Opened SteamVR controller bindings for SteamVR2Bot.");
+                    return 0;
+                }
+
+                var setup = openVr.GetControllerSetup();
+                Console.WriteLine($"Binding status: {setup.Availability}");
+                Console.WriteLine($"Shortcut: {setup.FriendlySummary}");
+                foreach (var controller in setup.Controllers)
+                {
+                    Console.WriteLine(
+                        $"Controller: {controller.Hand} {controller.FriendlyName} " +
+                        $"({controller.ControllerType}, {controller.Model})");
+                }
+
                 return 0;
             }
 
@@ -72,9 +104,19 @@ internal static class Program
 
         Console.WriteLine("SteamVR input active. Press Ctrl+C to stop.");
         Console.WriteLine(
-            config.Chord.Mode == ChordMode.Modifier
-                ? "Gesture: hold Button One, then press Button Two."
-                : $"Gesture: press both buttons within {config.Chord.WindowMs} ms.");
+            config.Chord.Mode switch
+            {
+                ChordMode.SinglePress =>
+                    "Gesture: press Button One.",
+                ChordMode.Modifier =>
+                    "Gesture: hold Button One, then press Button Two.",
+                ChordMode.LongPress =>
+                    $"Gesture: hold Button One for {config.Chord.HoldMs} ms.",
+                ChordMode.DoublePress =>
+                    $"Gesture: double press Button One within {config.Chord.WindowMs} ms.",
+                _ =>
+                    $"Gesture: press both buttons within {config.Chord.WindowMs} ms."
+            });
 
         while (!cancellationToken.IsCancellationRequested)
         {

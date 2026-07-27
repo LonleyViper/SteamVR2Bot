@@ -10,7 +10,25 @@
         {
           "inputs": {
             "click": {
-              "output": "/actions/svrbridge/in/button_one"
+              "output": "/actions/svrbridge/in/left_menu"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/application_menu"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/right_menu"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/application_menu"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/left_grip"
             }
           },
           "mode": "button",
@@ -19,18 +37,54 @@
         {
           "inputs": {
             "click": {
-              "output": "/actions/svrbridge/in/button_two"
+              "output": "/actions/svrbridge/in/right_grip"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/grip"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/left_trigger"
+            }
+          },
+          "mode": "trigger",
+          "path": "/user/hand/left/input/trigger"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/right_trigger"
             }
           },
           "mode": "trigger",
           "path": "/user/hand/right/input/trigger"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/left_trackpad"
+            }
+          },
+          "mode": "trackpad",
+          "path": "/user/hand/left/input/trackpad"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/right_trackpad"
+            }
+          },
+          "mode": "trackpad",
+          "path": "/user/hand/right/input/trackpad"
         }
       ]
     }
   },
   "controller_type": "vive_controller",
-  "description": "Two-hand safety chord: hold left grip, then press right index trigger.",
-  "name": "SVR Bridge POC Vive Controller",
+  "description": "Complete Vive input map managed automatically by SteamVR2Bot.",
+  "name": "SteamVR2Bot — Vive Controller",
   "options": {},
   "simulated_actions": []
 }
