@@ -1,0 +1,36 @@
+{
+  "alias_info": {},
+  "bindings": {
+    "/actions/svrbridge": {
+      "chords": [],
+      "haptics": [],
+      "poses": [],
+      "skeleton": [],
+      "sources": [
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/button_one"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/grip"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/button_two"
+            }
+          },
+          "mode": "trigger",
+          "path": "/user/hand/right/input/trigger"
+        }
+      ]
+    }
+  },
+  "controller_type": "vive_controller",
+  "description": "Two-hand safety chord: hold left grip, then press right index trigger.",
+  "name": "SVR Bridge POC Vive Controller",
+  "options": {},
+  "simulated_actions": []
+}

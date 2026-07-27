@@ -1,0 +1,7 @@
+artifacts/
+bin/
+obj/
+appsettings.json
+*.user
+*.suo
+

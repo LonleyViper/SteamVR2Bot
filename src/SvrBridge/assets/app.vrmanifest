@@ -1,0 +1,19 @@
+{
+  "source": "builtin",
+  "applications": [
+    {
+      "app_key": "ie.lonelyviper.svrbridge.poc",
+      "launch_type": "binary",
+      "binary_path_windows": "SvrBridge.exe",
+      "action_manifest_path": "actions.json",
+      "is_dashboard_overlay": false,
+      "strings": {
+        "en_us": {
+          "name": "SVR Bridge POC",
+          "description": "SteamVR controller chord to Streamer.bot proof of concept"
+        }
+      }
+    }
+  ]
+}
+

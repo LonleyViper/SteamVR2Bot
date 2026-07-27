@@ -1,0 +1,34 @@
+{
+  "default_bindings": [
+    {
+      "controller_type": "vive_controller",
+      "binding_url": "bindings_vive_controller.json"
+    }
+  ],
+  "action_sets": [
+    {
+      "name": "/actions/svrbridge",
+      "usage": "single"
+    }
+  ],
+  "actions": [
+    {
+      "name": "/actions/svrbridge/in/button_one",
+      "requirement": "mandatory",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/button_two",
+      "requirement": "mandatory",
+      "type": "boolean"
+    }
+  ],
+  "localization": [
+    {
+      "language_tag": "en_US",
+      "/actions/svrbridge": "SVR Bridge",
+      "/actions/svrbridge/in/button_one": "Chord Button One / Modifier",
+      "/actions/svrbridge/in/button_two": "Chord Button Two / Trigger"
+    }
+  ]
+}
