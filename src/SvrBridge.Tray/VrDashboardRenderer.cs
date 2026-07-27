@@ -7,6 +7,7 @@ namespace SvrBridge.Tray;
 internal static class VrDashboardRenderer
 {
     private static int _imageSequence;
+    private static int _oldImagesCleaned;
 
     public static string Render(IReadOnlyList<ShortcutConfig> shortcuts)
     {
@@ -32,7 +33,7 @@ internal static class VrDashboardRenderer
         using var card = new SolidBrush(Color.FromArgb(30, 41, 59));
         using var disabled = new SolidBrush(Color.FromArgb(100, 116, 139));
 
-        graphics.DrawString("SVR Bridge", titleFont, white, 60, 42);
+        graphics.DrawString("SteamVR2Bot", titleFont, white, 60, 42);
         graphics.DrawString(
             "Your controller shortcuts and what they run",
             subtitleFont,
@@ -51,7 +52,7 @@ internal static class VrDashboardRenderer
                 92,
                 205);
             graphics.DrawString(
-                "Open SVR Bridge on the desktop and choose Add shortcut.",
+                "Open SteamVR2Bot on the desktop and choose Add shortcut.",
                 bodyFont,
                 muted,
                 92,
@@ -201,39 +202,34 @@ internal static class VrDashboardRenderer
                     748);
             }
 
-            DrawRoundedRectangle(
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
                 brushes.Disabled,
-                new Rectangle(60, 800, 360, 64),
-                16);
-            DrawCenteredText(
+                "Cancel",
+                VrDashboardLayout.ActionPicker[0]);
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
+                brushes.Disabled,
                 browser.BackLabel,
-                fonts.Body,
-                brushes.White,
-                new Rectangle(60, 800, 360, 64));
-            DrawRoundedRectangle(
+                VrDashboardLayout.ActionPicker[1]);
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
                 browser.CanScrollUp ? brushes.Blue : brushes.Disabled,
-                new Rectangle(440, 800, 430, 64),
-                16);
-            DrawCenteredText(
-                graphics,
                 "↑  Previous",
-                fonts.Body,
-                brushes.White,
-                new Rectangle(440, 800, 430, 64));
-            DrawRoundedRectangle(
+                VrDashboardLayout.ActionPicker[2]);
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
                 browser.CanScrollDown ? brushes.Blue : brushes.Disabled,
-                new Rectangle(890, 800, 450, 64),
-                16);
-            DrawCenteredText(
-                graphics,
                 "Next  ↓",
-                fonts.Body,
-                brushes.White,
-                new Rectangle(890, 800, 450, 64));
+                VrDashboardLayout.ActionPicker[3]);
         });
     }
 
@@ -362,33 +358,32 @@ internal static class VrDashboardRenderer
                 trackY + 48);
             DrawCenteredText(
                 graphics,
-                "Point anywhere on the slider and click to set the value.",
+                "Point or drag, then release to set the value.",
                 fonts.Body,
                 brushes.Muted,
                 new Rectangle(180, 500, 1040, 70));
 
-            DrawRoundedRectangle(
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
                 brushes.Disabled,
-                new Rectangle(60, 800, 520, 64),
-                16);
-            DrawCenteredText(
+                "Cancel",
+                VrDashboardLayout.Tolerance[0]);
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
+                brushes.Disabled,
                 "Back",
-                fonts.Body,
-                brushes.White,
-                new Rectangle(60, 800, 520, 64));
-            DrawRoundedRectangle(
+                VrDashboardLayout.Tolerance[1]);
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
                 brushes.Blue,
-                new Rectangle(600, 800, 740, 64),
-                16);
-            DrawCenteredText(
-                graphics,
                 "Next: record input",
-                fonts.Body,
-                brushes.White,
-                new Rectangle(600, 800, 740, 64));
+                VrDashboardLayout.Tolerance[2]);
         });
     }
 
@@ -409,7 +404,11 @@ internal static class VrDashboardRenderer
             graphics.DrawString(
                 combo && firstInput is not null
                     ? $"Input 1: {firstInput.FriendlyName} • Choose a different input 2."
-                    : "Choose from the list without closing the SteamVR menu.",
+                    : combo
+                        ? "Pick two inputs below, or close the SteamVR menu and press both. "
+                          + "SteamVR2Bot reopens automatically."
+                        : "Pick an input below, or close the SteamVR menu and press it. "
+                          + "SteamVR2Bot reopens automatically.",
                 fonts.Subtitle,
                 brushes.Muted,
                 64,
@@ -448,17 +447,20 @@ internal static class VrDashboardRenderer
                     new Rectangle(720, 180 + (index * 88), 620, 76));
             }
 
-            DrawRoundedRectangle(
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
                 brushes.Disabled,
-                new Rectangle(60, 800, 1280, 64),
-                16);
-            DrawCenteredText(
+                "Cancel",
+                VrDashboardLayout.RecordInput[0]);
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
+                brushes.Disabled,
                 "Back",
-                fonts.Body,
-                brushes.White,
-                new Rectangle(60, 800, 1280, 64));
+                VrDashboardLayout.RecordInput[1]);
         });
     }
 
@@ -509,39 +511,34 @@ internal static class VrDashboardRenderer
                 "Streamer.bot action",
                 action?.FriendlyName ?? "Not chosen yet");
 
-            DrawRoundedRectangle(
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
                 brushes.Disabled,
-                new Rectangle(60, 800, 320, 64),
-                16);
-            DrawCenteredText(
+                "Cancel",
+                VrDashboardLayout.Review[0]);
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
+                brushes.Disabled,
                 "Record again",
-                fonts.Body,
-                brushes.White,
-                new Rectangle(60, 800, 320, 64));
-            DrawRoundedRectangle(
+                VrDashboardLayout.Review[1]);
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
                 brushes.Disabled,
-                new Rectangle(400, 800, 510, 64),
-                16);
-            DrawCenteredText(
-                graphics,
                 action is null ? "Choose action" : "Change action",
-                fonts.Body,
-                brushes.White,
-                new Rectangle(400, 800, 510, 64));
-            DrawRoundedRectangle(
+                VrDashboardLayout.Review[2]);
+            DrawBarButton(
                 graphics,
+                fonts,
+                brushes,
                 action is null ? brushes.Disabled : brushes.Blue,
-                new Rectangle(930, 800, 410, 64),
-                16);
-            DrawCenteredText(
-                graphics,
                 action is null ? "Choose an action first" : "Save shortcut",
-                fonts.Body,
-                brushes.White,
-                new Rectangle(930, 800, 410, 64));
+                VrDashboardLayout.Review[3]);
         });
     }
 
@@ -896,12 +893,44 @@ internal static class VrDashboardRenderer
 
     private static string NextDashboardImagePath()
     {
-        var directory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SVR Bridge");
+        var directory = AppPaths.DataDirectory;
         Directory.CreateDirectory(directory);
-        var slot = (uint)Interlocked.Increment(ref _imageSequence) % 8;
-        return Path.Combine(directory, $"vr-dashboard-{slot}.png");
+        CleanupOldDashboardImages(directory);
+        var sequence = Interlocked.Increment(ref _imageSequence);
+        return Path.Combine(
+            directory,
+            $"vr-dashboard-{Environment.ProcessId}-{sequence}.png");
+    }
+
+    private static void CleanupOldDashboardImages(string directory)
+    {
+        if (Interlocked.Exchange(ref _oldImagesCleaned, 1) != 0)
+        {
+            return;
+        }
+
+        var cutoff = DateTime.UtcNow.AddHours(-6);
+        foreach (var path in Directory.EnumerateFiles(
+                     directory,
+                     "vr-dashboard-*.png",
+                     SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                if (File.GetLastWriteTimeUtc(path) < cutoff)
+                {
+                    File.Delete(path);
+                }
+            }
+            catch (IOException)
+            {
+                // SteamVR may still be finishing an asynchronous image load.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // A stale frame is harmless and can be retried next launch.
+            }
+        }
     }
 
     private static void DrawRoundedRectangle(
@@ -930,6 +959,22 @@ internal static class VrDashboardRenderer
             90);
         path.CloseFigure();
         graphics.FillPath(brush, path);
+    }
+
+    /// <summary>
+    /// Draws one bottom-bar button using the shared layout rectangle, so the
+    /// drawn button and the click handler cannot disagree about where it is.
+    /// </summary>
+    private static void DrawBarButton(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        Brush fill,
+        string label,
+        Rectangle bounds)
+    {
+        DrawRoundedRectangle(graphics, fill, bounds, 16);
+        DrawCenteredText(graphics, label, fonts.Body, brushes.White, bounds);
     }
 
     private static void DrawCenteredText(

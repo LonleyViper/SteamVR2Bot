@@ -17,7 +17,7 @@ dotnet publish $trayProject `
     --output $output `
     -p:PublishSingleFile=true
 if ($LASTEXITCODE -ne 0) {
-    throw "SVR Bridge tray publish failed with exit code $LASTEXITCODE."
+    throw "SteamVR2Bot tray publish failed with exit code $LASTEXITCODE."
 }
 
 dotnet publish $diagnosticProject `
@@ -28,9 +28,9 @@ dotnet publish $diagnosticProject `
     --output $diagnosticOutput `
     -p:PublishSingleFile=true
 if ($LASTEXITCODE -ne 0) {
-    throw "SVR Bridge diagnostic publish failed with exit code $LASTEXITCODE."
+    throw "SteamVR2Bot diagnostic publish failed with exit code $LASTEXITCODE."
 }
 
-Write-Host "Published SVR Bridge to $output"
-Write-Host "Open SvrBridge.Tray.exe to finish setup with friendly action names."
+Write-Host "Published SteamVR2Bot to $output"
+Write-Host "Open SteamVR2Bot.exe to finish setup with friendly action names."
 Write-Host "Console diagnostics are available in $diagnosticOutput"

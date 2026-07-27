@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using SvrBridge.Core;
 
 namespace SvrBridge.Tray;
@@ -31,7 +32,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _settings = new UserSettings();
             MessageBox.Show(
                 exception.Message,
-                "SVR Bridge settings",
+                "SteamVR2Bot settings",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
@@ -61,7 +62,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _engine.ShortcutDeleted += DeleteDashboardShortcut;
 
         var menu = new ContextMenuStrip();
-        var open = new ToolStripMenuItem("Open SVR Bridge");
+        var open = new ToolStripMenuItem("Open SteamVR2Bot");
         var dashboard = new ToolStripMenuItem("Open SteamVR dashboard");
         var test = new ToolStripMenuItem("Test selected action");
         var bindings = new ToolStripMenuItem("SteamVR input bindings");
@@ -100,12 +101,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _trayIcon = new NotifyIcon
         {
             Icon = SystemIcons.Application,
-            Text = "SVR Bridge — Starting automatically",
+            Text = "SteamVR2Bot — Starting automatically",
             Visible = true,
             ContextMenuStrip = menu
         };
         _trayIcon.DoubleClick += (_, _) => ShowMainWindow();
-        _mainForm.Show();
+
+        // Not a plain Show: a process launched with a hidden window state would
+        // otherwise come up with no window and no way to reach one.
+        ShowMainWindow();
     }
 
     protected override void Dispose(bool disposing)
@@ -356,8 +360,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 new BridgeActivity(
                     activate ? "dashboard.shown" : "dashboard.available",
                     activate
-                        ? "Opened the SVR Bridge dashboard in SteamVR."
-                        : "SVR Bridge is available in the SteamVR dashboard."));
+                        ? "Opened the SteamVR2Bot dashboard in SteamVR."
+                        : "SteamVR2Bot is available in the SteamVR dashboard."));
         }
         catch (Exception exception)
         {
@@ -534,7 +538,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     new BridgeStatus(
                         BridgeState.Ready,
                         "SteamVR setup repaired",
-                        "SVR Bridge is registered and stays available while the app is open."));
+                        "SteamVR2Bot is registered and stays available while the app is open."));
             }
         }
         catch (Exception exception)
@@ -637,7 +641,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             status.State == BridgeState.Error
                 ? BridgeLogLevel.Warning
                 : BridgeLogLevel.Info);
-        var trayText = $"SVR Bridge — {status.FriendlyName}";
+        var trayText = $"SteamVR2Bot — {status.FriendlyName}";
         _trayIcon.Text = trayText.Length <= 63
             ? trayText
             : trayText[..63];
@@ -657,6 +661,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void SetRunning(bool running) =>
         _mainForm.SetRunning(running);
 
+    /// <summary>
+    /// Brings the desktop window up, asking Windows whether it is really on
+    /// screen rather than trusting <see cref="Form.Visible"/>.
+    /// <para>
+    /// When a process is started with a hidden window state, Windows ignores
+    /// the show command of the first ShowWindow call and hides that window
+    /// instead. WinForms still records the form as visible, so the tray icon
+    /// and its Open item would both quietly do nothing and the user would have
+    /// no way back to the app. Re-showing repairs that, because only the first
+    /// call is overridden.
+    /// </para>
+    /// </summary>
     private void ShowMainWindow()
     {
         if (!_mainForm.Visible)
@@ -669,6 +685,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _mainForm.WindowState = FormWindowState.Normal;
         }
 
+        // Ask Windows rather than WinForms. Show() above may have been the
+        // process's first ShowWindow call, and that one keeps the hidden state
+        // it was launched with instead of the state it asked for. A second call
+        // is honoured, so this is what actually puts the window on screen.
+        if (!IsWindowVisible(_mainForm.Handle))
+        {
+            ShowWindow(_mainForm.Handle, ShowWindowNormal);
+        }
+
         _mainForm.Activate();
+        _mainForm.BringToFront();
     }
+
+    private const int ShowWindowNormal = 1;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(nint window);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(nint window, int command);
 }

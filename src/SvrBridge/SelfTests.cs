@@ -19,6 +19,7 @@ internal static class SelfTests
         TestPhysicalControllerInputs();
         TestAvailableControllerInputs();
         TestDashboardPointerTracking();
+        TestInputProbe();
         TestAuthenticationHash();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
@@ -100,18 +101,113 @@ internal static class SelfTests
             !tracker.Update(300, 640, 720, out _),
             "A dashboard mouse move was treated as a click.");
         Assert(
-            tracker.Update(301, 0, 0, out var click),
-            "A dashboard mouse-down event was not recognized.");
+            !tracker.Update(301, 0, 0, out _),
+            "A dashboard mouse-down event activated the page before release.");
+        Assert(
+            !tracker.Update(300, 700, 760, out _),
+            "Dragging across the dashboard was treated as a click.");
+        Assert(
+            tracker.Update(302, 0, 0, out var click),
+            "A dashboard mouse-up event was not recognized.");
         Assert(
             click.Kind == DashboardInteractionKind.Click
-            && click.X == 640
-            && click.Y == 720,
-            "Dashboard click did not use the preceding mouse-move position.");
+            && click.X == 700
+            && click.Y == 760,
+            "Dashboard click did not use the release-time pointer position.");
         Assert(
             tracker.Update(305, 0, -1, out var scroll)
             && scroll.Kind == DashboardInteractionKind.Scroll
             && scroll.ScrollY == -1,
             "A dashboard scroll event was not recognized.");
+    }
+
+    private static void TestInputProbe()
+    {
+        var lines = new List<string>();
+        var probe = new InputProbe(lines.Add);
+        var pressed = new ProbeActionState("left_grip", 0, true, true, true, 0x2A);
+
+        probe.ObserveAction(pressed);
+        probe.ObserveDashboard(true, true);
+        probe.ObserveLegacyButtons(4, 0);
+        probe.ObserveOverlayEvent(200, 3, 2, "Left Grip");
+        Assert(
+            lines.Count == 0,
+            "The input probe logged while it was disabled.");
+
+        probe.SetEnabled(true, 0);
+        Assert(
+            probe.Enabled && lines.Count == 1,
+            "Enabling the input probe was not announced exactly once.");
+
+        lines.Clear();
+        probe.BeginPoll();
+        probe.ObserveDashboard(true, true);
+        probe.ObserveAction(pressed);
+        probe.ObserveLegacyButtons(4, 0);
+        probe.EndPoll(10);
+        Assert(
+            lines.Count == 3
+            && lines[0].Contains("visible=1 active=1", StringComparison.Ordinal)
+            && lines[1].Contains(
+                "left_grip: err=0 active=1 state=1 changed=1 origin=0x2A",
+                StringComparison.Ordinal)
+            && lines[2].Contains("L=0x4 R=0x0", StringComparison.Ordinal),
+            "The input probe did not report the first observation of each signal.");
+
+        lines.Clear();
+        probe.BeginPoll();
+        probe.ObserveDashboard(true, true);
+        probe.ObserveAction(pressed);
+        probe.ObserveLegacyButtons(4, 0);
+        probe.EndPoll(20);
+        Assert(
+            lines.Count == 0,
+            "The input probe repeated an unchanged state instead of logging transitions.");
+
+        lines.Clear();
+        probe.BeginPoll();
+        probe.ObserveDashboard(true, false);
+        probe.ObserveAction(pressed with { State = false, Changed = false });
+        probe.EndPoll(30);
+        Assert(
+            lines.Count == 2
+            && lines[0].Contains("visible=1 active=0", StringComparison.Ordinal)
+            && lines[1].Contains("state=0 changed=0", StringComparison.Ordinal),
+            "The input probe missed a state transition.");
+
+        lines.Clear();
+        probe.ObserveOverlayEvent(200, 3, 2, "Left Grip");
+        probe.ObserveOverlayEvent(201, 3, 2, "Left Grip");
+        probe.ObserveOverlayEvent(300, 3, 0, "");
+        probe.ObserveOverlayEvent(300, 3, 0, "");
+        Assert(
+            lines.Count == 3
+            && lines[0].Contains(
+                "ButtonPress: device=3 button=2 (Left Grip)",
+                StringComparison.Ordinal)
+            && lines[1].Contains("ButtonUnpress", StringComparison.Ordinal)
+            && lines[2].Contains("event 300", StringComparison.Ordinal),
+            "The input probe did not decode controller button events or throttle the rest.");
+
+        lines.Clear();
+        probe.BeginPoll();
+        probe.ObserveAction(pressed);
+        probe.EndPoll(2000);
+        Assert(
+            lines.Any(line => line.Contains(
+                "actions 1/1 active, pressed left_grip",
+                StringComparison.Ordinal)),
+            "The input probe did not emit its once-per-second summary.");
+
+        lines.Clear();
+        probe.SetEnabled(false, 3000);
+        probe.BeginPoll();
+        probe.ObserveAction(pressed);
+        probe.EndPoll(9000);
+        Assert(
+            lines.Count == 1 && !probe.Enabled,
+            "Disabling the input probe did not stop it logging.");
     }
 
     private static void TestModifierChord()

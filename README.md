@@ -1,6 +1,6 @@
-# SVR Bridge
+# SteamVR2Bot
 
-SVR Bridge runs Streamer.bot actions from safe SteamVR controller shortcuts.
+SteamVR2Bot runs Streamer.bot actions from safe SteamVR controller shortcuts.
 It uses SteamVR actions directly—there is no keyboard emulation, browser overlay,
 or OpenVR2Key layer.
 
@@ -24,10 +24,10 @@ installation is needed for normal use.
 Then open:
 
 ```text
-artifacts\publish\SvrBridge.Tray.exe
+artifacts\publish\SteamVR2Bot.exe
 ```
 
-In the SVR Bridge window:
+In the SteamVR2Bot window:
 
 1. Enter the Streamer.bot WebSocket address.
 2. Enter the connection password only if Streamer.bot requires one.
@@ -44,16 +44,16 @@ edit, test, enable or disable, or remove it. Existing single-action settings
 are migrated automatically as the first shortcut. Every change saves
 automatically and is applied to the running bridge.
 
-SVR Bridge registers itself with SteamVR and starts automatically whenever the
+SteamVR2Bot registers itself with SteamVR and starts automatically whenever the
 app is open. There is no separate Save or Start step.
 
-Closing the window keeps SVR Bridge running in the Windows notification area.
+Closing the window keeps SteamVR2Bot running in the Windows notification area.
 Use its tray menu to open the app or SteamVR dashboard, test an action, view
 logs, or exit.
 
 ## In-VR setup
 
-While SVR Bridge is open, its tab is always available in the SteamVR dashboard.
+While SteamVR2Bot is open, its tab is always available in the SteamVR dashboard.
 Choose the tab in SteamVR, or use **Open SteamVR dashboard** on the Connection &
 setup page. It shows the currently saved shortcuts and what each one runs.
 
@@ -64,9 +64,10 @@ To create one without leaving VR:
    Hold**.
 3. For Double Press or Long Hold, set the detection tolerance with the slider.
 4. Choose the physical input from the grouped Left and Right controller lists.
-   A Button Combo selects two different inputs. Live presses are also detected
-   when SteamVR passes them through, but the list works while the menu owns
-   controller focus.
+   A Button Combo selects two different inputs. For live recording, press the
+   controller's System button once to close the SteamVR menu, then press the
+   desired input. SteamVR2Bot reopens directly on the review page. The lists
+   remain available when the menu owns controller focus.
 5. Review the exact recorded input names, choose the Streamer.bot action, then
    select **Save shortcut**.
 
@@ -81,8 +82,10 @@ an X button to delete it. Both changes save and activate automatically.
 
 The VR picker presents controller-aware physical input names, such as **Left
 Menu Button**, **Left Grip**, and **Right Trigger**. This avoids SteamVR's
-dashboard consuming a button while the wizard is trying to observe it.
-SVR Bridge installs its complete Vive input map automatically, so these choices
+dashboard consuming a button while the wizard is trying to observe it. SteamVR
+reserves raw controller input while its system dashboard has focus, so live
+recording briefly yields that focus and returns to the wizard automatically.
+SteamVR2Bot installs its complete Vive input map automatically, so these choices
 do not require a separate visit to SteamVR Controller Bindings.
 
 The recorder is validated first for Vive controllers. Controller button layouts
@@ -130,7 +133,7 @@ ws://192.168.1.50:8080/1
 Streamer.bot's WebSocket server must allow LAN connections, and its port must be
 allowed through Windows Firewall on the private network.
 
-SVR Bridge displays action names but stores the action's stable ID after it is
+SteamVR2Bot displays action names but stores the action's stable ID after it is
 selected. Renaming an action in Streamer.bot therefore does not silently point
 the shortcut at a different action.
 
@@ -139,11 +142,11 @@ the shortcut at a different action.
 The Streamer.bot password is saved in:
 
 ```text
-%LOCALAPPDATA%\SVR Bridge\settings.json
+%LOCALAPPDATA%\SteamVR2Bot\settings.json
 ```
 
 Windows protects it for the current Windows user. It is not stored as readable
-text and is never written to the activity log. On first launch, SVR Bridge can
+text and is never written to the activity log. On first launch, SteamVR2Bot can
 import the old gitignored `appsettings.json` and immediately protect its
 password.
 
@@ -156,7 +159,7 @@ The packaged Vive binding uses:
 - **Safety button:** Left Grip
 - **Action button:** Right Trigger
 
-To change it, open SteamVR Controller Bindings and select **SVR Bridge**. Its
+To change it, open SteamVR Controller Bindings and select **SteamVR2Bot**. Its
 logical controls are:
 
 - **Safety Button (hold)**
@@ -170,7 +173,7 @@ passed 20/20 through the diagnostic host and 21/21 through the tray host. See
 ## Status messages
 
 - **Stopped** — the controller shortcut is not running.
-- **Starting…** — SVR Bridge is connecting to SteamVR.
+- **Starting…** — SteamVR2Bot is connecting to SteamVR.
 - **Ready for your shortcut** — controller input is active.
 - **Running your action…** — the shortcut was detected.
 - **Needs attention** — the status detail explains what to check.
@@ -180,7 +183,7 @@ Recent activity shows input and delivery events without exposing credentials.
 The same events are written as structured JSON lines under:
 
 ```text
-%LOCALAPPDATA%\SVR Bridge\Logs
+%LOCALAPPDATA%\SteamVR2Bot\Logs
 ```
 
 Use **Open logs** in the app or tray menu. Logs are kept for 14 days and never
@@ -202,16 +205,16 @@ contain the Streamer.bot password.
 The console diagnostic remains available at:
 
 ```text
-artifacts\publish\diagnostics\SvrBridge.exe
+artifacts\publish\diagnostics\SteamVR2Bot.Diagnostics.exe
 ```
 
 Useful checks:
 
 ```powershell
-.\artifacts\publish\diagnostics\SvrBridge.exe --self-test
-.\artifacts\publish\diagnostics\SvrBridge.exe --simulate
-.\artifacts\publish\diagnostics\SvrBridge.exe --inspect-bindings
-.\artifacts\publish\diagnostics\SvrBridge.exe --open-bindings
+.\artifacts\publish\diagnostics\SteamVR2Bot.Diagnostics.exe --self-test
+.\artifacts\publish\diagnostics\SteamVR2Bot.Diagnostics.exe --simulate
+.\artifacts\publish\diagnostics\SteamVR2Bot.Diagnostics.exe --inspect-bindings
+.\artifacts\publish\diagnostics\SteamVR2Bot.Diagnostics.exe --open-bindings
 .\scripts\Register-SteamVrApp.ps1
 ```
 

@@ -114,6 +114,7 @@ public sealed class DashboardPointerTracker
 {
     private float _x;
     private float _y;
+    private bool _pressed;
 
     public bool Update(
         int eventType,
@@ -131,6 +132,13 @@ public sealed class DashboardPointerTracker
 
         if (eventType == 301) // VREvent_MouseButtonDown
         {
+            _pressed = true;
+            return false;
+        }
+
+        if (eventType == 302 && _pressed) // VREvent_MouseButtonUp
+        {
+            _pressed = false;
             interaction = DashboardInteraction.Click(_x, _y);
             return true;
         }

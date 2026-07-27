@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>SvrBridge</AssemblyName>
+    <AssemblyName>SteamVR2Bot.Diagnostics</AssemblyName>
     <RootNamespace>SvrBridge</RootNamespace>
   </PropertyGroup>
 

@@ -83,8 +83,8 @@
     }
   },
   "controller_type": "vive_controller",
-  "description": "Complete Vive input map managed automatically by SVR Bridge.",
-  "name": "SVR Bridge — Vive Controller",
+  "description": "Complete Vive input map managed automatically by SteamVR2Bot.",
+  "name": "SteamVR2Bot — Vive Controller",
   "options": {},
   "simulated_actions": []
 }

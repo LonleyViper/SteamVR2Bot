@@ -7,6 +7,8 @@ internal static class TraySelfTests
         TestVrActionBrowser();
         TestVrScrollLimiter();
         TestPackagedViveBinding();
+        TestDashboardBottomBarLayout();
+        TestRenamedDataDirectoryMigration();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -196,6 +198,11 @@ internal static class TraySelfTests
             "The grouped VR action picker rendered at the wrong size.");
 
         var gestureTypePath = VrDashboardRenderer.RenderGestureTypePicker(false);
+        Assert(
+            !gestureTypePath.Equals(
+                previewPath,
+                StringComparison.OrdinalIgnoreCase),
+            "Dashboard pages reused an image path while SteamVR could still be loading it.");
         using var quickInputPreview = new Bitmap(gestureTypePath);
         Assert(
             quickInputPreview.Width == 1400 && quickInputPreview.Height == 900,
@@ -263,6 +270,121 @@ internal static class TraySelfTests
         Assert(
             buttonPreview.Width == 1400 && buttonPreview.Height == 900,
             "The VR shortcut review rendered at the wrong size.");
+    }
+
+    private static void TestRenamedDataDirectoryMigration()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"svr-bridge-rename-test-{Guid.NewGuid():N}");
+        var legacy = Path.Combine(root, "SVR Bridge");
+        var current = Path.Combine(root, AppPaths.ProductName);
+
+        try
+        {
+            // A user upgrading from the old name: settings, protected password,
+            // and logs all sitting in the pre-rename folder.
+            Directory.CreateDirectory(Path.Combine(legacy, "Logs"));
+            File.WriteAllText(Path.Combine(legacy, "settings.json"), "{\"kept\":true}");
+            File.WriteAllText(Path.Combine(legacy, "Logs", "old.jsonl"), "entry");
+
+            Assert(
+                AppPaths.Resolve(root) == current,
+                "The rename did not move the user's data to the new folder.");
+            Assert(
+                File.ReadAllText(Path.Combine(current, "settings.json"))
+                    == "{\"kept\":true}",
+                "The rename lost the saved settings.");
+            Assert(
+                File.Exists(Path.Combine(current, "Logs", "old.jsonl")),
+                "The rename lost the existing logs.");
+            Assert(
+                !Directory.Exists(legacy),
+                "The rename left the old folder behind to be found again later.");
+
+            // Resolving again must be a no-op rather than a second move.
+            Assert(
+                AppPaths.Resolve(root) == current,
+                "Resolving the data folder a second time did not stay put.");
+
+            // A fresh install has no old folder and must not invent one.
+            var emptyRoot = Path.Combine(root, "fresh");
+            Directory.CreateDirectory(emptyRoot);
+            Assert(
+                AppPaths.Resolve(emptyRoot)
+                    == Path.Combine(emptyRoot, AppPaths.ProductName),
+                "A fresh install did not use the new folder name.");
+
+            // If both exist the new one wins; the old must never be preferred.
+            var bothRoot = Path.Combine(root, "both");
+            Directory.CreateDirectory(Path.Combine(bothRoot, "SVR Bridge"));
+            Directory.CreateDirectory(Path.Combine(bothRoot, AppPaths.ProductName));
+            Assert(
+                AppPaths.Resolve(bothRoot)
+                    == Path.Combine(bothRoot, AppPaths.ProductName),
+                "A leftover old folder took precedence over the current one.");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    private static void TestDashboardBottomBarLayout()
+    {
+        var rows = new[]
+        {
+            ("tolerance", VrDashboardLayout.Tolerance),
+            ("recorder", VrDashboardLayout.RecordInput),
+            ("action picker", VrDashboardLayout.ActionPicker),
+            ("review", VrDashboardLayout.Review)
+        };
+
+        foreach (var (name, row) in rows)
+        {
+            Assert(
+                row[0].Left == 60 && row[^1].Right == 1340,
+                $"The {name} bottom bar did not span the page.");
+
+            for (var index = 0; index < row.Length; index++)
+            {
+                var button = row[index];
+                Assert(
+                    button.Top == VrDashboardLayout.BarY
+                    && button.Height == VrDashboardLayout.BarHeight,
+                    $"A {name} button left the bottom bar.");
+                Assert(
+                    button.Width >= 200,
+                    $"A {name} button is too narrow to hit with a laser.");
+                Assert(
+                    index == 0 || button.Left > row[index - 1].Right,
+                    $"The {name} buttons overlap.");
+
+                // Centre, both edges, and the gap that follows must all resolve
+                // to this button, or the drawn button and the click disagree.
+                Assert(
+                    VrDashboardLayout.IndexAt(row, button.Left + (button.Width / 2f)) == index
+                    && VrDashboardLayout.IndexAt(row, button.Left) == index
+                    && VrDashboardLayout.IndexAt(row, button.Right - 1) == index,
+                    $"A click on a {name} button resolved to a different button.");
+            }
+
+            Assert(
+                VrDashboardLayout.IndexAt(row, 0) == 0
+                && VrDashboardLayout.IndexAt(row, 1400) == row.Length - 1,
+                $"A {name} click outside the buttons did not clamp into the bar.");
+        }
+
+        // Cancel is first and Save is last so an accidental laser slip on the
+        // review page cannot discard the shortcut the user just built.
+        Assert(
+            VrDashboardLayout.IndexAt(VrDashboardLayout.Review, 100) == 0
+            && VrDashboardLayout.Review[^1].Left
+                - VrDashboardLayout.Review[0].Right >= 700,
+            "Cancel and Save are not at opposite ends of the review bar.");
     }
 
     private static void TestVrScrollLimiter()

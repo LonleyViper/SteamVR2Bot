@@ -38,7 +38,7 @@ internal static class Program
                 if (args.Contains("--open-bindings", StringComparer.OrdinalIgnoreCase))
                 {
                     openVr.OpenBindingUi();
-                    Console.WriteLine("Opened SteamVR controller bindings for SVR Bridge.");
+                    Console.WriteLine("Opened SteamVR controller bindings for SteamVR2Bot.");
                     return 0;
                 }
 

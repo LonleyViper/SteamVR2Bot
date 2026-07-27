@@ -8,6 +8,10 @@ public sealed class OpenVrInput : IOpenVrSession
     private const string ActionSetPath = "/actions/svrbridge";
     private const string ButtonOnePath = "/actions/svrbridge/in/button_one";
     private const string ButtonTwoPath = "/actions/svrbridge/in/button_two";
+
+    // k_nActionSetOverlayGlobalPriorityMin. The 2026-07-27 headset runs showed
+    // SteamVR accepting the band maximum and deactivating this action set under
+    // dashboard focus regardless, so there is nothing to gain by raising it.
     private const int OverlayGlobalPriorityMin = 16_777_216;
     private static readonly PhysicalActionDefinition[] PhysicalActions =
     [
@@ -34,6 +38,8 @@ public sealed class OpenVrInput : IOpenVrSession
     private readonly IReadOnlyDictionary<(ControllerHand Hand, uint Button), ulong>
         _physicalButtons;
     private readonly VrActiveActionSet[] _activeSets;
+    private readonly InputProbe _probe;
+    private ControllerSetup _lastSetup = ControllerSetup.Unknown;
     private ulong _dashboardHandle;
     private ulong _dashboardThumbnailHandle;
     private bool _dashboardThumbnailInitialized;
@@ -48,6 +54,7 @@ public sealed class OpenVrInput : IOpenVrSession
     {
         log ??= Console.WriteLine;
         _log = log;
+        _probe = new InputProbe(log);
         var dllPath = ResolveOpenVrDll(configuredDllPath);
         log($"OpenVR DLL: {dllPath}");
 
@@ -126,10 +133,18 @@ public sealed class OpenVrInput : IOpenVrSession
         }
     }
 
+    /// <summary>
+    /// Turns the read-only input probe on or off. The probe only logs; it never
+    /// changes how input is delivered, so it is safe to leave wired in.
+    /// </summary>
+    public void SetInputProbeEnabled(bool enabled) =>
+        _probe.SetEnabled(enabled, Environment.TickCount64);
+
     public InputSnapshot Poll()
     {
         ThrowIfDisposed();
 
+        _probe.BeginPoll();
         EnsureSuccess(
             _input.UpdateActionState(
                 _activeSets,
@@ -137,17 +152,38 @@ public sealed class OpenVrInput : IOpenVrSession
                 (uint)_activeSets.Length),
             "UpdateActionState");
 
+        ProbeDashboardState();
         var (leftButtons, rightButtons) = ReadControllerButtons();
-        return new InputSnapshot(
-            ReadDigital(_buttonOne) || IsPressed(leftButtons, 2),
-            ReadDigital(_buttonTwo) || IsPressed(rightButtons, 33),
+        var snapshot = new InputSnapshot(
+            ReadDigital(_buttonOne, "button_one") || IsPressed(leftButtons, 2),
+            ReadDigital(_buttonTwo, "button_two") || IsPressed(rightButtons, 33),
             leftButtons,
             rightButtons);
+        _probe.EndPoll(Environment.TickCount64);
+        return snapshot;
+    }
+
+    private void ProbeDashboardState()
+    {
+        if (!_probe.Enabled || _overlay is null || _dashboardHandle == 0)
+        {
+            return;
+        }
+
+        _probe.ObserveDashboard(
+            _overlay.Value.IsDashboardVisible(),
+            _overlay.Value.IsActiveDashboardOverlay(_dashboardHandle));
     }
 
     public ControllerSetup GetControllerSetup()
     {
         ThrowIfDisposed();
+        _lastSetup = BuildControllerSetup();
+        return _lastSetup;
+    }
+
+    private ControllerSetup BuildControllerSetup()
+    {
         if (!_supportsBindingInspection)
         {
             return ControllerSetup.Unknown with
@@ -221,7 +257,7 @@ public sealed class OpenVrInput : IOpenVrSession
         if (!_supportsBindingInspection)
         {
             throw new InvalidOperationException(
-                "This SteamVR version cannot open controller bindings from SVR Bridge.");
+                "This SteamVR version cannot open controller bindings from SteamVR2Bot.");
         }
 
         var appKey = Marshal.StringToCoTaskMemUTF8("ie.lonelyviper.svrbridge.poc");
@@ -255,7 +291,7 @@ public sealed class OpenVrInput : IOpenVrSession
         }
 
         var key = Marshal.StringToCoTaskMemUTF8("ie.lonelyviper.svrbridge.dashboard");
-        var name = Marshal.StringToCoTaskMemUTF8("SVR Bridge");
+        var name = Marshal.StringToCoTaskMemUTF8("SteamVR2Bot");
         var image = Marshal.StringToCoTaskMemUTF8(imagePath);
         try
         {
@@ -312,6 +348,12 @@ public sealed class OpenVrInput : IOpenVrSession
         }
     }
 
+    public bool IsDashboardActive =>
+        _overlay is not null
+        && _dashboardHandle != 0
+        && _overlay.Value.IsDashboardVisible()
+        && _overlay.Value.IsActiveDashboardOverlay(_dashboardHandle);
+
     public bool TryGetDashboardInteraction(out DashboardInteraction interaction)
     {
         interaction = default;
@@ -332,6 +374,8 @@ public sealed class OpenVrInput : IOpenVrSession
                        eventBufferSize))
             {
                 var eventType = Marshal.ReadInt32(eventBuffer);
+                LogDashboardLifecycleEvent(eventType);
+                ProbeOverlayEvent(eventType, eventBuffer);
                 var eventX = BitConverter.Int32BitsToSingle(
                     Marshal.ReadInt32(eventBuffer, 16));
                 var rawEventY = BitConverter.Int32BitsToSingle(
@@ -376,6 +420,73 @@ public sealed class OpenVrInput : IOpenVrSession
         finally
         {
             Marshal.FreeCoTaskMem(eventBuffer);
+        }
+    }
+
+    /// <summary>
+    /// Reports one raw dashboard overlay event to the probe. VREvent_t is a
+    /// 16-byte header (eventType, trackedDeviceIndex, eventAgeSeconds, pad)
+    /// followed by the data union, so VREvent_Controller_t.button sits at
+    /// offset 16 and the device index at offset 4.
+    /// </summary>
+    private void ProbeOverlayEvent(int eventType, nint eventBuffer)
+    {
+        if (!_probe.Enabled)
+        {
+            return;
+        }
+
+        var deviceIndex = (uint)Marshal.ReadInt32(eventBuffer, 4);
+        var isButtonEvent = InputProbe.OverlayEventName(eventType) is not null;
+        var button = isButtonEvent
+            ? (uint)Marshal.ReadInt32(eventBuffer, 16)
+            : 0;
+        _probe.ObserveOverlayEvent(
+            eventType,
+            deviceIndex,
+            button,
+            isButtonEvent ? DescribeOverlayButton(deviceIndex, button) : "");
+    }
+
+    private string DescribeOverlayButton(uint deviceIndex, uint button)
+    {
+        // Events can carry k_unTrackedDeviceIndexInvalid; keep the lookup inside
+        // the same device range the rest of this class scans.
+        if (_system is null || deviceIndex >= 64)
+        {
+            return $"button {button}, no controller";
+        }
+
+        return _system.Value.GetControllerRoleForTrackedDeviceIndex(deviceIndex) switch
+        {
+            TrackedControllerRole.LeftHand => ControllerInputs.FriendlyName(
+                ControllerHand.Left,
+                button,
+                _lastSetup),
+            TrackedControllerRole.RightHand => ControllerInputs.FriendlyName(
+                ControllerHand.Right,
+                button,
+                _lastSetup),
+            _ => $"button {button}, unassigned hand"
+        };
+    }
+
+    private void LogDashboardLifecycleEvent(int eventType)
+    {
+        var message = eventType switch
+        {
+            500 => "SteamVR dashboard overlay shown.",
+            501 => "SteamVR dashboard overlay hidden.",
+            502 => "SteamVR dashboard activated.",
+            503 => "SteamVR dashboard deactivated.",
+            508 => "SteamVR dashboard image loaded.",
+            517 => "SteamVR dashboard image failed to load.",
+            534 => "SteamVR dashboard overlay closed.",
+            _ => null
+        };
+        if (message is not null)
+        {
+            _log(message);
         }
     }
 
@@ -457,7 +568,7 @@ public sealed class OpenVrInput : IOpenVrSession
         }
 
         throw new FileNotFoundException(
-            "Could not locate openvr_api.dll. Start SteamVR once, copy the DLL beside SVR Bridge, " +
+            "Could not locate openvr_api.dll. Start SteamVR once, copy the DLL beside SteamVR2Bot, " +
             "set OPENVR_API_DLL, or configure openVrDllPath.");
     }
 
@@ -517,6 +628,8 @@ public sealed class OpenVrInput : IOpenVrSession
             GetTableDelegate<SetOverlayMouseScaleDelegate>(pointer, 52),
             GetTableDelegate<SetOverlayFromFileDelegate>(pointer, 63),
             GetTableDelegate<CreateDashboardOverlayDelegate>(pointer, 67),
+            GetTableDelegate<IsDashboardVisibleDelegate>(pointer, 68),
+            GetTableDelegate<IsActiveDashboardOverlayDelegate>(pointer, 69),
             GetTableDelegate<ShowDashboardDelegate>(pointer, 72));
     }
 
@@ -538,7 +651,7 @@ public sealed class OpenVrInput : IOpenVrSession
         return handle;
     }
 
-    private bool ReadDigital(ulong handle)
+    private bool ReadDigital(ulong handle, string? probeName = null)
     {
         var data = new InputDigitalActionData();
         var error = _input.GetDigitalActionData(
@@ -546,6 +659,18 @@ public sealed class OpenVrInput : IOpenVrSession
             ref data,
             (uint)Marshal.SizeOf<InputDigitalActionData>(),
             0);
+
+        if (probeName is not null)
+        {
+            _probe.ObserveAction(
+                new ProbeActionState(
+                    probeName,
+                    (int)error,
+                    data.Active,
+                    data.State,
+                    data.Changed,
+                    data.ActiveOrigin));
+        }
 
         if (error == VrInputError.NoData)
         {
@@ -559,9 +684,12 @@ public sealed class OpenVrInput : IOpenVrSession
     private (ulong Left, ulong Right) ReadControllerButtons()
     {
         var (left, right) = ReadLegacyControllerButtons();
+        _probe.ObserveLegacyButtons(left, right);
         foreach (var definition in PhysicalActions)
         {
-            if (!ReadDigital(_physicalButtons[(definition.Hand, definition.Button)]))
+            if (!ReadDigital(
+                    _physicalButtons[(definition.Hand, definition.Button)],
+                    definition.ProbeName))
             {
                 continue;
             }
@@ -1072,6 +1200,14 @@ public sealed class OpenVrInput : IOpenVrSession
         ref ulong thumbnailHandle);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private delegate bool IsDashboardVisibleDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private delegate bool IsActiveDashboardOverlayDelegate(ulong overlayHandle);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate void ShowDashboardDelegate(nint overlayKey);
 
     private readonly record struct VrOverlayFunctions(
@@ -1082,12 +1218,18 @@ public sealed class OpenVrInput : IOpenVrSession
         SetOverlayMouseScaleDelegate SetOverlayMouseScale,
         SetOverlayFromFileDelegate SetOverlayFromFile,
         CreateDashboardOverlayDelegate CreateDashboardOverlay,
+        IsDashboardVisibleDelegate IsDashboardVisible,
+        IsActiveDashboardOverlayDelegate IsActiveDashboardOverlay,
         ShowDashboardDelegate ShowDashboard);
 
     private readonly record struct PhysicalActionDefinition(
         ControllerHand Hand,
         uint Button,
-        string ActionPath);
+        string ActionPath)
+    {
+        /// <summary>Short log label, for example "left_grip".</summary>
+        public string ProbeName => ActionPath[(ActionPath.LastIndexOf('/') + 1)..];
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct HmdVector2

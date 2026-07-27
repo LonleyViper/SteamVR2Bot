@@ -1,4 +1,4 @@
-# SVR Bridge POC — live test results
+# SteamVR2Bot POC — live test results
 
 Date: 2026-07-27  
 Machine: Windows gaming PC  
@@ -10,7 +10,7 @@ The supplied continuation handoff was used because `HANDOFF.md` is not present
 in this repository. The proof retains the requested architecture:
 
 ```text
-SteamVR logical actions -> SVR Bridge chord detector
+SteamVR logical actions -> SteamVR2Bot chord detector
     -> Streamer.bot WebSocket DoAction
 ```
 
@@ -82,7 +82,7 @@ Commands:
 
 ```powershell
 .\scripts\Publish-Poc.ps1
-.\artifacts\publish\SvrBridge.exe --self-test
+.\artifacts\publish\SteamVR2Bot.Diagnostics.exe --self-test
 ```
 
 Result: publication succeeded and the published executable repeated the same
@@ -114,7 +114,7 @@ logging.
 Command:
 
 ```powershell
-.\artifacts\publish\SvrBridge.exe --simulate
+.\artifacts\publish\SteamVR2Bot.Diagnostics.exe --simulate
 ```
 
 The test toggled the modifier down once, then sent 20 trigger presses at
@@ -367,7 +367,7 @@ material appeared in the app activity or test output.
 ### Physical tray-host regression
 
 At 12:30 local time, the user performed a rapid 20-attempt run through
-`SvrBridge.Tray.exe`. No VR scene application was present when the run was
+`SteamVR2Bot.exe`. No VR scene application was present when the run was
 inspected, so this is recorded as the SteamVR shell regression.
 
 | Measure | Result |
@@ -484,3 +484,201 @@ Automated coverage also confirms that a Streamer.bot restart leaves an uncertain
 request unresent and allows the following request to reconnect successfully.
 An actual SteamVR restart remains the final confirmation of this new process
 boundary.
+
+## Dashboard stability headset retest — 2026-07-27
+
+The packaged dashboard interaction candidate was exercised in the headset from
+17:00 through 17:05 local time. The tray stayed at PID `29648` and the OpenVR
+worker stayed at PID `26568`.
+
+The run included repeated shortcut creation, heavy tolerance-slider
+interaction, action browsing, saving, deleting, and recreating shortcuts. Every
+logged wizard page change was followed by `SteamVR dashboard image loaded`;
+there was no image-load failure, page-update exception, worker replacement, or
+unexpected dashboard deactivation. The user reported that the UI appeared to
+be functioning.
+
+This passes the reported shortcut-creation and slider-disappearance regression
+for the tested session. Continue watching it during normal use, but do not keep
+it classified as an active reproducible blocker without new evidence.
+
+Focused-dashboard raw input remains constrained by SteamVR. At 17:05:06 the
+dashboard deactivated and hid; at 17:05:07 the bridge received `Right Grip`,
+rendered Review, and SteamVR immediately activated and showed the dashboard
+again. This confirms that the recorder, automatic review return, and worker are
+functioning, while the physical input is unavailable until the system
+dashboard yields focus.
+
+## Focused-dashboard input probe — 2026-07-27
+
+The read-only input probe ran in the headset from 18:13 to 18:15 local time on
+tray PID `33608` and OpenVR worker PID `27056`. Neither PID changed, and the
+run logged no warning or error at any level.
+
+Two recorder sessions were captured. Both give the same answer, and it is
+unambiguous: **SteamVR deactivates our action set while its dashboard is
+open.**
+
+While the dashboard was open, every one-second summary reported the same thing:
+
+```text
+input probe: dashboard visible=1 active=1 | actions 0/10 active, pressed none
+    | legacy L=0x0 R=0x0 | overlay events 1094.
+```
+
+Each action read `err=0 active=0 state=0 origin=0x0` — not an error, not
+`NoData`, simply no bound origin. Within 33-47 ms of the dashboard closing, all
+eight physical actions acquired real origins and the press landed:
+
+```text
+18:14:29.514  input probe dashboard: visible=0 active=0.
+18:14:29.547  input probe action right_grip: err=0 active=1 state=0 changed=0
+                  origin=0x200037200000026B.
+18:14:29.702  input probe action right_grip: err=0 active=1 state=1 changed=1
+                  origin=0x200037200000026B.
+18:14:29.719  SteamVR dashboard page: Review.
+```
+
+The session starting 18:13:43 shows the same shape at 18:14:02.520 through
+18:14:03.197.
+
+This resolves several open questions at once:
+
+| Question | Live answer |
+|---|---|
+| Is the recorder dropping the edge? | No. Both times the action became genuinely pressed, capture advanced to Review within 17 ms. |
+| Is SteamVR returning `NoData`? | No. `err=0` in every state. |
+| Does the legacy `GetControllerState` path still work? | No. `legacy L=0x0 R=0x0` in all three states, including at the moment of a confirmed press with a live origin. It is dead under the current input system. |
+| Do raw button events reach the overlay queue? | No `ButtonPress` was seen, but only `PollNextOverlayEvent` is polled; `IVRSystem::PollNextEvent` is not. Treat this cell as untested rather than negative. |
+| Are `button_one`/`button_two` bound? | They never became active in any state; they appear unbound in the current Vive binding. |
+
+SteamVR's experimental overlay input override was already enabled before this
+run — `steamvr.vrsettings` contains `"globalActionSetPriority" : true`. No
+SteamVR setting was changed.
+
+### Change made in response
+
+SteamVR2Bot was activating its action set at `k_nActionSetOverlayGlobalPriorityMin`
+(`0x01000000`), the bottom of the overlay-global band. The recorder now requests
+`k_nActionSetOverlayGlobalPriorityMax` (`0x01FFFFFF`) while the `RecordInput`
+page is showing and returns to the standard priority on every other page, so a
+running VR game is never outranked outside recording. If SteamVR rejects the
+elevated value, `UpdateActionState` falls back to the standard priority and
+stops asking rather than taking the input worker down mid-recording.
+
+This is not yet confirmed in the headset. It is confirmed only that the change
+builds, passes both suites, publishes, and starts cleanly.
+
+### Priority elevation ruled out, raw button forwarding discovered — 2026-07-27
+
+Two further headset runs at 18:24 and 18:31 tested the recorder-scoped
+elevation to `k_nActionSetOverlayGlobalPriorityMax`.
+
+SteamVR **accepted** the elevated priority — no rejection, no fallback, `err=0`
+throughout — and deactivated the action set anyway:
+
+```text
+18:24:21.300  SteamVR action set priority: 0x01FFFFFF.
+18:24:22.307  input probe: dashboard visible=1 active=1 | actions 0/10 active,
+                  pressed none | legacy L=0x0 R=0x0 | overlay events 96.
+```
+
+**Priority is not the lever. Path 2 is exhausted.**
+
+The same runs showed that SteamVR does forward some raw controller buttons to
+the overlay event queue while its dashboard is open and focused:
+
+```text
+18:24:22.101  input probe overlay ButtonPress: device=6 button=2 (Right Grip).
+18:24:22.307  input probe overlay ButtonUnpress: device=6 button=2 (Right Grip).
+18:31:41.882  input probe overlay ButtonPress: device=6 button=1 (Right Menu Button).
+18:31:42.088  input probe overlay ButtonUnpress: device=6 button=1 (Right Menu Button).
+```
+
+Ten clean Grip press/release pairs and a Menu pair, correctly resolved to hand
+and friendly name, all at `dashboard visible=1 active=1`.
+
+The pattern across both runs is consistent with SteamVR forwarding the controls
+it does not use to drive its own dashboard, and converting the ones it does use
+into UI events instead:
+
+| Input | Reaches us while dashboard focused | Delivered as |
+|---|---|---|
+| Grip | Yes | `VREvent_ButtonPress` / `ButtonUnpress`, button 2 |
+| Menu | Yes | `VREvent_ButtonPress` / `ButtonUnpress`, button 1 |
+| Trackpad | Yes, but not as a button | `VREvent_ScrollDiscrete` (305) |
+| Trigger | No | nothing observed; no button event and no `VREvent_MouseButtonDown` |
+
+`VREvent_MouseButtonDown`/`Up` (301/302) never appeared in any probe window.
+The recorder page offers nothing to click, so this run cannot say whether a
+laser click on our own page would arrive; it does confirm that no trigger press
+reached us by any route.
+
+This is the likely shape of the platform constraint: while the SteamVR
+dashboard is focused, the trigger *is* the dashboard's click and the trackpad
+*is* its scroll. Recording those two as shortcut inputs at the same moment the
+user is operating the UI with them may not be possible at all. Grip and Menu
+are unaffected and are proven recordable in place.
+
+### Decision
+
+The investigation is closed. Priority elevation was reverted, since SteamVR
+accepted it and changed nothing; the action set stays at `0x01000000`. The
+existing flow is kept: the recorder offers the controller-aware picker, and its
+instruction now states the live route plainly — close the SteamVR menu, press
+the input, and SteamVR2Bot reopens on Review by itself. The read-only probe
+stays wired, scoped to the recorder page, for future diagnosis.
+
+## Rename to SteamVR2Bot and desktop window fix — 2026-07-27
+
+### Desktop window could not be opened
+
+Reproduced and fixed. Launching the packaged tray with a hidden window state
+produced a process with **no main window at all**, permanently:
+
+| Launch | `MainWindowHandle` | Visible |
+|---|---|---|
+| `Start-Process -WindowStyle Hidden` | 0 | no window exists |
+| `Start-Process` | present | yes |
+
+Windows keeps the hidden state a process was launched with for that process's
+first `ShowWindow` call and ignores the state that call asks for. WinForms still
+recorded the form as visible, so `ShowMainWindow` skipped `Show()` and only
+called `Activate()`, which does nothing to a window that was never displayed.
+Both the tray icon and its Open item silently did nothing, with no way back.
+
+`ShowMainWindow` now asks Windows through `IsWindowVisible` instead of trusting
+`Form.Visible`, and issues a second `ShowWindow` when the window really is
+hidden. Startup routes through the same method. Verified against the exact
+failure condition:
+
+```text
+Start-Process -WindowStyle Hidden
+pid=24204  handle=12454906  title='SteamVR2Bot — VR shortcuts'
+IsWindowVisible : True
+```
+
+Publishing and restarting no longer starts the app hidden.
+
+### Rename
+
+`SVR Bridge` is now `SteamVR2Bot` across the desktop window, tray icon and menu,
+SteamVR dashboard, application manifest, logs, scripts, and documentation.
+Executables are `SteamVR2Bot.exe` and `diagnostics\SteamVR2Bot.Diagnostics.exe`;
+the stale old-named executables were removed from `artifacts\publish`.
+
+Three identifiers were **deliberately left unchanged**, because changing them
+breaks working setups for no user-visible gain:
+
+| Identifier | Why it stayed |
+|---|---|
+| `ie.lonelyviper.svrbridge.poc` app key | SteamVR would treat a new key as a new application and orphan the existing Vive binding, which is registered against this key in `steamvr.vrsettings`. |
+| `/actions/svrbridge/...` action paths | The packaged binding file maps these exact paths; renaming them invalidates every binding. |
+| `"SVR Bridge settings v1"` DPAPI entropy | It is part of the key protecting any saved Streamer.bot password. Changing it makes stored passwords unreadable. |
+
+`%LOCALAPPDATA%\SVR Bridge` moves to `%LOCALAPPDATA%\SteamVR2Bot` once, on first
+resolve, before anything can create the new folder. The live migration carried
+across three saved shortcuts, the Streamer.bot address, the log history, and the
+cached dashboard images; the old folder was not recreated afterwards.
+`TestRenamedDataDirectoryMigration` covers the move, the repeat-resolve no-op,
+a fresh install, and a leftover old folder losing to the current one.

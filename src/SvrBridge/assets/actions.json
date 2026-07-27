@@ -66,7 +66,7 @@
   "localization": [
     {
       "language_tag": "en_US",
-      "/actions/svrbridge": "SVR Bridge",
+      "/actions/svrbridge": "SteamVR2Bot",
       "/actions/svrbridge/in/button_one": "Safety Button (hold)",
       "/actions/svrbridge/in/button_two": "Action Button (press)",
       "/actions/svrbridge/in/left_menu": "Left Menu Button",

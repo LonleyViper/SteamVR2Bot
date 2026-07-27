@@ -4,12 +4,12 @@
     {
       "app_key": "ie.lonelyviper.svrbridge.poc",
       "launch_type": "binary",
-      "binary_path_windows": "SvrBridge.Tray.exe",
+      "binary_path_windows": "SteamVR2Bot.exe",
       "action_manifest_path": "actions.json",
       "is_dashboard_overlay": true,
       "strings": {
         "en_us": {
-          "name": "SVR Bridge",
+          "name": "SteamVR2Bot",
           "description": "Run Streamer.bot actions from safe VR controller shortcuts"
         }
       }

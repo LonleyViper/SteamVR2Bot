@@ -1,4 +1,4 @@
-# SVR Bridge — next phase plan
+# SteamVR2Bot — next phase plan
 
 ## Goal
 
@@ -305,6 +305,96 @@ Live gates for this checkpoint:
   saves and deletes update active detectors in place without closing the
   dashboard.
 - Manual Save, Start, Stop, and start-on-open controls were removed.
-- Dashboard clicks follow Valve's reference event pattern: the latest
-  `VREvent_MouseMove` position is retained and used when
-  `VREvent_MouseButtonDown` arrives.
+- Dashboard clicks retain the latest `VREvent_MouseMove` position and activate
+  on `VREvent_MouseButtonUp`, after the controller trigger is released.
+
+## Dashboard interaction stability candidate
+
+- Page actions now commit on controller-trigger release, so the overlay texture
+  is not replaced while SteamVR is still processing the press.
+- The tolerance slider follows the pointer through a drag and redraws once on
+  release. Selecting its current value does not redraw.
+- Dashboard PNGs are unique for the worker lifetime because SteamVR loads
+  `SetOverlayFromFile` images asynchronously; a later render can no longer
+  overwrite a file that SteamVR is still reading.
+- Overlay shown/hidden, dashboard activated/deactivated, image loaded/failed,
+  and wizard-page transitions are logged for the headset trace.
+- SteamVR reserves raw buttons while its system dashboard owns focus. After the
+  user closes that menu once and performs a live input, SteamVR2Bot now reopens
+  directly on the review page. The controller-aware picker remains the
+  no-close alternative.
+
+The 2026-07-27 headset retest passed repeated shortcut creation, heavy slider
+interaction, action browsing, save, delete, and recreate without a failed image
+load, page exception, or worker restart. Focused-dashboard raw input remains a
+SteamVR limitation; the one-close live-capture path and automatic return to
+Review worked in the headset.
+
+## Focused-dashboard input probe
+
+Step 1 of the focused-input investigation is implemented: a read-only probe
+that changes no input delivery and logs state transitions plus one summary per
+second while the recorder page is showing.
+
+- `InputProbe` records dashboard visible/active, per-action
+  `GetDigitalActionData` error, `bActive`, `bState`, `bChanged`, and
+  `activeOrigin`, the legacy controller button masks, and every event pulled
+  from the dashboard overlay queue.
+- Controller button events (`VREvent_ButtonPress`/`ButtonUnpress`/`ButtonTouch`
+  /`ButtonUntouch`) are decoded into the existing friendly left/right model.
+  Every other overlay event type is reported once per session so the queue's
+  contents are visible without drowning in pointer movement.
+- The probe is enabled only on `RecordInput` and disabled on every other page.
+
+`IVRSystem.IsInputAvailable` is deliberately **not** wired. Its vtable index
+could not be verified against a complete `openvr.h`, and a wrong function
+pointer risks taking SteamVR down. Add it only after confirming the index.
+
+`FOCUSED_INPUT_PROBE.md` holds the build commands, the three-state headset
+procedure (dashboard focused / dashboard visible but another tab focused /
+dashboard closed), the log lines to look for, and the decision tree that maps
+each observation onto investigation paths 1–5.
+
+### Probe outcome — investigation closed 2026-07-27
+
+Four headset runs settled it. `LIVE_TEST_RESULTS.md` holds the traces.
+
+- **The action set is deactivated whenever the SteamVR dashboard is visible.**
+  Every action reads `err=0 active=0 state=0 origin=0x0` while it is up, and all
+  eight acquire real origins within 31–47 ms of it closing.
+- **Priority is not the lever.** SteamVR accepted
+  `k_nActionSetOverlayGlobalPriorityMax` without complaint and deactivated the
+  set anyway, so action-set priority stays at `0x01000000`. Path 2 is closed.
+  SteamVR's `globalActionSetPriority` setting was already enabled throughout and
+  was not changed.
+- **Some raw buttons do reach the overlay event queue under dashboard focus.**
+  Grip and Menu arrive as `VREvent_ButtonPress`/`ButtonUnpress` with the correct
+  hand and friendly name. Trackpad arrives as `VREvent_ScrollDiscrete`. Trigger
+  never arrives at all — while the dashboard is focused the trigger *is* its
+  click and the trackpad *is* its scroll.
+- Because Trigger cannot be separated from operating the UI, consuming overlay
+  button events could never cover all four required inputs. Path 1 is closed for
+  the acceptance criteria as written.
+- The legacy `GetControllerState` mask read `0x0` in every state, including at
+  the moment of a confirmed press with a live origin. That path is dead under
+  the current input system and can be dropped from `Poll` rather than debugged.
+- `button_one` and `button_two` never became active in any state; they appear
+  unbound in the current Vive binding.
+
+**Decision: keep the existing flow.** The recorder offers the controller-aware
+picker, and the recorder page now states the live route plainly — close the
+SteamVR menu, press the input, SteamVR2Bot reopens on Review by itself. Paths 3
+(recorder-only action set) and 4 (separate background OpenVR client) are not
+being pursued; the deactivation is driven by dashboard focus rather than by
+priority or by which set is active, so neither is likely to behave differently.
+
+A standalone world-space recording overlay remains the one untried design that
+could meet the original criteria in full, since actions work normally whenever
+the dashboard is closed. It is recorded here as an option, not as planned work.
+
+`IVRSystem.IsInputAvailable` is still deliberately **not** wired. Its vtable
+index could not be verified against a complete `openvr.h`, and a wrong function
+pointer risks taking SteamVR down. Add it only after confirming the index.
+
+The read-only probe is left in place, still scoped to the recorder page, for
+future diagnosis.

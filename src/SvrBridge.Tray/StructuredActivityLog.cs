@@ -11,10 +11,7 @@ internal sealed partial class StructuredActivityLog
 
     public StructuredActivityLog(string? logDirectory = null)
     {
-        _logDirectory = logDirectory ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SVR Bridge",
-            "Logs");
+        _logDirectory = logDirectory ?? AppPaths.LogDirectory;
         Directory.CreateDirectory(_logDirectory);
         RemoveExpiredLogs();
     }

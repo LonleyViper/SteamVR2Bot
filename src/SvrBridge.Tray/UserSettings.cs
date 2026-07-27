@@ -81,6 +81,9 @@ internal sealed record UserSettings
 
 internal sealed class UserSettingsStore
 {
+    // DPAPI entropy, not a display name. It is part of the key for every
+    // password already protected on disk, so it survived the rename to
+    // SteamVR2Bot deliberately; changing it makes saved passwords unreadable.
     private static readonly byte[] AdditionalEntropy =
         Encoding.UTF8.GetBytes("SVR Bridge settings v1");
 
@@ -93,9 +96,7 @@ internal sealed class UserSettingsStore
         string? settingsDirectory = null,
         string? legacySettingsPath = null)
     {
-        _settingsDirectory = settingsDirectory ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SVR Bridge");
+        _settingsDirectory = settingsDirectory ?? AppPaths.DataDirectory;
         _legacySettingsPath = legacySettingsPath
                               ?? Path.Combine(AppContext.BaseDirectory, "appsettings.json");
     }
@@ -193,7 +194,7 @@ internal sealed class UserSettingsStore
         catch (JsonException exception)
         {
             throw new InvalidDataException(
-                "SVR Bridge could not read its saved settings. Open Settings and save them again.",
+                "SteamVR2Bot could not read its saved settings. Open Settings and save them again.",
                 exception);
         }
         catch (CryptographicException exception)

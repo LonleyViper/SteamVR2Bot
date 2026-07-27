@@ -40,7 +40,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "SVR Bridge — VR shortcuts";
+        Text = "SteamVR2Bot — VR shortcuts";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(900, 700);
         Size = new Size(1040, 860);
@@ -56,7 +56,7 @@ internal sealed class MainForm : Form
             new BridgeStatus(
                 BridgeState.Starting,
                 "Starting automatically…",
-                "SVR Bridge runs whenever this app is open."));
+                "SteamVR2Bot runs whenever this app is open."));
         FormClosing += OnFormClosing;
     }
 
@@ -228,7 +228,7 @@ internal sealed class MainForm : Form
         var panel = new Panel { Height = 72, Dock = DockStyle.Top };
         panel.Controls.Add(new Label
         {
-            Text = "SVR Bridge",
+            Text = "SteamVR2Bot",
             Font = new Font(Font.FontFamily, 22, FontStyle.Bold),
             AutoSize = true,
             Location = new Point(0, 0)
@@ -379,7 +379,7 @@ internal sealed class MainForm : Form
 
         panel.Controls.Add(new Label
         {
-            Text = "SVR Bridge stays available in SteamVR and runs your shortcuts whenever this app is open. Changes save automatically.",
+            Text = "SteamVR2Bot stays available in SteamVR and runs your shortcuts whenever this app is open. Changes save automatically.",
             AutoSize = true,
             MaximumSize = new Size(650, 0),
             ForeColor = Color.FromArgb(92, 101, 112),
@@ -407,7 +407,7 @@ internal sealed class MainForm : Form
         var logs = new Button();
         var exit = new Button();
         ConfigureButton(logs, "Open log folder", false);
-        ConfigureButton(exit, "Exit SVR Bridge", false);
+        ConfigureButton(exit, "Exit SteamVR2Bot", false);
         logs.Click += (_, _) => LogsRequested?.Invoke();
         exit.Click += (_, _) => ExitRequested?.Invoke();
         footer.Controls.AddRange([logs, exit]);

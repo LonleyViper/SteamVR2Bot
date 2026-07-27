@@ -244,7 +244,7 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
     {
         var processPath = Environment.ProcessPath
                           ?? throw new InvalidOperationException(
-                              "Could not locate the SVR Bridge executable.");
+                              "Could not locate the SteamVR2Bot executable.");
         var startInfo = new ProcessStartInfo
         {
             FileName = processPath,
@@ -262,7 +262,7 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
             if (string.IsNullOrWhiteSpace(assemblyPath))
             {
                 throw new InvalidOperationException(
-                    "Could not locate the SVR Bridge worker assembly.");
+                    "Could not locate the SteamVR2Bot worker assembly.");
             }
 
             startInfo.ArgumentList.Add(assemblyPath);

@@ -87,7 +87,7 @@ public sealed class BridgeEngine
                 SetStatus(
                     BridgeState.Error,
                     "Waiting for SteamVR",
-                    $"Start or restart SteamVR. SVR Bridge will retry in {delay.TotalSeconds:0} second(s).");
+                    $"Start or restart SteamVR. SteamVR2Bot will retry in {delay.TotalSeconds:0} second(s).");
                 await Task.Delay(delay, cancellationToken);
             }
         }

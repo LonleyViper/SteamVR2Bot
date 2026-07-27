@@ -308,7 +308,7 @@ public sealed class StreamerBotClient : IAsyncDisposable
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
                 await _socket.CloseAsync(
                     WebSocketCloseStatus.NormalClosure,
-                    "SVR Bridge stopping",
+                    "SteamVR2Bot stopping",
                     timeout.Token);
             }
         }

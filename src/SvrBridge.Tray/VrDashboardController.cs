@@ -168,13 +168,17 @@ internal sealed class VrDashboardController
     {
         if (y >= 780)
         {
-            if (x < 600)
+            switch (VrDashboardLayout.IndexAt(VrDashboardLayout.Tolerance, x))
             {
-                ShowGestureTypes();
-            }
-            else
-            {
-                StartRecording();
+                case 0:
+                    ShowList();
+                    break;
+                case 1:
+                    ShowGestureTypes();
+                    break;
+                default:
+                    StartRecording();
+                    break;
             }
 
             return;
@@ -188,13 +192,25 @@ internal sealed class VrDashboardController
         var ratio = Math.Clamp((x - 180f) / 1040f, 0f, 1f);
         if (_gestureMode == ChordMode.DoublePress)
         {
-            _doublePressWindowMs =
+            var nextValue =
                 (int)Math.Round((200 + (ratio * 1000)) / 100d) * 100;
+            if (nextValue == _doublePressWindowMs)
+            {
+                return;
+            }
+
+            _doublePressWindowMs = nextValue;
         }
         else
         {
-            _holdMs =
+            var nextValue =
                 (int)Math.Round((500 + (ratio * 4500)) / 250d) * 250;
+            if (nextValue == _holdMs)
+            {
+                return;
+            }
+
+            _holdMs = nextValue;
         }
 
         ShowTolerance();
@@ -202,35 +218,38 @@ internal sealed class VrDashboardController
 
     private void HandleActionPickerClick(float x, float y)
     {
-        if (y >= 780 && x < 440)
-        {
-            if (_actionBrowser.BackToGroups())
-            {
-                ShowActionPicker();
-            }
-            else
-            {
-                ShowReview();
-            }
-
-            return;
-        }
-
-        if (y >= 780 && x < 890)
-        {
-            if (_actionBrowser.ScrollPage(-1))
-            {
-                ShowActionPicker();
-            }
-
-            return;
-        }
-
         if (y >= 780)
         {
-            if (_actionBrowser.ScrollPage(1))
+            switch (VrDashboardLayout.IndexAt(VrDashboardLayout.ActionPicker, x))
             {
-                ShowActionPicker();
+                case 0:
+                    ShowList();
+                    break;
+                case 1:
+                    if (_actionBrowser.BackToGroups())
+                    {
+                        ShowActionPicker();
+                    }
+                    else
+                    {
+                        ShowReview();
+                    }
+
+                    break;
+                case 2:
+                    if (_actionBrowser.ScrollPage(-1))
+                    {
+                        ShowActionPicker();
+                    }
+
+                    break;
+                default:
+                    if (_actionBrowser.ScrollPage(1))
+                    {
+                        ShowActionPicker();
+                    }
+
+                    break;
             }
 
             return;
@@ -262,18 +281,25 @@ internal sealed class VrDashboardController
             return;
         }
 
-        if (x < 400)
+        switch (VrDashboardLayout.IndexAt(VrDashboardLayout.Review, x))
         {
-            StartRecording();
-        }
-        else if (x < 930)
-        {
-            _actionBrowser.Reset();
-            ShowActionPicker();
-        }
-        else if (_selectedAction is not null)
-        {
-            SaveShortcut();
+            case 0:
+                ShowList();
+                break;
+            case 1:
+                StartRecording();
+                break;
+            case 2:
+                _actionBrowser.Reset();
+                ShowActionPicker();
+                break;
+            default:
+                if (_selectedAction is not null)
+                {
+                    SaveShortcut();
+                }
+
+                break;
         }
     }
 
@@ -281,7 +307,15 @@ internal sealed class VrDashboardController
     {
         if (y >= 780)
         {
-            ShowPreviousSetupPage();
+            if (VrDashboardLayout.IndexAt(VrDashboardLayout.RecordInput, x) == 0)
+            {
+                ShowList();
+            }
+            else
+            {
+                ShowPreviousSetupPage();
+            }
+
             return;
         }
 
@@ -395,7 +429,8 @@ internal sealed class VrDashboardController
                 return;
             }
 
-            SelectRecordedInput(input);
+            var restoreDashboard = !_openVr.IsDashboardActive;
+            SelectRecordedInput(input, restoreDashboard);
             if (_page != DashboardPage.RecordInput)
             {
                 return;
@@ -406,7 +441,7 @@ internal sealed class VrDashboardController
                              input.Id,
                              StringComparison.OrdinalIgnoreCase)))
             {
-                SelectRecordedInput(second);
+                SelectRecordedInput(second, restoreDashboard);
                 break;
             }
 
@@ -421,18 +456,20 @@ internal sealed class VrDashboardController
                     StringComparison.OrdinalIgnoreCase));
             if (second is not null)
             {
-                SelectRecordedInput(second);
+                SelectRecordedInput(second, !_openVr.IsDashboardActive);
             }
         }
     }
 
-    private void SelectRecordedInput(ControllerInputBinding input)
+    private void SelectRecordedInput(
+        ControllerInputBinding input,
+        bool activateReview = false)
     {
         if (_gestureMode != ChordMode.Simultaneous)
         {
             _firstInput = input;
             _secondInput = input;
-            ShowReview();
+            ShowReview(activateReview);
             return;
         }
 
@@ -449,7 +486,7 @@ internal sealed class VrDashboardController
         }
 
         _secondInput = input;
-        ShowReview();
+        ShowReview(activateReview);
     }
 
     private void SaveShortcut()
@@ -554,7 +591,7 @@ internal sealed class VrDashboardController
                 _firstInput));
     }
 
-    private void ShowReview()
+    private void ShowReview(bool activate = false)
     {
         ShowPage(
             DashboardPage.Review,
@@ -565,7 +602,8 @@ internal sealed class VrDashboardController
                 _selectedAction,
                 _doublePressWindowMs,
                 _holdMs,
-                _editingShortcutId is not null));
+                _editingShortcutId is not null),
+            activate);
     }
 
     private void ShowActionPicker() =>
@@ -583,6 +621,11 @@ internal sealed class VrDashboardController
         {
             _openVr.UpdateDashboard(render(), activate);
             _page = page;
+            _log($"SteamVR dashboard page: {page}.");
+
+            // Read-only diagnostics stay scoped to the recorder so the log
+            // stays quiet during normal dashboard use.
+            _openVr.SetInputProbeEnabled(page == DashboardPage.RecordInput);
         }
         catch (Exception exception)
         {
