@@ -241,7 +241,7 @@ internal static class TraySelfTests
 
         var handPath = VrDashboardRenderer.RenderInputRecorder(
             SvrBridge.Core.ChordMode.Simultaneous,
-            true,
+            SvrBridge.Core.ControllerSetup.Unknown,
             doublePressInput);
         using var handPreview = new Bitmap(handPath);
         Assert(

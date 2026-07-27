@@ -249,10 +249,12 @@ Implemented on `codex/shortcut-manager`:
   and remove.
 - The SteamVR dashboard lists the saved gestures and actions. Its guided wizard
   begins with Single Button, Button Combo, Double Press, and Long Hold. Double
-  Press and Long Hold expose a tolerance slider. The recorder waits for all
-  inputs to be released, captures the physical input names, and shows them on a
-  review screen before Save. The action browser opens from that review screen
-  and retains controller scrolling plus large Previous/Next controls.
+  Press and Long Hold expose a tolerance slider. The input screen groups every
+  available physical input under Left and Right controller columns, so SteamVR
+  dashboard focus cannot block setup. Opportunistic live capture remains
+  available, and the selected names appear on a review screen before Save. The
+  action browser opens from that review screen and retains controller scrolling
+  plus large Previous/Next controls.
 - Each saved row has direct pencil/edit and X/delete controls. Saves and deletes
   update the active shortcut detectors in place instead of rebooting the
   SteamVR worker or dashboard.

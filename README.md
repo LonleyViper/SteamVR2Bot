@@ -63,14 +63,16 @@ To create one without leaving VR:
 2. Choose **Single Button**, **Button Combo**, **Double Press**, or **Long
    Hold**.
 3. For Double Press or Long Hold, set the detection tolerance with the slider.
-4. Release every controller input, then press the input to record. A Button
-   Combo records two different inputs.
+4. Choose the physical input from the grouped Left and Right controller lists.
+   A Button Combo selects two different inputs. Live presses are also detected
+   when SteamVR passes them through, but the list works while the menu owns
+   controller focus.
 5. Review the exact recorded input names, choose the Streamer.bot action, then
    select **Save shortcut**.
 
-The review page makes the left/right controller and physical input explicit
-before anything is saved. The shortcut appears in the desktop list and becomes
-active without restarting the SteamVR dashboard.
+The input picker and review page make the left/right controller and physical
+input explicit before anything is saved. The shortcut appears in the desktop
+list and becomes active without restarting the SteamVR dashboard.
 
 Each saved row has a pencil button to change its action, input, or gesture, and
 an X button to delete it. Both changes save and activate automatically.

@@ -394,7 +394,7 @@ internal static class VrDashboardRenderer
 
     public static string RenderInputRecorder(
         ChordMode mode,
-        bool armed,
+        ControllerSetup setup,
         ControllerInputBinding? firstInput)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
@@ -407,35 +407,46 @@ internal static class VrDashboardRenderer
                 60,
                 42);
             graphics.DrawString(
-                !armed
-                    ? "Release every controller button to begin."
-                    : combo && firstInput is not null
-                        ? "Now press a different second input."
-                        : combo
-                            ? "Press the first input in your combo."
-                            : "Press the input you want to use.",
+                combo && firstInput is not null
+                    ? $"Input 1: {firstInput.FriendlyName} • Choose a different input 2."
+                    : "Choose from the list without closing the SteamVR menu.",
                 fonts.Subtitle,
                 brushes.Muted,
                 64,
                 108);
 
-            DrawRoundedRectangle(
-                graphics,
-                armed ? brushes.Card : brushes.Disabled,
-                new Rectangle(120, 220, 1160, 360),
-                24);
+            var left = ControllerInputs.AvailableInputs(ControllerHand.Left, setup);
+            var right = ControllerInputs.AvailableInputs(ControllerHand.Right, setup);
             DrawCenteredText(
                 graphics,
-                !armed
-                    ? "Waiting for all buttons to be released…"
-                    : firstInput is null
-                        ? combo
-                            ? "Press input 1"
-                            : "Press your chosen input"
-                        : $"Input 1 recorded:\n{firstInput.FriendlyName}\n\nPress input 2",
+                "Left controller",
                 fonts.Heading,
                 brushes.White,
-                new Rectangle(170, 260, 1060, 280));
+                new Rectangle(60, 138, 620, 40));
+            DrawCenteredText(
+                graphics,
+                "Right controller",
+                fonts.Heading,
+                brushes.White,
+                new Rectangle(720, 138, 620, 40));
+
+            for (var index = 0; index < 6; index++)
+            {
+                DrawInputChoice(
+                    graphics,
+                    fonts,
+                    brushes,
+                    left.ElementAtOrDefault(index),
+                    firstInput,
+                    new Rectangle(60, 180 + (index * 88), 620, 76));
+                DrawInputChoice(
+                    graphics,
+                    fonts,
+                    brushes,
+                    right.ElementAtOrDefault(index),
+                    firstInput,
+                    new Rectangle(720, 180 + (index * 88), 620, 76));
+            }
 
             DrawRoundedRectangle(
                 graphics,
@@ -826,6 +837,39 @@ internal static class VrDashboardRenderer
             16);
         graphics.DrawString(label, fonts.Small, brushes.Muted, 94, y + 14);
         graphics.DrawString(value, fonts.Heading, brushes.White, 92, y + 45);
+    }
+
+    private static void DrawInputChoice(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        ControllerInputBinding? input,
+        ControllerInputBinding? selected,
+        Rectangle bounds)
+    {
+        if (input is null)
+        {
+            return;
+        }
+
+        var isSelected = selected?.Id.Equals(
+            input.Id,
+            StringComparison.OrdinalIgnoreCase) == true;
+        DrawRoundedRectangle(
+            graphics,
+            isSelected ? brushes.Blue : brushes.Card,
+            bounds,
+            14);
+        DrawEllipsizedText(
+            graphics,
+            $"{(isSelected ? "✓  " : "")}{input.FriendlyName}",
+            fonts.Body,
+            brushes.White,
+            new RectangleF(
+                bounds.X + 30,
+                bounds.Y + 21,
+                bounds.Width - 60,
+                38));
     }
 
     private static string FriendlyDuration(int milliseconds) =>

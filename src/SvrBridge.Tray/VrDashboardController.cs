@@ -82,8 +82,8 @@ internal sealed class VrDashboardController
             case DashboardPage.ActionPicker:
                 HandleActionPickerClick(x, y);
                 break;
-            case DashboardPage.RecordInput when y >= 780:
-                ShowPreviousSetupPage();
+            case DashboardPage.RecordInput:
+                HandleRecordInputClick(x, y);
                 break;
             case DashboardPage.Review:
                 HandleReviewClick(x, y);
@@ -275,6 +275,53 @@ internal sealed class VrDashboardController
         }
     }
 
+    private void HandleRecordInputClick(float x, float y)
+    {
+        if (y >= 780)
+        {
+            ShowPreviousSetupPage();
+            return;
+        }
+
+        if (y < 180)
+        {
+            return;
+        }
+
+        var index = (int)((y - 180) / 88);
+        var rowY = 180 + (index * 88);
+        if (index < 0 || index >= 6 || y >= rowY + 76)
+        {
+            return;
+        }
+
+        ControllerHand hand;
+        if (x is >= 60 and <= 680)
+        {
+            hand = ControllerHand.Left;
+        }
+        else if (x is >= 720 and <= 1340)
+        {
+            hand = ControllerHand.Right;
+        }
+        else
+        {
+            return;
+        }
+
+        var options = ControllerInputs.AvailableInputs(hand, _setup);
+        if (index >= options.Count)
+        {
+            return;
+        }
+
+        // The trigger used to click this dashboard row may itself be one of
+        // the physical inputs. Re-arm live capture only after that click is
+        // released so it cannot become the second half of a combo.
+        _recordingArmed = false;
+        SelectRecordedInput(options[index]);
+    }
+
     private void HandleScroll(float deltaY)
     {
         if (_page != DashboardPage.ActionPicker
@@ -341,43 +388,67 @@ internal sealed class VrDashboardController
 
         if (_firstInput is null)
         {
-            _firstInput = pressed.FirstOrDefault();
-            if (_firstInput is null)
+            var input = pressed.FirstOrDefault();
+            if (input is null)
             {
                 return;
             }
 
-            if (_gestureMode != ChordMode.Simultaneous)
+            SelectRecordedInput(input);
+            if (_page != DashboardPage.RecordInput)
             {
-                _secondInput = _firstInput;
-                ShowReview();
                 return;
             }
 
-            _secondInput = pressed.FirstOrDefault(input =>
-                !input.Id.Equals(
-                    _firstInput.Id,
-                    StringComparison.OrdinalIgnoreCase));
-            if (_secondInput is not null)
+            foreach (var second in pressed.Where(candidate =>
+                         !candidate.Id.Equals(
+                             input.Id,
+                             StringComparison.OrdinalIgnoreCase)))
             {
-                ShowReview();
-            }
-            else
-            {
-                ShowRecording();
+                SelectRecordedInput(second);
+                break;
             }
 
             return;
         }
 
-        _secondInput = pressed.FirstOrDefault(input =>
-            !input.Id.Equals(
-                _firstInput.Id,
-                StringComparison.OrdinalIgnoreCase));
-        if (_secondInput is not null)
+        if (_gestureMode == ChordMode.Simultaneous)
         {
-            ShowReview();
+            var second = pressed.FirstOrDefault(candidate =>
+                !candidate.Id.Equals(
+                    _firstInput.Id,
+                    StringComparison.OrdinalIgnoreCase));
+            if (second is not null)
+            {
+                SelectRecordedInput(second);
+            }
         }
+    }
+
+    private void SelectRecordedInput(ControllerInputBinding input)
+    {
+        if (_gestureMode != ChordMode.Simultaneous)
+        {
+            _firstInput = input;
+            _secondInput = input;
+            ShowReview();
+            return;
+        }
+
+        if (_firstInput is null)
+        {
+            _firstInput = input;
+            ShowRecording();
+            return;
+        }
+
+        if (_firstInput.Id.Equals(input.Id, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _secondInput = input;
+        ShowReview();
     }
 
     private void SaveShortcut()
@@ -474,7 +545,7 @@ internal sealed class VrDashboardController
         _openVr.ShowDashboard(
             VrDashboardRenderer.RenderInputRecorder(
                 _gestureMode,
-                _recordingArmed,
+                _setup,
                 _firstInput));
     }
 
