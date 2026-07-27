@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using SvrBridge.Core;
 
 namespace SvrBridge;
 
@@ -18,7 +19,8 @@ internal static class Program
             {
                 var actionManifest = OpenVrInput.ResolveActionManifest(
                     GetArgumentValue(args, "--action-manifest"));
-                var applicationManifest = Path.Combine(AppContext.BaseDirectory, "app.vrmanifest");
+                var applicationManifest = GetArgumentValue(args, "--application-manifest")
+                                          ?? Path.Combine(AppContext.BaseDirectory, "app.vrmanifest");
                 SteamVrApplications.Register(applicationManifest, actionManifest);
                 return 0;
             }

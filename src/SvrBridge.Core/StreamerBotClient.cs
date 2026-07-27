@@ -3,23 +3,33 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-namespace SvrBridge;
+namespace SvrBridge.Core;
 
-internal sealed class StreamerBotClient : IAsyncDisposable
+public sealed record StreamerBotAction(string Id, string Name, string Group)
+{
+    public string FriendlyName =>
+        string.IsNullOrWhiteSpace(Group) || Group.Equals("None", StringComparison.OrdinalIgnoreCase)
+            ? Name
+            : $"{Group} — {Name}";
+}
+
+public sealed class StreamerBotClient : IAsyncDisposable
 {
     private readonly StreamerBotConfig _config;
+    private readonly Action<string> _log;
     private ClientWebSocket? _socket;
 
-    public StreamerBotClient(StreamerBotConfig config)
+    public StreamerBotClient(StreamerBotConfig config, Action<string>? log = null)
     {
         _config = config;
+        _log = log ?? Console.WriteLine;
     }
 
     public async Task TriggerAsync(string bindingName, CancellationToken cancellationToken)
     {
         if (_config.DryRun)
         {
-            Console.WriteLine(
+            _log(
                 $"DRY RUN: would execute Streamer.bot action " +
                 $"'{_config.ActionName}' ({_config.ActionId ?? "no id"}).");
             return;
@@ -32,11 +42,52 @@ internal sealed class StreamerBotClient : IAsyncDisposable
         }
         catch (Exception exception) when (exception is WebSocketException or IOException)
         {
-            Console.WriteLine($"Streamer.bot connection failed; retrying once: {exception.Message}");
+            _log($"Streamer.bot connection failed; retrying once: {exception.Message}");
             await ResetSocketAsync();
             await EnsureConnectedAsync(cancellationToken);
             await SendActionAsync(bindingName, cancellationToken);
         }
+    }
+
+    public async Task<IReadOnlyList<StreamerBotAction>> GetActionsAsync(
+        CancellationToken cancellationToken)
+    {
+        await EnsureConnectedAsync(cancellationToken);
+        var socket = _socket ?? throw new InvalidOperationException("WebSocket is not connected.");
+        var id = $"svr-actions-{Guid.NewGuid():N}";
+
+        await SendJsonAsync(
+            socket,
+            new
+            {
+                request = "GetActions",
+                id
+            },
+            cancellationToken);
+
+        using var response = await ReceiveJsonAsync(socket, cancellationToken);
+        EnsureSuccessfulResponse(response.RootElement, id, "GetActions");
+
+        if (!response.RootElement.TryGetProperty("actions", out var actions)
+            || actions.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("Streamer.bot returned no action list.");
+        }
+
+        return actions
+            .EnumerateArray()
+            .Where(action =>
+                !action.TryGetProperty("enabled", out var enabled)
+                || enabled.ValueKind != JsonValueKind.False)
+            .Select(action => new StreamerBotAction(
+                action.GetProperty("id").GetString() ?? "",
+                action.GetProperty("name").GetString() ?? "Unnamed action",
+                action.TryGetProperty("group", out var group)
+                    ? group.GetString() ?? ""
+                    : ""))
+            .Where(action => !string.IsNullOrWhiteSpace(action.Id))
+            .OrderBy(action => action.FriendlyName, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
     }
 
     public async ValueTask DisposeAsync()
@@ -44,7 +95,7 @@ internal sealed class StreamerBotClient : IAsyncDisposable
         await ResetSocketAsync();
     }
 
-    internal static string BuildAuthentication(string password, string salt, string challenge)
+    public static string BuildAuthentication(string password, string salt, string challenge)
     {
         var secretBytes = SHA256.HashData(Encoding.UTF8.GetBytes(password + salt));
         var secret = Convert.ToBase64String(secretBytes);
@@ -95,7 +146,7 @@ internal sealed class StreamerBotClient : IAsyncDisposable
             EnsureSuccessfulResponse(response.RootElement, id, "Authenticate");
         }
 
-        Console.WriteLine($"Connected to Streamer.bot at {_config.WebSocketUrl}");
+        _log($"Connected to Streamer.bot at {_config.WebSocketUrl}");
     }
 
     private async Task SendActionAsync(string bindingName, CancellationToken cancellationToken)
@@ -122,7 +173,7 @@ internal sealed class StreamerBotClient : IAsyncDisposable
         await SendJsonAsync(socket, payload, cancellationToken);
         using var response = await ReceiveJsonAsync(socket, cancellationToken);
         EnsureSuccessfulResponse(response.RootElement, id, "DoAction");
-        Console.WriteLine($"Streamer.bot acknowledged '{_config.ActionName}'.");
+        _log($"Streamer.bot acknowledged '{_config.ActionName}'.");
     }
 
     private static void EnsureSuccessfulResponse(JsonElement response, string expectedId, string operation)
@@ -200,4 +251,3 @@ internal sealed class StreamerBotClient : IAsyncDisposable
         _socket = null;
     }
 }
-

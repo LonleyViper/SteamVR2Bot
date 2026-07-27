@@ -1,17 +1,21 @@
 using System.Runtime.InteropServices;
 
-namespace SvrBridge;
+namespace SvrBridge.Core;
 
 /// <summary>
 /// Registers the application manifest through IVRApplications. vrpathreg.exe
 /// manages driver paths only and cannot register application manifests.
 /// </summary>
-internal static class SteamVrApplications
+public static class SteamVrApplications
 {
     private const string ApplicationsInterfaceVersion = "IVRApplications_006";
 
-    public static void Register(string applicationManifestPath, string actionManifestPath)
+    public static void Register(
+        string applicationManifestPath,
+        string actionManifestPath,
+        Action<string>? log = null)
     {
+        log ??= Console.WriteLine;
         if (!File.Exists(applicationManifestPath))
         {
             throw new FileNotFoundException("SteamVR application manifest not found.", applicationManifestPath);
@@ -21,7 +25,7 @@ internal static class SteamVrApplications
         // before asking SteamVR to load the application manifest.
         _ = actionManifestPath;
         var dllPath = OpenVrInput.ResolveOpenVrDll(configuredPath: null);
-        Console.WriteLine($"OpenVR DLL: {dllPath}");
+        log($"OpenVR DLL: {dllPath}");
 
         var library = NativeLibrary.Load(dllPath);
         try
@@ -73,7 +77,7 @@ internal static class SteamVrApplications
             NativeLibrary.Free(library);
         }
 
-        Console.WriteLine($"Registered SteamVR application manifest: {Path.GetFullPath(applicationManifestPath)}");
+        log($"Registered SteamVR application manifest: {Path.GetFullPath(applicationManifestPath)}");
     }
 
     private static T LoadExport<T>(nint library, string name) where T : Delegate =>

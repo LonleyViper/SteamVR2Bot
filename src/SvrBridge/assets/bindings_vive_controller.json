@@ -30,7 +30,7 @@
   },
   "controller_type": "vive_controller",
   "description": "Two-hand safety chord: hold left grip, then press right index trigger.",
-  "name": "SVR Bridge POC Vive Controller",
+  "name": "SVR Bridge — Vive Controller",
   "options": {},
   "simulated_actions": []
 }

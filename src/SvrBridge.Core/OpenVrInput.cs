@@ -1,9 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
-namespace SvrBridge;
+namespace SvrBridge.Core;
 
-internal sealed class OpenVrInput : IDisposable
+public sealed class OpenVrInput : IDisposable
 {
     private const string ActionSetPath = "/actions/svrbridge";
     private const string ButtonOnePath = "/actions/svrbridge/in/button_one";
@@ -18,10 +18,14 @@ internal sealed class OpenVrInput : IDisposable
     private readonly VrActiveActionSet[] _activeSets;
     private bool _disposed;
 
-    public OpenVrInput(string? configuredDllPath, string actionManifestPath)
+    public OpenVrInput(
+        string? configuredDllPath,
+        string actionManifestPath,
+        Action<string>? log = null)
     {
+        log ??= Console.WriteLine;
         var dllPath = ResolveOpenVrDll(configuredDllPath);
-        Console.WriteLine($"OpenVR DLL: {dllPath}");
+        log($"OpenVR DLL: {dllPath}");
 
         _library = NativeLibrary.Load(dllPath);
         var init = LoadExport<VrInitInternal>(_library, "VR_InitInternal");
@@ -38,7 +42,7 @@ internal sealed class OpenVrInput : IDisposable
 
         try
         {
-            var tablePointer = GetInputTable(getInterface);
+            var tablePointer = GetInputTable(getInterface, log);
             _input = Marshal.PtrToStructure<VrInputFunctions>(tablePointer);
 
             var manifestPointer = Marshal.StringToCoTaskMemUTF8(actionManifestPath);
@@ -181,11 +185,13 @@ internal sealed class OpenVrInput : IDisposable
         }
 
         throw new FileNotFoundException(
-            "Could not locate openvr_api.dll. Start SteamVR once, copy the DLL beside SvrBridge.exe, " +
+            "Could not locate openvr_api.dll. Start SteamVR once, copy the DLL beside SVR Bridge, " +
             "set OPENVR_API_DLL, or configure openVrDllPath.");
     }
 
-    private static nint GetInputTable(VrGetGenericInterface getInterface)
+    private static nint GetInputTable(
+        VrGetGenericInterface getInterface,
+        Action<string> log)
     {
         foreach (var version in new[] { "IVRInput_011", "IVRInput_010", "IVRInput_009" })
         {
@@ -193,7 +199,7 @@ internal sealed class OpenVrInput : IDisposable
             var pointer = getInterface($"FnTable:{version}", ref error);
             if (pointer != nint.Zero && error == VrInitError.None)
             {
-                Console.WriteLine($"OpenVR input interface: {version}");
+                log($"OpenVR input interface: {version}");
                 return pointer;
             }
         }
@@ -371,4 +377,4 @@ internal sealed class OpenVrInput : IDisposable
     }
 }
 
-internal readonly record struct InputSnapshot(bool ButtonOne, bool ButtonTwo);
+public readonly record struct InputSnapshot(bool ButtonOne, bool ButtonTwo);

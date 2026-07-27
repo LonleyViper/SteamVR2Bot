@@ -27,8 +27,8 @@
     {
       "language_tag": "en_US",
       "/actions/svrbridge": "SVR Bridge",
-      "/actions/svrbridge/in/button_one": "Chord Button One / Modifier",
-      "/actions/svrbridge/in/button_two": "Chord Button Two / Trigger"
+      "/actions/svrbridge/in/button_one": "Safety Button (hold)",
+      "/actions/svrbridge/in/button_two": "Action Button (press)"
     }
   ]
 }

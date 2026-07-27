@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\SvrBridge.Core\SvrBridge.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="assets\actions.json" Link="actions.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="assets\bindings_vive_controller.json" Link="bindings_vive_controller.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="assets\app.vrmanifest" Link="app.vrmanifest" CopyToOutputDirectory="PreserveNewest" />

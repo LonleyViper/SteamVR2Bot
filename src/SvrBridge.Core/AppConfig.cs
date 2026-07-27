@@ -1,9 +1,9 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace SvrBridge;
+namespace SvrBridge.Core;
 
-internal sealed class AppConfig
+public sealed class AppConfig
 {
     public string? OpenVrDllPath { get; init; }
     public string? ActionManifestPath { get; init; }
@@ -42,7 +42,7 @@ internal sealed class AppConfig
     }
 }
 
-internal sealed class StreamerBotConfig
+public sealed class StreamerBotConfig
 {
     public string WebSocketUrl { get; init; } = "ws://127.0.0.1:8080/";
     public string Password { get; init; } = "";
@@ -65,13 +65,13 @@ internal sealed class StreamerBotConfig
     }
 }
 
-internal enum ChordMode
+public enum ChordMode
 {
     Simultaneous,
     Modifier
 }
 
-internal sealed class ChordConfig
+public sealed class ChordConfig
 {
     public ChordMode Mode { get; init; } = ChordMode.Modifier;
     public int WindowMs { get; init; } = 2000;

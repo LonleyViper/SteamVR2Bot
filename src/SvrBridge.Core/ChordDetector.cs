@@ -1,6 +1,6 @@
-namespace SvrBridge;
+namespace SvrBridge.Core;
 
-internal sealed class ChordDetector
+public sealed class ChordDetector
 {
     private readonly ChordMode _mode;
     private readonly long _windowMs;
@@ -64,4 +64,3 @@ internal sealed class ChordDetector
         return fired;
     }
 }
-

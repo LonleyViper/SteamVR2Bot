@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text.Json;
+using SvrBridge.Core;
 
 namespace SvrBridge;
 
@@ -102,6 +103,12 @@ internal static class SelfTests
 
         await using (var client = new StreamerBotClient(config))
         {
+            var actions = await client.GetActionsAsync(timeout.Token);
+            Assert(actions.Count == 1, "Client did not return the mock action.");
+            Assert(actions[0].Name == "SVR POC Test", "Client returned the wrong action name.");
+            Assert(
+                actions[0].Id == "a0ff6f91-a51e-4b7d-948b-5e03ff4a82f0",
+                "Client returned the wrong action ID.");
             await client.TriggerAsync("self-test", timeout.Token);
         }
 
@@ -136,6 +143,31 @@ internal static class SelfTests
             "Client sent an incorrect authentication value.");
         var authenticationId = authentication.RootElement.GetProperty("id").GetString();
         await SendJsonAsync(socket, new { status = "ok", id = authenticationId }, cancellationToken);
+
+        using var getActions = await ReceiveJsonAsync(socket, cancellationToken);
+        Assert(
+            getActions.RootElement.GetProperty("request").GetString() == "GetActions",
+            "Client did not send GetActions.");
+        var getActionsId = getActions.RootElement.GetProperty("id").GetString();
+        await SendJsonAsync(
+            socket,
+            new
+            {
+                count = 1,
+                actions = new[]
+                {
+                    new
+                    {
+                        enabled = true,
+                        group = "VR",
+                        id = "a0ff6f91-a51e-4b7d-948b-5e03ff4a82f0",
+                        name = "SVR POC Test"
+                    }
+                },
+                status = "ok",
+                id = getActionsId
+            },
+            cancellationToken);
 
         using var action = await ReceiveJsonAsync(socket, cancellationToken);
         Assert(

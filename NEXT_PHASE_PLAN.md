@@ -159,3 +159,27 @@ Build Phase 1 steps 1–3 as one vertical slice:
 
 Do not add multiple gestures, haptics, an installer, or chat rendering until
 that slice passes.
+
+## Implementation checkpoint
+
+Phase 1 steps 1–3 are now implemented on `codex/tray-app`:
+
+- The proven OpenVR, chord, and Streamer.bot code is in `SvrBridge.Core`.
+- The original console application remains available as a diagnostic tool.
+- `SvrBridge.Tray` provides friendly status, Start, Stop, Test, SteamVR setup,
+  recent activity, and a notification-area menu.
+- Streamer.bot actions are discovered and shown by name; the stable action ID is
+  stored behind the scenes.
+- The optional password is protected for the current Windows user.
+- Existing console self-tests and the protected-settings tray self-test pass.
+
+The next gate is a short live regression through the tray app:
+
+1. Use **Find actions** and confirm the intended action appears by name.
+2. Use **Test Streamer.bot** and confirm one visible action.
+3. Use **Set up SteamVR**, then **Save and Start**.
+4. Repeat the existing 20-attempt SteamVR shell test.
+5. Repeat the existing 20-attempt GERONIMO dashboard-closed test.
+
+After that passes, continue with Phase 1 step 4: long-running reconnect/backoff,
+restart recovery, structured local logs, and binding-unavailable detection.

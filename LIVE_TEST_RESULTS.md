@@ -343,3 +343,27 @@ bounded WebSocket reconnect, and reliable Streamer.bot delivery. The decisive
 scene-application coexistence test passed in GERONIMO with 20 consecutive
 attempts, 20 acknowledgements, and no miss or duplicate. The matching SteamVR
 shell run also passed 20/20.
+
+## Tray application checkpoint — 2026-07-27
+
+The first daily-use tray slice was exercised against the same live services:
+
+| Check | Result |
+|---|---|
+| Self-contained app launch by double-click | **Pass** |
+| Streamer.bot action discovery | **Pass:** 248 enabled actions returned |
+| Existing action matched by stable ID | **Pass:** `SVR POC Test` |
+| Harmless **Test Streamer.bot** delivery | **Pass:** one acknowledgement |
+| In-app SteamVR registration | **Pass** |
+| Bridge start through **Save and Start** | **Pass:** `Ready for your shortcut` |
+| Protected-settings round trip | **Pass:** password not stored as readable text |
+| Console authenticated mock round trip | **Pass** |
+
+The action picker displayed the Streamer.bot group and friendly action name, but
+saved the plain action name and stable ID. No password or authentication
+material appeared in the app activity or test output.
+
+The proven 20-attempt SteamVR shell and GERONIMO matrices above remain the live
+input baseline. A physical 20/20 regression through the new tray host is the
+next release gate; this checkpoint verified that the tray starts the extracted
+same engine and reaches the ready state.
