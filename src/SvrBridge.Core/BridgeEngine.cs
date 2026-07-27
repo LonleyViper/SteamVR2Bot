@@ -235,6 +235,7 @@ public sealed class BridgeEngine
         string imagePath,
         IReadOnlyList<ShortcutConfig> shortcuts,
         IReadOnlyList<StreamerBotAction> actions,
+        bool activate = true,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -242,14 +243,14 @@ public sealed class BridgeEngine
         {
             if (_currentInput is not null)
             {
-                _currentInput.ShowDashboard(imagePath, shortcuts, actions);
+                _currentInput.ShowDashboard(imagePath, shortcuts, actions, activate);
                 PublishCreatedShortcuts(_currentInput);
                 return;
             }
 
             if (_dashboardInput is not null)
             {
-                _dashboardInput.ShowDashboard(imagePath, shortcuts, actions);
+                _dashboardInput.ShowDashboard(imagePath, shortcuts, actions, activate);
                 PublishCreatedShortcuts(_dashboardInput);
                 return;
             }
@@ -264,7 +265,7 @@ public sealed class BridgeEngine
             cancellationToken);
         try
         {
-            dashboardInput.ShowDashboard(imagePath, shortcuts, actions);
+            dashboardInput.ShowDashboard(imagePath, shortcuts, actions, activate);
             lock (_inputGate)
             {
                 _dashboardInput = dashboardInput;

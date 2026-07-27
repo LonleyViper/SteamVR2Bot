@@ -14,7 +14,8 @@ public interface IOpenVrSession : IDisposable
     void ShowDashboard(
         string imagePath,
         IReadOnlyList<ShortcutConfig> shortcuts,
-        IReadOnlyList<StreamerBotAction> actions) =>
+        IReadOnlyList<StreamerBotAction> actions,
+        bool activate = true) =>
         ShowDashboard(imagePath);
 
     IReadOnlyList<ShortcutConfig> DrainCreatedShortcuts() => [];

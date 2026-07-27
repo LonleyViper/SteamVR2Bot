@@ -10,8 +10,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly StructuredActivityLog _structuredLog = new();
     private readonly MainForm _mainForm = new();
     private readonly NotifyIcon _trayIcon;
-    private readonly ToolStripMenuItem _startMenu = new("Start controller shortcut");
-    private readonly ToolStripMenuItem _stopMenu = new("Stop controller shortcut");
+    private readonly System.Windows.Forms.Timer _settingsTimer =
+        new() { Interval = 600 };
+    private readonly SemaphoreSlim _runtimeGate = new(1, 1);
+    private readonly SemaphoreSlim _dashboardGate = new(1, 1);
     private CancellationTokenSource? _bridgeCancellation;
     private Task? _bridgeTask;
     private UserSettings _settings;
@@ -34,22 +36,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _mainForm.ApplySettings(_settings);
-        _mainForm.StartRequested += StartBridge;
-        _mainForm.StopRequested += StopBridge;
+        _mainForm.SettingsChanged += QueueSettingsApply;
         _mainForm.TestRequested += TestStreamerBot;
         _mainForm.FindActionsRequested += FindStreamerBotActions;
-        _mainForm.SteamVrSetupRequested += SetUpSteamVr;
+        _mainForm.SteamVrSetupRequested += RepairSteamVrSetup;
         _mainForm.BindingsRequested += OpenControllerBindings;
-        _mainForm.DashboardRequested += ShowVrDashboard;
+        _mainForm.DashboardRequested += OpenVrDashboard;
         _mainForm.RecordRequested += RecordControllerGestureAsync;
         _mainForm.LogsRequested += OpenLogs;
         _mainForm.ExitRequested += ExitApplication;
-        _mainForm.Shown += (_, _) =>
+        _mainForm.Shown += async (_, _) => await InitializeAsync();
+
+        _settingsTimer.Tick += async (_, _) =>
         {
-            if (_settings.StartBridgeWhenAppOpens)
-            {
-                StartBridge();
-            }
+            _settingsTimer.Stop();
+            await SaveAndApplySettingsAsync();
         };
 
         _engine.StatusChanged += OnStatusChanged;
@@ -59,14 +60,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         var menu = new ContextMenuStrip();
         var open = new ToolStripMenuItem("Open SVR Bridge");
-        var test = new ToolStripMenuItem("Test Streamer.bot action");
-        var bindings = new ToolStripMenuItem("Change controller inputs");
+        var dashboard = new ToolStripMenuItem("Open SteamVR dashboard");
+        var test = new ToolStripMenuItem("Test selected action");
+        var bindings = new ToolStripMenuItem("SteamVR input bindings");
         var logs = new ToolStripMenuItem("Open logs");
         var exit = new ToolStripMenuItem("Exit");
 
         open.Click += (_, _) => ShowMainWindow();
-        _startMenu.Click += (_, _) => StartBridge();
-        _stopMenu.Click += (_, _) => StopBridge();
+        dashboard.Click += (_, _) => OpenVrDashboard();
         test.Click += (_, _) =>
         {
             if (_mainForm.SelectedShortcut is { } shortcut)
@@ -81,14 +82,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         bindings.Click += (_, _) => OpenControllerBindings();
         logs.Click += (_, _) => OpenLogs();
         exit.Click += (_, _) => ExitApplication();
-        _stopMenu.Enabled = false;
 
         menu.Items.AddRange(
         [
             open,
+            dashboard,
             new ToolStripSeparator(),
-            _startMenu,
-            _stopMenu,
             test,
             bindings,
             logs,
@@ -99,12 +98,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _trayIcon = new NotifyIcon
         {
             Icon = SystemIcons.Application,
-            Text = "SVR Bridge — Stopped",
+            Text = "SVR Bridge — Starting automatically",
             Visible = true,
             ContextMenuStrip = menu
         };
         _trayIcon.DoubleClick += (_, _) => ShowMainWindow();
-
         _mainForm.Show();
     }
 
@@ -112,69 +110,141 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            _settingsTimer.Dispose();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
             _bridgeCancellation?.Dispose();
+            _runtimeGate.Dispose();
+            _dashboardGate.Dispose();
             _mainForm.Dispose();
         }
 
         base.Dispose(disposing);
     }
 
-    private async void StartBridge()
+    private async Task InitializeAsync()
     {
-        if (_bridgeTask is { IsCompleted: false })
-        {
-            ShowMainWindow();
-            return;
-        }
+        await RegisterSteamVrAsync(showSuccess: false);
+        await RefreshStreamerBotActionsAsync(
+            showErrors: false,
+            refreshDashboard: false);
+        await RestartRuntimeAsync();
+    }
 
+    private void QueueSettingsApply()
+    {
+        _settingsTimer.Stop();
+        _settingsTimer.Start();
+    }
+
+    private async Task SaveAndApplySettingsAsync()
+    {
+        UserSettings updated;
         try
         {
-            _settings = _mainForm.ReadSettings();
-            UserSettingsStore.Validate(_settings);
-            _settingsStore.Save(_settings);
+            updated = _mainForm.ReadSettings();
+            UserSettingsStore.ValidateForSave(updated);
+            _settingsStore.Save(updated);
+            _settings = updated;
+            OnActivity(
+                new BridgeActivity(
+                    "settings.saved",
+                    "Changes saved automatically."));
         }
         catch (InvalidDataException exception)
         {
-            _mainForm.ShowSettingsError(exception.Message);
-            ShowMainWindow();
+            OnStatusChanged(
+                new BridgeStatus(
+                    BridgeState.Error,
+                    "Finish this setting",
+                    exception.Message));
             return;
         }
 
-        _bridgeCancellation = new CancellationTokenSource();
-        SetRunning(true);
+        await RestartRuntimeAsync();
+    }
 
+    private async Task RestartRuntimeAsync()
+    {
+        await _runtimeGate.WaitAsync();
         try
         {
+            await StopRuntimeLockedAsync();
+            if (_settings.GetShortcuts().Count == 0)
+            {
+                SetRunning(false);
+                OnStatusChanged(
+                    new BridgeStatus(
+                        BridgeState.Ready,
+                        "Available in SteamVR",
+                        "Add your first shortcut on the desktop or in the SteamVR dashboard."));
+                await EnsureDashboardAvailableAsync(false);
+                return;
+            }
+
+            try
+            {
+                UserSettingsStore.Validate(_settings);
+            }
+            catch (InvalidDataException exception)
+            {
+                OnStatusChanged(
+                    new BridgeStatus(
+                        BridgeState.Error,
+                        "Finish this setting",
+                        exception.Message));
+                return;
+            }
+
+            _bridgeCancellation = new CancellationTokenSource();
+            var cancellation = _bridgeCancellation;
             _bridgeTask = _engine.RunAsync(
                 _settings.ToAppConfig(),
-                _bridgeCancellation.Token);
-            await _bridgeTask;
+                cancellation.Token);
+            SetRunning(true);
+            _ = ObserveRuntimeAsync(_bridgeTask, cancellation);
         }
-        catch (OperationCanceledException)
+        finally
         {
-            // Normal stop.
+            _runtimeGate.Release();
+        }
+    }
+
+    private async Task ObserveRuntimeAsync(
+        Task runtimeTask,
+        CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await runtimeTask;
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Normal automatic reload or app exit.
         }
         catch (Exception exception)
         {
             OnActivity(
                 new BridgeActivity(
                     "bridge.stopped_with_error",
-                    $"Stopped: {exception.Message}",
+                    $"Runtime stopped: {exception.Message}",
                     BridgeLogLevel.Error));
-            ShowMainWindow();
         }
         finally
         {
-            SetRunning(false);
+            if (ReferenceEquals(_bridgeTask, runtimeTask))
+            {
+                SetRunning(false);
+            }
         }
     }
 
-    private async void StopBridge()
+    private async Task StopRuntimeLockedAsync()
     {
         var cancellation = _bridgeCancellation;
         var task = _bridgeTask;
+        _bridgeCancellation = null;
+        _bridgeTask = null;
         if (cancellation is null || task is null)
         {
             return;
@@ -187,32 +257,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (OperationCanceledException)
         {
-            // Normal stop.
+            // Normal automatic reload.
+        }
+        finally
+        {
+            cancellation.Dispose();
         }
     }
 
     private async void TestStreamerBot(ShortcutConfig shortcut)
     {
-        UserSettings settings;
-        try
-        {
-            settings = _mainForm.ReadSettings();
-            UserSettingsStore.Validate(settings);
-            _settingsStore.Save(settings);
-            _settings = settings;
-        }
-        catch (InvalidDataException exception)
-        {
-            _mainForm.ShowSettingsError(exception.Message);
-            ShowMainWindow();
-            return;
-        }
-
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             await _engine.TestActionAsync(
-                settings.ToAppConfig(),
+                _settings.ToAppConfig(),
                 shortcut,
                 timeout.Token);
         }
@@ -229,6 +288,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task<RecordedGesture?> RecordControllerGestureAsync()
     {
+        await _runtimeGate.WaitAsync();
+        try
+        {
+            await StopRuntimeLockedAsync();
+        }
+        finally
+        {
+            _runtimeGate.Release();
+        }
+
         try
         {
             var settings = _mainForm.ReadSettings();
@@ -252,46 +321,69 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 $"Could not record those inputs. {exception.Message}");
             return null;
         }
+        finally
+        {
+            await RestartRuntimeAsync();
+        }
     }
 
-    private async void ShowVrDashboard()
+    private async void OpenVrDashboard() =>
+        await EnsureDashboardAvailableAsync(true);
+
+    private async Task EnsureDashboardAvailableAsync(bool activate)
     {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        await _dashboardGate.WaitAsync();
         try
         {
-            var settings = _mainForm.ReadSettings();
             var dashboardImage = VrDashboardRenderer.Render(
-                settings.GetShortcuts());
+                _settings.GetShortcuts());
             await _engine.ShowDashboardAsync(
-                settings.ToAppConfig(),
+                _settings.ToAppConfig(),
                 dashboardImage,
-                settings.GetShortcuts(),
+                _settings.GetShortcuts(),
                 _mainForm.AvailableActions,
+                activate,
                 CancellationToken.None);
             OnActivity(
                 new BridgeActivity(
-                    "dashboard.shown",
-                    "Opened the SVR Bridge dashboard in SteamVR."));
+                    activate ? "dashboard.shown" : "dashboard.available",
+                    activate
+                        ? "Opened the SVR Bridge dashboard in SteamVR."
+                        : "SVR Bridge is available in the SteamVR dashboard."));
         }
         catch (Exception exception)
         {
-            OnStatusChanged(
-                new BridgeStatus(
-                    BridgeState.Error,
-                    "Could not show the VR dashboard",
-                    $"Start SteamVR, then try again. {exception.Message}"));
+            OnActivity(
+                new BridgeActivity(
+                    "dashboard.unavailable",
+                    $"SteamVR dashboard unavailable: {exception.Message}",
+                    BridgeLogLevel.Warning));
+        }
+        finally
+        {
+            _dashboardGate.Release();
         }
     }
 
     private void SaveDashboardShortcut(ShortcutConfig shortcut)
     {
-        _mainForm.BeginInvoke(() =>
+        _mainForm.BeginInvoke(async () =>
         {
-            var current = _mainForm.ReadSettings();
-            var shortcuts = current.GetShortcuts()
+            var shortcuts = _settings.GetShortcuts()
                 .Where(item => item.Id != shortcut.Id)
                 .Append(shortcut)
                 .ToArray();
-            var updated = current with { Shortcuts = shortcuts };
+            var updated = _settings with
+            {
+                Shortcuts = shortcuts,
+                StartBridgeWhenAppOpens = true
+            };
+
             try
             {
                 _settingsStore.Save(updated);
@@ -300,14 +392,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 OnActivity(
                     new BridgeActivity(
                         "dashboard.shortcut_saved",
-                        $"Saved “{shortcut.Name}” from the VR dashboard."));
-                OnStatusChanged(
-                    new BridgeStatus(
-                        BridgeState.Stopped,
-                        "VR shortcut saved",
-                        _bridgeTask is { IsCompleted: false }
-                            ? "Stop and start once to activate the new shortcut."
-                            : "Choose Save and start when you are ready."));
+                        $"Saved “{shortcut.Name}” automatically."));
+                await RestartRuntimeAsync();
+                await EnsureDashboardAvailableAsync(true);
             }
             catch (Exception exception)
             {
@@ -317,17 +404,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
         });
     }
 
-    private async void FindStreamerBotActions()
+    private async void FindStreamerBotActions() =>
+        await RefreshStreamerBotActionsAsync(
+            showErrors: true,
+            refreshDashboard: true);
+
+    private async Task RefreshStreamerBotActionsAsync(
+        bool showErrors,
+        bool refreshDashboard)
     {
-        var settings = _mainForm.ReadSettings();
         try
         {
+            var settings = _mainForm.ReadSettings();
             UserSettingsStore.ValidateConnection(settings);
             OnStatusChanged(
                 new BridgeStatus(
                     BridgeState.Starting,
-                    "Finding your actions…",
-                    "Connecting to Streamer.bot and reading its action names."));
+                    "Loading Streamer.bot actions…",
+                    "Reading friendly action names."));
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             await using var client = new StreamerBotClient(
@@ -336,58 +430,71 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     new BridgeActivity("streamerbot.connection", message)));
             var actions = await client.GetActionsAsync(timeout.Token);
             _mainForm.ShowActions(actions);
-            OnStatusChanged(
-                new BridgeStatus(
-                    BridgeState.Stopped,
-                    $"{actions.Count} actions found",
-                    "Choose the action you want, then use Test Streamer.bot."));
             OnActivity(
                 new BridgeActivity(
                     "streamerbot.actions_found",
-                    $"Found {actions.Count} enabled Streamer.bot actions."));
+                    $"Loaded {actions.Count} enabled Streamer.bot actions."));
+            if (refreshDashboard)
+            {
+                await EnsureDashboardAvailableAsync(false);
+            }
         }
         catch (Exception exception)
         {
-            OnStatusChanged(
-                new BridgeStatus(
-                    BridgeState.Error,
-                    "Could not find actions",
-                    $"Check the Streamer.bot address and password. {exception.Message}"));
-            ShowMainWindow();
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.actions_unavailable",
+                    $"Could not load Streamer.bot actions: {exception.Message}",
+                    BridgeLogLevel.Warning));
+            if (showErrors)
+            {
+                OnStatusChanged(
+                    new BridgeStatus(
+                        BridgeState.Error,
+                        "Could not load actions",
+                        "Check the Streamer.bot address and password."));
+                ShowMainWindow();
+            }
         }
     }
 
-    private async void SetUpSteamVr()
+    private async void RepairSteamVrSetup() =>
+        await RegisterSteamVrAsync(showSuccess: true);
+
+    private async Task RegisterSteamVrAsync(bool showSuccess)
     {
         try
         {
-            OnStatusChanged(
-                new BridgeStatus(
-                    BridgeState.Starting,
-                    "Setting up SteamVR…",
-                    "Registering SVR Bridge and its controller shortcut."));
-
             await Task.Run(
                 () => SteamVrApplications.Register(
                     Path.Combine(AppContext.BaseDirectory, "app.vrmanifest"),
                     Path.Combine(AppContext.BaseDirectory, "actions.json"),
                     message => OnActivity(
                         new BridgeActivity("steamvr.setup", message))));
-
-            OnStatusChanged(
-                new BridgeStatus(
-                    BridgeState.Ready,
-                    "SteamVR setup complete",
-                    "SVR Bridge is registered and ready to start."));
+            if (showSuccess)
+            {
+                OnStatusChanged(
+                    new BridgeStatus(
+                        BridgeState.Ready,
+                        "SteamVR setup repaired",
+                        "SVR Bridge is registered and stays available while the app is open."));
+            }
         }
         catch (Exception exception)
         {
-            OnStatusChanged(
-                new BridgeStatus(
-                    BridgeState.Error,
-                    "SteamVR setup failed",
-                    exception.Message));
-            ShowMainWindow();
+            OnActivity(
+                new BridgeActivity(
+                    "steamvr.setup_unavailable",
+                    $"SteamVR registration will retry next launch: {exception.Message}",
+                    BridgeLogLevel.Warning));
+            if (showSuccess)
+            {
+                OnStatusChanged(
+                    new BridgeStatus(
+                        BridgeState.Error,
+                        "SteamVR setup failed",
+                        exception.Message));
+            }
         }
     }
 
@@ -395,12 +502,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            OnStatusChanged(
-                new BridgeStatus(
-                    BridgeState.Starting,
-                    "Opening controller inputs…",
-                    "SteamVR keeps a separate binding for each controller family."));
-            await _engine.OpenBindingUiAsync(_mainForm.ReadSettings().ToAppConfig());
+            await _engine.OpenBindingUiAsync(_settings.ToAppConfig());
             OnActivity(
                 new BridgeActivity(
                     "controller.binding_ui_opened",
@@ -442,17 +544,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _isExiting = true;
-        StopBridge();
-        if (_bridgeTask is not null)
+        _settingsTimer.Stop();
+        await _runtimeGate.WaitAsync();
+        try
         {
-            try
-            {
-                await _bridgeTask;
-            }
-            catch
-            {
-                // The error was already surfaced through the status area.
-            }
+            await StopRuntimeLockedAsync();
+        }
+        finally
+        {
+            _runtimeGate.Release();
         }
 
         _trayIcon.Visible = false;
@@ -462,6 +562,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnStatusChanged(BridgeStatus status)
     {
+        if (_mainForm.InvokeRequired)
+        {
+            _mainForm.BeginInvoke(() => OnStatusChanged(status));
+            return;
+        }
+
         _mainForm.UpdateStatus(status);
         _structuredLog.Write(
             "bridge.status",
@@ -473,6 +579,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _trayIcon.Text = trayText.Length <= 63
             ? trayText
             : trayText[..63];
+
+        if (status.State == BridgeState.Ready)
+        {
+            _ = EnsureDashboardAvailableAsync(false);
+        }
     }
 
     private void OnActivity(BridgeActivity activity)
@@ -481,12 +592,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _structuredLog.Write(activity);
     }
 
-    private void SetRunning(bool running)
-    {
+    private void SetRunning(bool running) =>
         _mainForm.SetRunning(running);
-        _startMenu.Enabled = !running;
-        _stopMenu.Enabled = running;
-    }
 
     private void ShowMainWindow()
     {

@@ -18,13 +18,14 @@ internal sealed class VrDashboardController
         OpenVrInput openVr,
         IReadOnlyList<ShortcutConfig> shortcuts,
         IReadOnlyList<StreamerBotAction> actions,
+        bool activate,
         Action<ShortcutConfig> shortcutCreated)
     {
         _openVr = openVr;
         _shortcuts = shortcuts.ToList();
         _actions = actions;
         _shortcutCreated = shortcutCreated;
-        ShowList();
+        ShowList(activate);
     }
 
     public void Tick(InputSnapshot snapshot, ControllerSetup setup)
@@ -155,13 +156,15 @@ internal sealed class VrDashboardController
         ShowList();
     }
 
-    private void ShowList()
+    private void ShowList(bool activate = true)
     {
         _page = DashboardPage.List;
         _selectedAction = null;
         _firstInput = null;
         _recordingArmed = false;
-        _openVr.ShowDashboard(VrDashboardRenderer.Render(_shortcuts));
+        _openVr.UpdateDashboard(
+            VrDashboardRenderer.Render(_shortcuts),
+            activate);
     }
 
     private void ShowRecording() =>

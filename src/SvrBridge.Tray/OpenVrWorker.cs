@@ -129,7 +129,8 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
     public void ShowDashboard(
         string imagePath,
         IReadOnlyList<ShortcutConfig> shortcuts,
-        IReadOnlyList<StreamerBotAction> actions)
+        IReadOnlyList<StreamerBotAction> actions,
+        bool activate = true)
     {
         var requestId = Guid.NewGuid().ToString("N");
         var result = new TaskCompletionSource<string?>(
@@ -147,7 +148,8 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
                     requestId,
                     imagePath,
                     shortcuts,
-                    actions));
+                    actions,
+                    activate));
             var error = result.Task.WaitAsync(TimeSpan.FromSeconds(10))
                 .GetAwaiter()
                 .GetResult();
@@ -528,6 +530,7 @@ internal static class OpenVrWorker
                                 openVr,
                                 command.Shortcuts ?? [],
                                 command.Actions ?? [],
+                                command.Activate,
                                 shortcut => Emit(
                                     new OpenVrWorkerMessage(
                                         "shortcutCreated",
@@ -641,7 +644,8 @@ internal sealed record OpenVrWorkerCommand(
     string? RequestId = null,
     string? ImagePath = null,
     IReadOnlyList<ShortcutConfig>? Shortcuts = null,
-    IReadOnlyList<StreamerBotAction>? Actions = null);
+    IReadOnlyList<StreamerBotAction>? Actions = null,
+    bool Activate = true);
 
 internal sealed record OpenVrWorkerMessage(
     string Kind,

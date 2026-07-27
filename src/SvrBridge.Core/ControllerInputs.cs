@@ -65,3 +65,35 @@ public static class ControllerInputs
         }
     }
 }
+
+public sealed class DashboardPointerTracker
+{
+    private float _x;
+    private float _y;
+
+    public bool Update(
+        int eventType,
+        float eventX,
+        float eventY,
+        out float clickX,
+        out float clickY)
+    {
+        clickX = 0;
+        clickY = 0;
+        if (eventType == 300) // VREvent_MouseMove
+        {
+            _x = eventX;
+            _y = eventY;
+            return false;
+        }
+
+        if (eventType != 301) // VREvent_MouseButtonDown
+        {
+            return false;
+        }
+
+        clickX = _x;
+        clickY = _y;
+        return true;
+    }
+}

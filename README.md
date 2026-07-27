@@ -38,19 +38,23 @@ In the SVR Bridge window:
 6. In VR, release the buttons, hold the safety input, then press the action
    input.
 7. Save the shortcut and use **Test action**.
-8. Choose **Set up SteamVR** once, then **Save and start**.
 
 The Shortcuts page lists every gesture and the action it runs. Select a row to
 edit, test, enable or disable, or remove it. Existing single-action settings
-are migrated automatically as the first shortcut.
+are migrated automatically as the first shortcut. Every change saves
+automatically and is applied to the running bridge.
+
+SVR Bridge registers itself with SteamVR and starts automatically whenever the
+app is open. There is no separate Save or Start step.
 
 Closing the window keeps SVR Bridge running in the Windows notification area.
 Use its tray menu to open, start, stop, test, or exit the app.
 
 ## In-VR setup
 
-Choose **Show in VR** on the Connection & setup page. The SVR Bridge SteamVR
-dashboard shows the currently saved shortcuts and what each one runs.
+While SVR Bridge is open, its tab is always available in the SteamVR dashboard.
+Choose the tab in SteamVR, or use **Open SteamVR dashboard** on the Connection &
+setup page. It shows the currently saved shortcuts and what each one runs.
 
 To create one without leaving VR:
 
@@ -60,10 +64,9 @@ To create one without leaving VR:
 3. Release all controller buttons.
 4. Hold the safety input, then press the action input.
 
-The shortcut is saved immediately and appears in the desktop list. If the
-bridge was already running, stop and start it once to activate the newly added
-shortcut. Refresh the Streamer.bot action list once on the desktop before using
-the in-VR action picker.
+The shortcut is saved immediately, appears in the desktop list, and activates
+automatically. Streamer.bot actions are loaded automatically at launch; the
+desktop refresh button remains available if actions change later.
 
 ## Controller inputs
 
@@ -132,7 +135,9 @@ password.
 
 ## SteamVR binding
 
-Choose **Set up SteamVR** in the app. The packaged Vive binding uses:
+SteamVR setup is registered automatically when the app opens. Use **Repair
+SteamVR setup** only if the dashboard entry or controller binding was removed.
+The packaged Vive binding uses:
 
 - **Safety button:** Left Grip
 - **Action button:** Right Trigger

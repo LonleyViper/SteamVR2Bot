@@ -13,9 +13,6 @@ internal sealed class MainForm : Form
     private readonly TextBox _address = new();
     private readonly TextBox _password = new();
     private readonly CheckBox _showPassword = new();
-    private readonly CheckBox _startWhenOpened = new();
-    private readonly Button _start = new();
-    private readonly Button _stop = new();
     private readonly Button _add = new();
     private readonly Button _edit = new();
     private readonly Button _remove = new();
@@ -29,9 +26,9 @@ internal sealed class MainForm : Form
     private readonly List<ShortcutConfig> _shortcutItems = [];
     private IReadOnlyList<StreamerBotAction> _actions = [];
     private bool _allowClose;
+    private bool _applyingSettings;
 
-    public event Action? StartRequested;
-    public event Action? StopRequested;
+    public event Action? SettingsChanged;
     public event Action<ShortcutConfig>? TestRequested;
     public event Action? FindActionsRequested;
     public event Action? SteamVrSetupRequested;
@@ -53,11 +50,13 @@ internal sealed class MainForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
 
         BuildInterface();
+        _address.TextChanged += (_, _) => NotifySettingsChanged();
+        _password.TextChanged += (_, _) => NotifySettingsChanged();
         UpdateStatus(
             new BridgeStatus(
-                BridgeState.Stopped,
-                "Stopped",
-                "Your VR shortcuts are not running."));
+                BridgeState.Starting,
+                "Starting automatically…",
+                "SVR Bridge runs whenever this app is open."));
         FormClosing += OnFormClosing;
     }
 
@@ -72,18 +71,25 @@ internal sealed class MainForm : Form
             ActionId = first?.ActionId ?? "",
             GestureMode = first?.Gesture.Mode ?? ChordMode.Modifier,
             Shortcuts = _shortcutItems.ToArray(),
-            StartBridgeWhenAppOpens = _startWhenOpened.Checked
+            StartBridgeWhenAppOpens = true
         };
     }
 
     public void ApplySettings(UserSettings settings)
     {
-        _address.Text = settings.StreamerBotAddress;
-        _password.Text = settings.Password;
-        _startWhenOpened.Checked = settings.StartBridgeWhenAppOpens;
-        _shortcutItems.Clear();
-        _shortcutItems.AddRange(settings.GetShortcuts());
-        RefreshShortcutGrid();
+        _applyingSettings = true;
+        try
+        {
+            _address.Text = settings.StreamerBotAddress;
+            _password.Text = settings.Password;
+            _shortcutItems.Clear();
+            _shortcutItems.AddRange(settings.GetShortcuts());
+            RefreshShortcutGrid();
+        }
+        finally
+        {
+            _applyingSettings = false;
+        }
     }
 
     public ShortcutConfig? SelectedShortcut =>
@@ -133,16 +139,8 @@ internal sealed class MainForm : Form
             return;
         }
 
-        _start.Enabled = !running;
-        _stop.Enabled = running;
-        _address.Enabled = !running;
-        _password.Enabled = !running;
-        _add.Enabled = !running;
-        _edit.Enabled = !running;
-        _remove.Enabled = !running;
-        _toggle.Enabled = !running;
-        _findActions.Enabled = !running;
-        _startWhenOpened.Enabled = !running;
+        // The bridge is always active while the app is open. Controls remain
+        // editable because changes are saved and applied automatically.
     }
 
     public void UpdateControllerSetup(ControllerSetup setup)
@@ -263,13 +261,12 @@ internal sealed class MainForm : Form
         var panel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 4,
+            RowCount = 3,
             ColumnCount = 1,
             Padding = new Padding(12)
         };
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var intro = new Label
@@ -327,14 +324,6 @@ internal sealed class MainForm : Form
         editRow.Controls.AddRange([_add, _edit, _test, _toggle, _remove]);
         panel.Controls.Add(editRow, 0, 2);
 
-        var runRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
-        ConfigureButton(_start, "Save and start", true);
-        ConfigureButton(_stop, "Stop", false);
-        _stop.Enabled = false;
-        _start.Click += (_, _) => StartRequested?.Invoke();
-        _stop.Click += (_, _) => StopRequested?.Invoke();
-        runRow.Controls.AddRange([_start, _stop]);
-        panel.Controls.Add(runRow, 0, 3);
         return panel;
     }
 
@@ -379,19 +368,23 @@ internal sealed class MainForm : Form
         panel.Controls.Add(_bindingDetail);
 
         var setupRow = new FlowLayoutPanel { AutoSize = true };
-        ConfigureButton(_setUpSteamVr, "Set up SteamVR", false);
+        ConfigureButton(_setUpSteamVr, "Repair SteamVR setup", false);
         ConfigureButton(_changeBindings, "SteamVR input bindings", false);
-        ConfigureButton(_vrDashboard, "Show in VR", true);
+        ConfigureButton(_vrDashboard, "Open SteamVR dashboard", true);
         _setUpSteamVr.Click += (_, _) => SteamVrSetupRequested?.Invoke();
         _changeBindings.Click += (_, _) => BindingsRequested?.Invoke();
         _vrDashboard.Click += (_, _) => DashboardRequested?.Invoke();
         setupRow.Controls.AddRange([_setUpSteamVr, _changeBindings, _vrDashboard]);
         panel.Controls.Add(setupRow);
 
-        _startWhenOpened.Text = "Start my shortcuts when SVR Bridge opens";
-        _startWhenOpened.AutoSize = true;
-        _startWhenOpened.Margin = new Padding(0, 18, 0, 0);
-        panel.Controls.Add(_startWhenOpened);
+        panel.Controls.Add(new Label
+        {
+            Text = "SVR Bridge stays available in SteamVR and runs your shortcuts whenever this app is open. Changes save automatically.",
+            AutoSize = true,
+            MaximumSize = new Size(650, 0),
+            ForeColor = Color.FromArgb(92, 101, 112),
+            Margin = new Padding(0, 18, 0, 0)
+        });
         return panel;
     }
 
@@ -440,6 +433,7 @@ internal sealed class MainForm : Form
         {
             _shortcutItems.Add(editor.Shortcut);
             RefreshShortcutGrid(editor.Shortcut.Id);
+            NotifySettingsChanged();
         }
     }
 
@@ -464,6 +458,7 @@ internal sealed class MainForm : Form
         var index = _shortcutItems.FindIndex(item => item.Id == selected.Id);
         _shortcutItems[index] = editor.Shortcut;
         RefreshShortcutGrid(editor.Shortcut.Id);
+        NotifySettingsChanged();
     }
 
     private void ToggleSelected()
@@ -476,6 +471,7 @@ internal sealed class MainForm : Form
         var index = _shortcutItems.FindIndex(item => item.Id == selected.Id);
         _shortcutItems[index] = selected with { Enabled = !selected.Enabled };
         RefreshShortcutGrid(selected.Id);
+        NotifySettingsChanged();
     }
 
     private void RemoveSelected()
@@ -497,6 +493,7 @@ internal sealed class MainForm : Form
 
         _shortcutItems.RemoveAll(item => item.Id == selected.Id);
         RefreshShortcutGrid();
+        NotifySettingsChanged();
     }
 
     private void RefreshShortcutGrid(string? selectId = null)
@@ -536,6 +533,14 @@ internal sealed class MainForm : Form
     private Task<RecordedGesture?> InvokeRecordAsync() =>
         RecordRequested?.Invoke()
         ?? Task.FromResult<RecordedGesture?>(null);
+
+    private void NotifySettingsChanged()
+    {
+        if (!_applyingSettings)
+        {
+            SettingsChanged?.Invoke();
+        }
+    }
 
     private static void ConfigureButton(Button button, string text, bool primary)
     {

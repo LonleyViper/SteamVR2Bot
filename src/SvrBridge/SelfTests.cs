@@ -14,6 +14,7 @@ internal static class SelfTests
         TestSimultaneousChord();
         TestCooldown();
         TestPhysicalControllerInputs();
+        TestDashboardPointerTracking();
         TestAuthenticationHash();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
@@ -53,6 +54,20 @@ internal static class SelfTests
         Assert(
             !wrongHand.IsPressed(snapshot),
             "A button on the wrong controller was treated as pressed.");
+    }
+
+    private static void TestDashboardPointerTracking()
+    {
+        var tracker = new DashboardPointerTracker();
+        Assert(
+            !tracker.Update(300, 640, 720, out _, out _),
+            "A dashboard mouse move was treated as a click.");
+        Assert(
+            tracker.Update(301, 0, 0, out var x, out var y),
+            "A dashboard mouse-down event was not recognized.");
+        Assert(
+            x == 640 && y == 720,
+            "Dashboard click did not use the preceding mouse-move position.");
     }
 
     private static void TestModifierChord()

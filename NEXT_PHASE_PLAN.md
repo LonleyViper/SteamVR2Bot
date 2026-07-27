@@ -264,7 +264,20 @@ Live gates for this checkpoint:
 
 1. Confirm the SteamVR dashboard pointer/click coordinates and action paging in
    the headset.
-2. Record a second Vive shortcut in VR, restart the bridge once, and confirm
-   that each gesture invokes only its own action.
+2. Record a second Vive shortcut in VR and confirm the automatic runtime reload
+   makes it active without a manual restart.
 3. Repeat the 20-attempt shell and GERONIMO matrices for both shortcuts.
 4. Test each additional controller family before adding a named preset.
+
+## Always-on UX correction
+
+- The app now registers itself with SteamVR and starts the shortcut runtime
+  automatically whenever it is open.
+- Its dashboard overlay is created automatically, so it remains available as a
+  SteamVR dashboard tab without first pressing a desktop button.
+- Desktop and in-VR changes save immediately and trigger an automatic runtime
+  reload.
+- Manual Save, Start, Stop, and start-on-open controls were removed.
+- Dashboard clicks follow Valve's reference event pattern: the latest
+  `VREvent_MouseMove` position is retained and used when
+  `VREvent_MouseButtonDown` arrives.

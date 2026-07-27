@@ -12,6 +12,7 @@ public sealed class OpenVrInput : IOpenVrSession
 
     private readonly nint _library;
     private readonly VrShutdownInternal _shutdown;
+    private readonly Action<string> _log;
     private readonly VrInputFunctions _input;
     private readonly VrSystemFunctions? _system;
     private readonly VrOverlayFunctions? _overlay;
@@ -22,6 +23,7 @@ public sealed class OpenVrInput : IOpenVrSession
     private readonly VrActiveActionSet[] _activeSets;
     private ulong _dashboardHandle;
     private ulong _dashboardThumbnailHandle;
+    private readonly DashboardPointerTracker _dashboardPointer = new();
     private bool _disposed;
 
     public OpenVrInput(
@@ -30,6 +32,7 @@ public sealed class OpenVrInput : IOpenVrSession
         Action<string>? log = null)
     {
         log ??= Console.WriteLine;
+        _log = log;
         var dllPath = ResolveOpenVrDll(configuredDllPath);
         log($"OpenVR DLL: {dllPath}");
 
@@ -208,7 +211,10 @@ public sealed class OpenVrInput : IOpenVrSession
         }
     }
 
-    public void ShowDashboard(string imagePath)
+    public void ShowDashboard(string imagePath) =>
+        UpdateDashboard(imagePath, activate: true);
+
+    public void UpdateDashboard(string imagePath, bool activate)
     {
         ThrowIfDisposed();
         if (_overlay is null)
@@ -256,7 +262,10 @@ public sealed class OpenVrInput : IOpenVrSession
             EnsureOverlaySuccess(
                 _overlay.Value.SetOverlayFromFile(_dashboardThumbnailHandle, image),
                 "SetOverlayFromFile(thumbnail)");
-            _overlay.Value.ShowDashboard(key);
+            if (activate)
+            {
+                _overlay.Value.ShowDashboard(key);
+            }
         }
         finally
         {
@@ -275,7 +284,9 @@ public sealed class OpenVrInput : IOpenVrSession
             return false;
         }
 
-        const int eventBufferSize = 128;
+        // On Windows VREvent_t is 64 bytes: a 16-byte header followed by
+        // the 48-byte VREvent_Data_t union.
+        const int eventBufferSize = 64;
         var eventBuffer = Marshal.AllocCoTaskMem(eventBufferSize);
         try
         {
@@ -284,17 +295,25 @@ public sealed class OpenVrInput : IOpenVrSession
                        eventBuffer,
                        eventBufferSize))
             {
-                // VREvent_MouseButtonDown. VREvent_t uses OpenVR's 4-byte
-                // event packing, so the mouse union begins at byte 12.
-                if (Marshal.ReadInt32(eventBuffer) != 301)
+                var eventType = Marshal.ReadInt32(eventBuffer);
+                var eventX = BitConverter.Int32BitsToSingle(
+                    Marshal.ReadInt32(eventBuffer, 16));
+                var eventY = 900 - BitConverter.Int32BitsToSingle(
+                    Marshal.ReadInt32(eventBuffer, 20));
+                if (!_dashboardPointer.Update(
+                        eventType,
+                        eventX,
+                        eventY,
+                        out x,
+                        out y))
                 {
                     continue;
                 }
 
-                x = BitConverter.Int32BitsToSingle(
-                    Marshal.ReadInt32(eventBuffer, 12));
-                y = 900 - BitConverter.Int32BitsToSingle(
-                    Marshal.ReadInt32(eventBuffer, 16));
+                // Valve's dashboard sample uses the last MouseMove position
+                // for button events; the button packet itself is not a
+                // reliable source of x/y coordinates.
+                _log($"SteamVR dashboard click: {x:0}, {y:0}.");
                 return true;
             }
 

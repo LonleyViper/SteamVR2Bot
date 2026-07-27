@@ -111,7 +111,7 @@ internal sealed class UserSettingsStore
 
     public void Save(UserSettings settings)
     {
-        Validate(settings);
+        ValidateForSave(settings);
         Directory.CreateDirectory(_settingsDirectory);
 
         var saved = new SavedSettings
@@ -133,13 +133,17 @@ internal sealed class UserSettingsStore
 
     public static void Validate(UserSettings settings)
     {
-        ValidateConnection(settings);
+        ValidateForSave(settings);
 
         if (settings.GetShortcuts().Count == 0)
         {
             throw new InvalidDataException("Add at least one controller shortcut.");
         }
+    }
 
+    public static void ValidateForSave(UserSettings settings)
+    {
+        ValidateConnection(settings);
         foreach (var shortcut in settings.GetShortcuts())
         {
             shortcut.Validate();
