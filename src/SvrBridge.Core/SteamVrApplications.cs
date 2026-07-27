@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
 
 namespace SvrBridge.Core;
 
@@ -9,6 +11,8 @@ namespace SvrBridge.Core;
 public static class SteamVrApplications
 {
     private const string ApplicationsInterfaceVersion = "IVRApplications_006";
+    private const string AppKey = "ie.lonelyviper.svrbridge.poc";
+    private static readonly Uri SteamVrWebRoot = new("http://127.0.0.1:27062/");
 
     public static void Register(
         string applicationManifestPath,
@@ -78,6 +82,49 @@ public static class SteamVrApplications
         }
 
         log($"Registered SteamVR application manifest: {Path.GetFullPath(applicationManifestPath)}");
+    }
+
+    public static async Task SelectPackagedViveBindingAsync(
+        string bindingPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(bindingPath))
+        {
+            throw new FileNotFoundException(
+                "Packaged Vive controller binding not found.",
+                bindingPath);
+        }
+
+        using var client = new HttpClient { BaseAddress = SteamVrWebRoot };
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "input/selectconfig.action");
+        request.Headers.Referrer = new Uri(
+            SteamVrWebRoot,
+            $"dashboard/controllerbinding.html?app={AppKey}");
+        request.Headers.TryAddWithoutValidation("Origin", SteamVrWebRoot.GetLeftPart(UriPartial.Authority));
+        request.Headers.TryAddWithoutValidation("X-Requested-With", "XMLHttpRequest");
+        var payload = JsonSerializer.Serialize(
+            new
+            {
+                app_key = AppKey,
+                controller_type = "vive_controller",
+                url = new Uri(Path.GetFullPath(bindingPath)).AbsoluteUri
+            });
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+        using var response = await client.SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var result = JsonDocument.Parse(responseText);
+        if (!result.RootElement.TryGetProperty("success", out var success)
+            || !success.GetBoolean())
+        {
+            var detail = result.RootElement.TryGetProperty("error", out var error)
+                ? error.GetString()
+                : "SteamVR did not confirm the controller input map.";
+            throw new InvalidOperationException(detail);
+        }
     }
 
     private static T LoadExport<T>(nint library, string name) where T : Delegate =>

@@ -255,6 +255,10 @@ Implemented on `codex/shortcut-manager`:
   shortcut saves back to the shared desktop settings.
 - Direct physical input selection is Vive-first. Other controller families retain
   the official SteamVR binding fallback until they pass the hardware matrix.
+- Vive physical inputs are backed by explicit SteamVR actions rather than the
+  deprecated legacy controller-state API. Startup selects the packaged complete
+  Vive input map so old saved SteamVR bindings cannot silently disable the
+  in-app button choices.
 - The dashboard remains inside the disposable OpenVR worker, preserving the
   tray application's SteamVR-restart isolation.
 

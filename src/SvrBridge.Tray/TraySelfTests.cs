@@ -6,6 +6,7 @@ internal static class TraySelfTests
     {
         TestVrActionBrowser();
         TestVrScrollLimiter();
+        TestPackagedViveBinding();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -254,6 +255,48 @@ internal static class TraySelfTests
         Assert(
             accepted == 4,
             "A VR scroll burst would still cause too many dashboard redraws.");
+    }
+
+    private static void TestPackagedViveBinding()
+    {
+        using var manifest = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "actions.json")));
+        using var binding = System.Text.Json.JsonDocument.Parse(
+            File.ReadAllText(
+                Path.Combine(AppContext.BaseDirectory, "bindings_vive_controller.json")));
+
+        var actionNames = manifest.RootElement
+            .GetProperty("actions")
+            .EnumerateArray()
+            .Select(action => action.GetProperty("name").GetString())
+            .ToHashSet(StringComparer.Ordinal);
+        var outputs = binding.RootElement
+            .GetProperty("bindings")
+            .GetProperty("/actions/svrbridge")
+            .GetProperty("sources")
+            .EnumerateArray()
+            .Select(source =>
+                source.GetProperty("inputs")
+                    .GetProperty("click")
+                    .GetProperty("output")
+                    .GetString())
+            .ToArray();
+
+        string[] expected =
+        [
+            "/actions/svrbridge/in/left_menu",
+            "/actions/svrbridge/in/right_menu",
+            "/actions/svrbridge/in/left_grip",
+            "/actions/svrbridge/in/right_grip",
+            "/actions/svrbridge/in/left_trigger",
+            "/actions/svrbridge/in/right_trigger",
+            "/actions/svrbridge/in/left_trackpad",
+            "/actions/svrbridge/in/right_trackpad"
+        ];
+        Assert(
+            expected.All(action => actionNames.Contains(action))
+            && expected.All(action => outputs.Contains(action, StringComparer.Ordinal)),
+            "The packaged Vive binding does not expose every selectable Vive input.");
     }
 
     private static void Assert(bool condition, string message)

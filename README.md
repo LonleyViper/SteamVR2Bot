@@ -81,6 +81,8 @@ desktop refresh button remains available if actions change later.
 The VR picker presents controller-aware physical input names, such as **Left
 Menu Button**, **Left Grip**, and **Right Trigger**. This avoids SteamVR's
 dashboard consuming a button while the wizard is trying to observe it.
+SVR Bridge installs its complete Vive input map automatically, so these choices
+do not require a separate visit to SteamVR Controller Bindings.
 
 The recorder is validated first for Vive controllers. Controller button layouts
 vary by family. For Index, Touch, WMR, Cosmos, or another controller, verify the

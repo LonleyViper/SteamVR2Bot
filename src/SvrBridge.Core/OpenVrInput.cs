@@ -9,6 +9,17 @@ public sealed class OpenVrInput : IOpenVrSession
     private const string ButtonOnePath = "/actions/svrbridge/in/button_one";
     private const string ButtonTwoPath = "/actions/svrbridge/in/button_two";
     private const int OverlayGlobalPriorityMin = 16_777_216;
+    private static readonly PhysicalActionDefinition[] PhysicalActions =
+    [
+        new(ControllerHand.Left, 1, "/actions/svrbridge/in/left_menu"),
+        new(ControllerHand.Right, 1, "/actions/svrbridge/in/right_menu"),
+        new(ControllerHand.Left, 2, "/actions/svrbridge/in/left_grip"),
+        new(ControllerHand.Right, 2, "/actions/svrbridge/in/right_grip"),
+        new(ControllerHand.Left, 33, "/actions/svrbridge/in/left_trigger"),
+        new(ControllerHand.Right, 33, "/actions/svrbridge/in/right_trigger"),
+        new(ControllerHand.Left, 32, "/actions/svrbridge/in/left_trackpad"),
+        new(ControllerHand.Right, 32, "/actions/svrbridge/in/right_trackpad")
+    ];
 
     private readonly nint _library;
     private readonly VrShutdownInternal _shutdown;
@@ -20,6 +31,8 @@ public sealed class OpenVrInput : IOpenVrSession
     private readonly ulong _actionSet;
     private readonly ulong _buttonOne;
     private readonly ulong _buttonTwo;
+    private readonly IReadOnlyDictionary<(ControllerHand Hand, uint Button), ulong>
+        _physicalButtons;
     private readonly VrActiveActionSet[] _activeSets;
     private ulong _dashboardHandle;
     private ulong _dashboardThumbnailHandle;
@@ -88,6 +101,9 @@ public sealed class OpenVrInput : IOpenVrSession
             _actionSet = actionSet;
             _buttonOne = GetActionHandle(ButtonOnePath);
             _buttonTwo = GetActionHandle(ButtonTwoPath);
+            _physicalButtons = PhysicalActions.ToDictionary(
+                definition => (definition.Hand, definition.Button),
+                definition => GetActionHandle(definition.ActionPath));
 
             _activeSets =
             [
@@ -122,8 +138,8 @@ public sealed class OpenVrInput : IOpenVrSession
 
         var (leftButtons, rightButtons) = ReadControllerButtons();
         return new InputSnapshot(
-            ReadDigital(_buttonOne),
-            ReadDigital(_buttonTwo),
+            ReadDigital(_buttonOne) || IsPressed(leftButtons, 2),
+            ReadDigital(_buttonTwo) || IsPressed(rightButtons, 33),
             leftButtons,
             rightButtons);
     }
@@ -141,8 +157,16 @@ public sealed class OpenVrInput : IOpenVrSession
         }
 
         var controllers = GetControllers();
-        var safety = GetBindings(_buttonOne, "Safety Button").FirstOrDefault();
-        var action = GetBindings(_buttonTwo, "Action Button").FirstOrDefault();
+        var safety = GetBindings(_buttonOne, "Safety Button").FirstOrDefault()
+                     ?? GetBindings(
+                             _physicalButtons[(ControllerHand.Left, 2)],
+                             "Left Grip")
+                         .FirstOrDefault();
+        var action = GetBindings(_buttonTwo, "Action Button").FirstOrDefault()
+                     ?? GetBindings(
+                             _physicalButtons[(ControllerHand.Right, 33)],
+                             "Right Trigger")
+                         .FirstOrDefault();
 
         if (controllers.Count == 0)
         {
@@ -528,6 +552,29 @@ public sealed class OpenVrInput : IOpenVrSession
 
     private (ulong Left, ulong Right) ReadControllerButtons()
     {
+        var (left, right) = ReadLegacyControllerButtons();
+        foreach (var definition in PhysicalActions)
+        {
+            if (!ReadDigital(_physicalButtons[(definition.Hand, definition.Button)]))
+            {
+                continue;
+            }
+
+            if (definition.Hand == ControllerHand.Left)
+            {
+                left |= 1UL << (int)definition.Button;
+            }
+            else
+            {
+                right |= 1UL << (int)definition.Button;
+            }
+        }
+
+        return (left, right);
+    }
+
+    private (ulong Left, ulong Right) ReadLegacyControllerButtons()
+    {
         if (_system is null || _system.Value.GetControllerState is null)
         {
             return (0, 0);
@@ -566,6 +613,9 @@ public sealed class OpenVrInput : IOpenVrSession
 
         return (left, right);
     }
+
+    private static bool IsPressed(ulong buttons, uint button) =>
+        (buttons & (1UL << (int)button)) != 0;
 
     private IReadOnlyList<ControllerDevice> GetControllers()
     {
@@ -1027,6 +1077,11 @@ public sealed class OpenVrInput : IOpenVrSession
         SetOverlayFromFileDelegate SetOverlayFromFile,
         CreateDashboardOverlayDelegate CreateDashboardOverlay,
         ShowDashboardDelegate ShowDashboard);
+
+    private readonly record struct PhysicalActionDefinition(
+        ControllerHand Hand,
+        uint Button,
+        string ActionPath);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct HmdVector2

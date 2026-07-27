@@ -473,6 +473,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     Path.Combine(AppContext.BaseDirectory, "actions.json"),
                     message => OnActivity(
                         new BridgeActivity("steamvr.setup", message))));
+            // SteamVR may still be completing the binding load started by the
+            // short-lived registration connection. Let that finish before
+            // replacing an old user/workshop binding with the app-owned map.
+            await Task.Delay(750);
+            await SteamVrApplications.SelectPackagedViveBindingAsync(
+                Path.Combine(AppContext.BaseDirectory, "bindings_vive_controller.json"));
+            await Task.Delay(500);
+            OnActivity(
+                new BridgeActivity(
+                    "steamvr.inputs_ready",
+                    "Installed the built-in Vive controller input map."));
             if (showSuccess)
             {
                 OnStatusChanged(

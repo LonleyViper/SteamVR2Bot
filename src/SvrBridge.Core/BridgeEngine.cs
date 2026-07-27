@@ -367,10 +367,15 @@ public sealed class BridgeEngine
 
                 if (config.LogRawInputChanges && snapshot != previous)
                 {
+                    var physicalInputs = ControllerInputs.PressedInputs(
+                        snapshot,
+                        currentSetup);
                     Log(
                         "controller.input",
                         $"Safety input {(snapshot.ButtonOne ? "held" : "released")}; " +
-                        $"action input {(snapshot.ButtonTwo ? "pressed" : "released")}.");
+                        $"action input {(snapshot.ButtonTwo ? "pressed" : "released")}; " +
+                        $"physical inputs: " +
+                        $"{(physicalInputs.Count == 0 ? "none" : string.Join(", ", physicalInputs.Select(input => input.FriendlyName)))}.");
                     previous = snapshot;
                 }
 
