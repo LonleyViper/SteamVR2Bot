@@ -57,6 +57,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _engine.Activity += OnActivity;
         _engine.ControllerSetupChanged += _mainForm.UpdateControllerSetup;
         _engine.ShortcutCreated += SaveDashboardShortcut;
+        _engine.ShortcutDeleted += DeleteDashboardShortcut;
 
         var menu = new ContextMenuStrip();
         var open = new ToolStripMenuItem("Open SVR Bridge");
@@ -311,7 +312,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (OperationCanceledException)
         {
-            var detail = mode == ChordMode.LongPress
+            var detail = mode is ChordMode.LongPress or ChordMode.DoublePress
                 ? "No controller input was detected. Make sure the controller is on, then try again."
                 : "No two-input gesture was detected. Make sure both controllers are on, " +
                   "then try again. For unsupported controllers, use SteamVR input bindings.";
@@ -402,6 +403,49 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 _mainForm.ShowSettingsError(
                     $"The VR shortcut was recorded but could not be saved. {exception.Message}");
+            }
+        });
+    }
+
+    private void DeleteDashboardShortcut(string shortcutId)
+    {
+        _mainForm.BeginInvoke(async () =>
+        {
+            var existing = _settings.GetShortcuts().FirstOrDefault(item =>
+                item.Id.Equals(shortcutId, StringComparison.OrdinalIgnoreCase));
+            if (existing is null)
+            {
+                return;
+            }
+
+            var remaining = _settings.GetShortcuts()
+                .Where(item => !item.Id.Equals(
+                    shortcutId,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var updated = _settings with
+            {
+                Shortcuts = remaining,
+                ActionName = remaining.Length == 0 ? "" : _settings.ActionName,
+                ActionId = remaining.Length == 0 ? "" : _settings.ActionId,
+                StartBridgeWhenAppOpens = true
+            };
+
+            try
+            {
+                _settingsStore.Save(updated);
+                _settings = updated;
+                _mainForm.ApplySettings(updated);
+                OnActivity(
+                    new BridgeActivity(
+                        "dashboard.shortcut_deleted",
+                        $"Deleted “{existing.Name}” automatically."));
+                await RestartRuntimeAsync();
+            }
+            catch (Exception exception)
+            {
+                _mainForm.ShowSettingsError(
+                    $"The VR shortcut could not be deleted. {exception.Message}");
             }
         });
     }

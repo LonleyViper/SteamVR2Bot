@@ -212,6 +212,36 @@ internal static class TraySelfTests
             quickInputPreview.Width == 1400 && quickInputPreview.Height == 900,
             "The quick VR input picker rendered at the wrong size.");
 
+        var doublePressInput =
+            SvrBridge.Core.ControllerInputBinding.Physical(
+                SvrBridge.Core.ControllerHand.Left,
+                1,
+                "Left Menu Button");
+        var doublePressShortcut = new SvrBridge.Core.ShortcutConfig
+        {
+            Id = "double-press-preview",
+            Name = "Toggle microphone",
+            SafetyInput = doublePressInput,
+            ActionInput = doublePressInput,
+            Gesture = new SvrBridge.Core.ChordConfig
+            {
+                Mode = SvrBridge.Core.ChordMode.DoublePress,
+                WindowMs = 500,
+                CooldownMs = 250
+            },
+            ActionName = "Toggle microphone",
+            ActionId = "toggle-microphone"
+        };
+        doublePressShortcut.Validate();
+        Assert(
+            doublePressShortcut.FriendlyGesture == "Double press Left Menu Button",
+            "The double-press gesture did not have a friendly description.");
+        var listPath = VrDashboardRenderer.Render([doublePressShortcut]);
+        using var listPreview = new Bitmap(listPath);
+        Assert(
+            listPreview.Width == 1400 && listPreview.Height == 900,
+            "The editable VR shortcut list rendered at the wrong size.");
+
         var gesturePath = VrDashboardRenderer.RenderGesturePicker("Change scene");
         using var gesturePreview = new Bitmap(gesturePath);
         Assert(

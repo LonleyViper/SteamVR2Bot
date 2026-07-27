@@ -63,11 +63,12 @@ To create one without leaving VR:
 2. Open a Streamer.bot action group, such as **Scenes** or **Sounds**.
 3. Scroll with the controller, or use **Previous** and **Next**, then choose the
    action by its familiar name. Select **All groups** to go back.
-4. Choose a controller button from the quick list. One tap saves it as a
-   deliberate two-second hold.
+4. Choose **Double press** or **Hold 2 sec** beside the controller button you
+   want to use.
 
-For example, choose **Left Menu Button — Hold for 2 seconds**. The saved
-shortcut will run once after that button has been held for two seconds.
+For a fast test, choose **Double press** beside **Left Menu Button**, then press
+that button twice within half a second. A two-second hold remains available as
+the more deliberate option.
 
 Choose **More shortcut options** only when you want a one- or three-second hold,
 or a two-button gesture.
@@ -75,6 +76,9 @@ or a two-button gesture.
 The shortcut is saved immediately, appears in the desktop list, and activates
 automatically. Streamer.bot actions are loaded automatically at launch; the
 desktop refresh button remains available if actions change later.
+
+Each saved row has a pencil button to change its action, input, or gesture, and
+an X button to delete it. Both changes save and activate automatically.
 
 ## Controller inputs
 
@@ -105,6 +109,7 @@ untested default preset is labelled as validated.
 
 Each shortcut's gesture behavior supports:
 
+- Double press one chosen input within 500 ms.
 - Hold one chosen input for 1, 2, or 3 seconds.
 - Hold the Safety Button, then press the Action Button.
 - Press both chosen inputs together within 300 ms.

@@ -44,6 +44,7 @@ public sealed class BridgeEngine
     public event Action<BridgeActivity>? Activity;
     public event Action<ControllerSetup>? ControllerSetupChanged;
     public event Action<ShortcutConfig>? ShortcutCreated;
+    public event Action<string>? ShortcutDeleted;
 
     public async Task RunAsync(AppConfig config, CancellationToken cancellationToken)
     {
@@ -163,8 +164,8 @@ public sealed class BridgeEngine
         SetStatus(
             BridgeState.Starting,
             "Listening for your controller input…",
-            mode == ChordMode.LongPress
-                ? "Release all buttons, then press the button you want to hold."
+            mode is ChordMode.LongPress or ChordMode.DoublePress
+                ? "Release all buttons, then press the button you want to use."
                 : "Release the buttons, then hold the first input and press the second.");
 
         using var input = await _openVrSessionFactory.ConnectAsync(
@@ -185,7 +186,7 @@ public sealed class BridgeEngine
         while (first is null)
         {
             var pressed = ControllerInputs.PressedInputs(input.Poll(), setup);
-            if (mode == ChordMode.LongPress
+            if (mode is ChordMode.LongPress or ChordMode.DoublePress
                 && pressed.FirstOrDefault() is { } heldInput)
             {
                 return FinishRecording(heldInput, heldInput, setup, mode);
@@ -455,6 +456,11 @@ public sealed class BridgeEngine
         {
             ShortcutCreated?.Invoke(shortcut);
         }
+
+        foreach (var shortcutId in input.DrainDeletedShortcutIds())
+        {
+            ShortcutDeleted?.Invoke(shortcutId);
+        }
     }
 
     private async Task DeliverActionAsync(
@@ -548,7 +554,9 @@ public sealed class BridgeEngine
                                               shortcut.SafetyInput.Id,
                                               out _,
                                               out _)
-                                          && (shortcut.Gesture.Mode == ChordMode.LongPress
+                                          && (shortcut.Gesture.Mode
+                                                  is ChordMode.LongPress
+                                                  or ChordMode.DoublePress
                                               || ControllerInputBinding.TryParsePhysical(
                                                   shortcut.ActionInput.Id,
                                                   out _,
@@ -616,15 +624,27 @@ public sealed class BridgeEngine
             ControllerInputs.ControllerFamily(setup));
         Log(
             "controller.gesture_recorded",
-            mode == ChordMode.LongPress
-                ? $"Recorded long press of {safetyInput.FriendlyName}."
-                : $"Recorded {safetyInput.FriendlyName} + {actionInput.FriendlyName}.");
+            mode switch
+            {
+                ChordMode.LongPress =>
+                    $"Recorded long press of {safetyInput.FriendlyName}.",
+                ChordMode.DoublePress =>
+                    $"Recorded double press of {safetyInput.FriendlyName}.",
+                _ => $"Recorded {safetyInput.FriendlyName} + {actionInput.FriendlyName}."
+            });
+        var singleInput = mode is ChordMode.LongPress or ChordMode.DoublePress;
         SetStatus(
             BridgeState.Stopped,
-            mode == ChordMode.LongPress ? "Input recorded" : "Inputs recorded",
-            mode == ChordMode.LongPress
-                ? $"Hold {safetyInput.FriendlyName} to run the action."
-                : $"Hold {safetyInput.FriendlyName}, then press {actionInput.FriendlyName}.");
+            singleInput ? "Input recorded" : "Inputs recorded",
+            mode switch
+            {
+                ChordMode.LongPress =>
+                    $"Hold {safetyInput.FriendlyName} to run the action.",
+                ChordMode.DoublePress =>
+                    $"Double press {safetyInput.FriendlyName} to run the action.",
+                _ =>
+                    $"Hold {safetyInput.FriendlyName}, then press {actionInput.FriendlyName}."
+            });
         return gesture;
     }
 

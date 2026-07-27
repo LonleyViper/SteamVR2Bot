@@ -250,9 +250,10 @@ Implemented on `codex/shortcut-manager`:
 - The SteamVR dashboard lists the saved gestures and actions. Its guided wizard
   opens at the Streamer.bot group level, expands a group into its actions,
   supports controller scrolling and large Previous/Next controls, and presents
-  common two-second button holds as one-tap choices. Less common hold durations
-  and two-button gestures remain under **More shortcut options**. The resulting
-  shortcut saves back to the shared desktop settings.
+  double-press and common two-second-hold choices on each input row. Less common
+  hold durations and two-button gestures remain under **More shortcut options**.
+  Each saved row now has direct pencil/edit and X/delete controls. Every change
+  saves back to the shared desktop settings.
 - Direct physical input selection is Vive-first. Other controller families retain
   the official SteamVR binding fallback until they pass the hardware matrix.
 - Vive physical inputs are backed by explicit SteamVR actions rather than the
@@ -263,7 +264,7 @@ Implemented on `codex/shortcut-manager`:
   tray application's SteamVR-restart isolation.
 
 Automated checks cover legacy migration, protected multi-shortcut persistence,
-physical left/right button-mask matching, chord behavior, authenticated
+physical left/right button-mask matching, double-press and other chord behavior, authenticated
 delivery, reconnect behavior, SteamVR worker recovery, and duplicate
 prevention.
 

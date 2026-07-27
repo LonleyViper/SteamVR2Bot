@@ -19,6 +19,8 @@ public interface IOpenVrSession : IDisposable
         ShowDashboard(imagePath);
 
     IReadOnlyList<ShortcutConfig> DrainCreatedShortcuts() => [];
+
+    IReadOnlyList<string> DrainDeletedShortcutIds() => [];
 }
 
 public interface IOpenVrSessionFactory

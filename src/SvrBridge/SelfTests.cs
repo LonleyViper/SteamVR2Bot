@@ -13,6 +13,7 @@ internal static class SelfTests
         TestModifierChord();
         TestSimultaneousChord();
         TestLongPress();
+        TestDoublePress();
         TestCooldown();
         TestPhysicalControllerInputs();
         TestAvailableControllerInputs();
@@ -183,6 +184,25 @@ internal static class SelfTests
         Assert(!detector.Update(false, false, 1600), "Long press fired on release.");
         Assert(!detector.Update(true, false, 1700), "Second long press fired immediately.");
         Assert(detector.Update(true, false, 2700), "Second long press did not re-arm.");
+    }
+
+    private static void TestDoublePress()
+    {
+        var detector = new ChordDetector(new ChordConfig
+        {
+            Mode = ChordMode.DoublePress,
+            WindowMs = 500,
+            CooldownMs = 0
+        });
+
+        Assert(!detector.Update(true, true, 100), "First press of a double press fired.");
+        Assert(!detector.Update(false, false, 150), "Release between presses fired.");
+        Assert(detector.Update(true, true, 400), "Second press inside the window did not fire.");
+        Assert(!detector.Update(true, true, 450), "Held second press fired more than once.");
+        Assert(!detector.Update(false, false, 500), "Double press fired on release.");
+        Assert(!detector.Update(true, true, 1100), "A press outside the window fired.");
+        Assert(!detector.Update(false, false, 1150), "Release after a late press fired.");
+        Assert(detector.Update(true, true, 1450), "A new double press pair did not fire.");
     }
 
     private static void TestAuthenticationHash()

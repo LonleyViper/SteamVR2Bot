@@ -26,6 +26,7 @@ public sealed class ChordDetector
     {
         var onePressed = buttonOne && !_previousOne;
         var twoPressed = buttonTwo && !_previousTwo;
+        var previousOnePressedAt = _onePressedAt;
 
         if (onePressed)
         {
@@ -37,7 +38,9 @@ public sealed class ChordDetector
             _twoPressedAt = nowMs;
         }
 
-        if (_mode == ChordMode.LongPress ? !buttonOne : !buttonOne || !buttonTwo)
+        if (_mode is ChordMode.LongPress or ChordMode.DoublePress
+                ? !buttonOne
+                : !buttonOne || !buttonTwo)
         {
             _latched = false;
         }
@@ -50,6 +53,9 @@ public sealed class ChordDetector
                                       && Math.Abs(_onePressedAt - _twoPressedAt) <= _windowMs,
             ChordMode.LongPress => buttonOne
                                    && nowMs - _onePressedAt >= _holdMs,
+            ChordMode.DoublePress => onePressed
+                                     && previousOnePressedAt != long.MinValue
+                                     && nowMs - previousOnePressedAt <= _windowMs,
             _ => false
         };
 

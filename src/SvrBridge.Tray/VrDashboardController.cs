@@ -6,7 +6,9 @@ internal sealed class VrDashboardController
 {
     private readonly OpenVrInput _openVr;
     private readonly Action<ShortcutConfig> _shortcutCreated;
+    private readonly Action<string> _shortcutDeleted;
     private readonly List<ShortcutConfig> _shortcuts;
+    private readonly IReadOnlyList<StreamerBotAction> _actions;
     private readonly VrActionBrowser _actionBrowser;
     private readonly VrDashboardScrollLimiter _scrollLimiter = new();
     private DashboardPage _page;
@@ -16,18 +18,22 @@ internal sealed class VrDashboardController
     private int _holdMs = 1000;
     private ControllerHand _selectedHand;
     private ControllerSetup _setup = ControllerSetup.Unknown;
+    private string? _editingShortcutId;
 
     public VrDashboardController(
         OpenVrInput openVr,
         IReadOnlyList<ShortcutConfig> shortcuts,
         IReadOnlyList<StreamerBotAction> actions,
         bool activate,
-        Action<ShortcutConfig> shortcutCreated)
+        Action<ShortcutConfig> shortcutCreated,
+        Action<string> shortcutDeleted)
     {
         _openVr = openVr;
         _shortcuts = shortcuts.ToList();
+        _actions = actions;
         _actionBrowser = new VrActionBrowser(actions);
         _shortcutCreated = shortcutCreated;
+        _shortcutDeleted = shortcutDeleted;
         ShowList(activate);
     }
 
@@ -61,6 +67,31 @@ internal sealed class VrDashboardController
                 _page = DashboardPage.ActionPicker;
                 ShowActionPicker();
                 break;
+            case DashboardPage.List when y >= 160:
+                {
+                    var index = (int)((y - 160) / 105);
+                    var rowY = 160 + (index * 105);
+                    if (index < 0
+                        || index >= Math.Min(6, _shortcuts.Count)
+                        || y >= rowY + 92)
+                    {
+                        break;
+                    }
+
+                    var shortcut = _shortcuts[index];
+                    if (x >= 1210)
+                    {
+                        _shortcuts.RemoveAt(index);
+                        _shortcutDeleted(shortcut.Id);
+                        ShowList();
+                    }
+                    else if (x >= 1090)
+                    {
+                        BeginEdit(shortcut);
+                    }
+
+                    break;
+                }
             case DashboardPage.ActionPicker when y >= 780 && x < 440:
                 if (_actionBrowser.BackToGroups())
                 {
@@ -89,24 +120,37 @@ internal sealed class VrDashboardController
             case DashboardPage.ActionPicker when y < 165:
                 break;
             case DashboardPage.ActionPicker:
-            {
-                var index = (int)((y - 165) / 91);
-                var wasShowingGroups = _actionBrowser.IsShowingGroups;
-                var action = _actionBrowser.OpenRow(index);
-                if (wasShowingGroups && !_actionBrowser.IsShowingGroups)
                 {
+                    var index = (int)((y - 165) / 91);
+                    var wasShowingGroups = _actionBrowser.IsShowingGroups;
+                    var action = _actionBrowser.OpenRow(index);
+                    if (wasShowingGroups && !_actionBrowser.IsShowingGroups)
+                    {
+                        ShowActionPicker();
+                    }
+                    else if (action is not null)
+                    {
+                        _selectedAction = action;
+                        _page = DashboardPage.QuickInputPicker;
+                        ShowQuickInputPicker();
+                    }
+
+                    break;
+                }
+            case DashboardPage.QuickInputPicker when y >= 780 && x < 430:
+                if (_editingShortcutId is null)
+                {
+                    _page = DashboardPage.ActionPicker;
                     ShowActionPicker();
                 }
-                else if (action is not null)
+                else
                 {
-                    _selectedAction = action;
-                    _page = DashboardPage.QuickInputPicker;
-                    ShowQuickInputPicker();
+                    ShowList();
                 }
 
                 break;
-            }
-            case DashboardPage.QuickInputPicker when y >= 780 && x < 700:
+            case DashboardPage.QuickInputPicker when y >= 780 && x < 890:
+                _actionBrowser.Reset();
                 _page = DashboardPage.ActionPicker;
                 ShowActionPicker();
                 break;
@@ -117,18 +161,26 @@ internal sealed class VrDashboardController
             case DashboardPage.QuickInputPicker when y < 165:
                 break;
             case DashboardPage.QuickInputPicker:
-            {
-                var index = (int)((y - 165) / 91);
-                var options = QuickInputOptions();
-                if (index >= 0 && index < options.Count)
                 {
-                    _gestureMode = ChordMode.LongPress;
-                    _holdMs = 2000;
-                    CompleteRecording(options[index], options[index]);
-                }
+                    var index = (int)((y - 165) / 91);
+                    var options = QuickInputOptions();
+                    if (index >= 0 && index < options.Count)
+                    {
+                        if (x >= 900)
+                        {
+                            _gestureMode = ChordMode.LongPress;
+                            _holdMs = 2000;
+                            CompleteRecording(options[index], options[index]);
+                        }
+                        else if (x >= 500)
+                        {
+                            _gestureMode = ChordMode.DoublePress;
+                            CompleteRecording(options[index], options[index]);
+                        }
+                    }
 
-                break;
-            }
+                    break;
+                }
             case DashboardPage.GesturePicker when y >= 780:
                 _page = DashboardPage.QuickInputPicker;
                 ShowQuickInputPicker();
@@ -136,29 +188,32 @@ internal sealed class VrDashboardController
             case DashboardPage.GesturePicker when y < 165:
                 break;
             case DashboardPage.GesturePicker:
-            {
-                var index = (int)((y - 165) / 105);
-                switch (index)
                 {
-                    case 0:
-                        StartInputSelection(ChordMode.LongPress, 1000);
-                        break;
-                    case 1:
-                        StartInputSelection(ChordMode.LongPress, 2000);
-                        break;
-                    case 2:
-                        StartInputSelection(ChordMode.LongPress, 3000);
-                        break;
-                    case 3:
-                        StartInputSelection(ChordMode.Modifier);
-                        break;
-                    case 4:
-                        StartInputSelection(ChordMode.Simultaneous);
-                        break;
-                }
+                    var index = (int)((y - 165) / 90);
+                    switch (index)
+                    {
+                        case 0:
+                            StartInputSelection(ChordMode.DoublePress);
+                            break;
+                        case 1:
+                            StartInputSelection(ChordMode.LongPress, 1000);
+                            break;
+                        case 2:
+                            StartInputSelection(ChordMode.LongPress, 2000);
+                            break;
+                        case 3:
+                            StartInputSelection(ChordMode.LongPress, 3000);
+                            break;
+                        case 4:
+                            StartInputSelection(ChordMode.Modifier);
+                            break;
+                        case 5:
+                            StartInputSelection(ChordMode.Simultaneous);
+                            break;
+                    }
 
-                break;
-            }
+                    break;
+                }
             case DashboardPage.InputHandPicker when y >= 780:
                 if (_firstInput is null)
                 {
@@ -189,16 +244,16 @@ internal sealed class VrDashboardController
             case DashboardPage.InputButtonPicker when y < 165:
                 break;
             case DashboardPage.InputButtonPicker:
-            {
-                var index = (int)((y - 165) / 91);
-                var options = CurrentButtonOptions();
-                if (index >= 0 && index < options.Count)
                 {
-                    SelectInput(options[index]);
-                }
+                    var index = (int)((y - 165) / 91);
+                    var options = CurrentButtonOptions();
+                    if (index >= 0 && index < options.Count)
+                    {
+                        SelectInput(options[index]);
+                    }
 
-                break;
-            }
+                    break;
+                }
         }
     }
 
@@ -229,7 +284,7 @@ internal sealed class VrDashboardController
 
         var shortcut = new ShortcutConfig
         {
-            Id = Guid.NewGuid().ToString("N"),
+            Id = _editingShortcutId ?? Guid.NewGuid().ToString("N"),
             Name = _selectedAction.Name,
             Enabled = true,
             SafetyInput = safetyInput,
@@ -237,14 +292,28 @@ internal sealed class VrDashboardController
             Gesture = new ChordConfig
             {
                 Mode = _gestureMode,
-                WindowMs = _gestureMode == ChordMode.Simultaneous ? 300 : 2000,
+                WindowMs = _gestureMode switch
+                {
+                    ChordMode.DoublePress => 500,
+                    ChordMode.Simultaneous => 300,
+                    _ => 2000
+                },
                 CooldownMs = 250,
                 HoldMs = _holdMs
             },
             ActionName = _selectedAction.Name,
             ActionId = _selectedAction.Id
         };
-        _shortcuts.Add(shortcut);
+        var existingIndex = _shortcuts.FindIndex(item => item.Id == shortcut.Id);
+        if (existingIndex >= 0)
+        {
+            _shortcuts[existingIndex] = shortcut;
+        }
+        else
+        {
+            _shortcuts.Add(shortcut);
+        }
+
         _shortcutCreated(shortcut);
         ShowList();
     }
@@ -254,6 +323,7 @@ internal sealed class VrDashboardController
         _page = DashboardPage.List;
         _selectedAction = null;
         _firstInput = null;
+        _editingShortcutId = null;
         _openVr.UpdateDashboard(
             VrDashboardRenderer.Render(_shortcuts),
             activate);
@@ -272,7 +342,23 @@ internal sealed class VrDashboardController
         _openVr.ShowDashboard(
             VrDashboardRenderer.RenderQuickInputPicker(
                 _selectedAction?.Name ?? "Selected action",
-                QuickInputOptions()));
+                QuickInputOptions(),
+                _editingShortcutId is not null));
+
+    private void BeginEdit(ShortcutConfig shortcut)
+    {
+        _editingShortcutId = shortcut.Id;
+        _selectedAction = _actions.FirstOrDefault(action =>
+                              action.Id.Equals(
+                                  shortcut.ActionId,
+                                  StringComparison.OrdinalIgnoreCase))
+                          ?? new StreamerBotAction(
+                              shortcut.ActionId ?? "",
+                              shortcut.ActionName,
+                              "Saved action");
+        _page = DashboardPage.QuickInputPicker;
+        ShowQuickInputPicker();
+    }
 
     private IReadOnlyList<ControllerInputBinding> QuickInputOptions()
     {
@@ -320,7 +406,7 @@ internal sealed class VrDashboardController
 
     private void SelectInput(ControllerInputBinding input)
     {
-        if (_gestureMode == ChordMode.LongPress)
+        if (_gestureMode is ChordMode.LongPress or ChordMode.DoublePress)
         {
             CompleteRecording(input, input);
             return;

@@ -78,7 +78,8 @@ public enum ChordMode
 {
     Simultaneous,
     Modifier,
-    LongPress
+    LongPress,
+    DoublePress
 }
 
 public sealed class ChordConfig
@@ -177,6 +178,8 @@ public sealed record ShortcutConfig
     public string FriendlyGesture =>
         Gesture.Mode switch
         {
+            ChordMode.DoublePress =>
+                $"Double press {SafetyInput.FriendlyName}",
             ChordMode.LongPress =>
                 $"Hold {SafetyInput.FriendlyName} for {FriendlyDuration(Gesture.HoldMs)}",
             ChordMode.Modifier =>
@@ -203,7 +206,7 @@ public sealed record ShortcutConfig
                 $"Choose a controller input for “{Name}”.");
         }
 
-        if (Gesture.Mode != ChordMode.LongPress
+        if (Gesture.Mode is not (ChordMode.LongPress or ChordMode.DoublePress)
             && (string.IsNullOrWhiteSpace(ActionInput.Id)
                 || SafetyInput.Id.Equals(ActionInput.Id, StringComparison.OrdinalIgnoreCase)))
         {

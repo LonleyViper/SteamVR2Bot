@@ -39,7 +39,12 @@ internal sealed record UserSettings
                 new ChordConfig
                 {
                     Mode = GestureMode,
-                    WindowMs = GestureMode == ChordMode.Simultaneous ? 300 : 2000,
+                    WindowMs = GestureMode switch
+                    {
+                        ChordMode.DoublePress => 500,
+                        ChordMode.Simultaneous => 300,
+                        _ => 2000
+                    },
                     CooldownMs = 250
                 })
         ];
@@ -63,7 +68,12 @@ internal sealed record UserSettings
             Chord = new ChordConfig
             {
                 Mode = GestureMode,
-                WindowMs = GestureMode == ChordMode.Simultaneous ? 300 : 2000,
+                WindowMs = GestureMode switch
+                {
+                    ChordMode.DoublePress => 500,
+                    ChordMode.Simultaneous => 300,
+                    _ => 2000
+                },
                 CooldownMs = 250
             }
         };

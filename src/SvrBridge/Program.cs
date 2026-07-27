@@ -104,9 +104,17 @@ internal static class Program
 
         Console.WriteLine("SteamVR input active. Press Ctrl+C to stop.");
         Console.WriteLine(
-            config.Chord.Mode == ChordMode.Modifier
-                ? "Gesture: hold Button One, then press Button Two."
-                : $"Gesture: press both buttons within {config.Chord.WindowMs} ms.");
+            config.Chord.Mode switch
+            {
+                ChordMode.Modifier =>
+                    "Gesture: hold Button One, then press Button Two.",
+                ChordMode.LongPress =>
+                    $"Gesture: hold Button One for {config.Chord.HoldMs} ms.",
+                ChordMode.DoublePress =>
+                    $"Gesture: double press Button One within {config.Chord.WindowMs} ms.",
+                _ =>
+                    $"Gesture: press both buttons within {config.Chord.WindowMs} ms."
+            });
 
         while (!cancellationToken.IsCancellationRequested)
         {

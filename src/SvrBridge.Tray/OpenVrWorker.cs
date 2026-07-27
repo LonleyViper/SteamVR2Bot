@@ -37,6 +37,7 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
     private readonly ConcurrentDictionary<string, TaskCompletionSource<string?>>
         _commandResults = new();
     private readonly ConcurrentQueue<ShortcutConfig> _createdShortcuts = new();
+    private readonly ConcurrentQueue<string> _deletedShortcutIds = new();
     private InputSnapshot _snapshot;
     private ControllerSetup _setup = ControllerSetup.Unknown;
     private Exception? _failure;
@@ -170,6 +171,17 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         while (_createdShortcuts.TryDequeue(out var shortcut))
         {
             result.Add(shortcut);
+        }
+
+        return result;
+    }
+
+    public IReadOnlyList<string> DrainDeletedShortcutIds()
+    {
+        var result = new List<string>();
+        while (_deletedShortcutIds.TryDequeue(out var shortcutId))
+        {
+            result.Add(shortcutId);
         }
 
         return result;
@@ -384,6 +396,13 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
                 }
 
                 break;
+            case "shortcutDeleted":
+                if (!string.IsNullOrWhiteSpace(message.ShortcutDeletedId))
+                {
+                    _deletedShortcutIds.Enqueue(message.ShortcutDeletedId);
+                }
+
+                break;
         }
     }
 
@@ -534,7 +553,11 @@ internal static class OpenVrWorker
                                 shortcut => Emit(
                                     new OpenVrWorkerMessage(
                                         "shortcutCreated",
-                                        ShortcutCreated: shortcut)));
+                                        ShortcutCreated: shortcut)),
+                                shortcutId => Emit(
+                                    new OpenVrWorkerMessage(
+                                        "shortcutDeleted",
+                                        ShortcutDeletedId: shortcutId)));
                         }
                         catch (Exception exception)
                         {
@@ -654,4 +677,5 @@ internal sealed record OpenVrWorkerMessage(
     string? Message = null,
     string? RequestId = null,
     string? Error = null,
-    ShortcutConfig? ShortcutCreated = null);
+    ShortcutConfig? ShortcutCreated = null,
+    string? ShortcutDeletedId = null);

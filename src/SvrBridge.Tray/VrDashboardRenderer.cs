@@ -27,6 +27,7 @@ internal static class VrDashboardRenderer
         using var white = new SolidBrush(Color.White);
         using var muted = new SolidBrush(Color.FromArgb(180, 194, 214));
         using var blue = new SolidBrush(Color.FromArgb(59, 130, 246));
+        using var red = new SolidBrush(Color.FromArgb(220, 38, 38));
         using var green = new SolidBrush(Color.FromArgb(34, 197, 94));
         using var card = new SolidBrush(Color.FromArgb(30, 41, 59));
         using var disabled = new SolidBrush(Color.FromArgb(100, 116, 139));
@@ -72,24 +73,46 @@ internal static class VrDashboardRenderer
                     y + 35,
                     18,
                     18);
-                graphics.DrawString(
+                DrawEllipsizedText(
+                    graphics,
                     shortcut.Name,
                     headingFont,
                     shortcut.Enabled ? white : muted,
-                    128,
-                    y + 13);
-                graphics.DrawString(
+                    new RectangleF(128, y + 13, 555, 34));
+                DrawEllipsizedText(
+                    graphics,
                     shortcut.FriendlyGesture,
                     smallFont,
                     muted,
-                    130,
-                    y + 52);
-                graphics.DrawString(
+                    new RectangleF(130, y + 52, 700, 28));
+                DrawEllipsizedText(
+                    graphics,
                     $"→  {shortcut.ActionName}",
                     bodyFont,
                     shortcut.Enabled ? blue : muted,
-                    900,
-                    y + 29);
+                    new RectangleF(700, y + 29, 380, 38));
+                DrawRoundedRectangle(
+                    graphics,
+                    blue,
+                    new Rectangle(1100, y + 14, 90, 64),
+                    12);
+                DrawCenteredText(
+                    graphics,
+                    "✎",
+                    headingFont,
+                    white,
+                    new Rectangle(1100, y + 14, 90, 64));
+                DrawRoundedRectangle(
+                    graphics,
+                    red,
+                    new Rectangle(1210, y + 14, 100, 64),
+                    12);
+                DrawCenteredText(
+                    graphics,
+                    "×",
+                    headingFont,
+                    white,
+                    new Rectangle(1210, y + 14, 100, 64));
                 y += 105;
             }
 
@@ -228,6 +251,7 @@ internal static class VrDashboardRenderer
 
             (string Label, string Detail)[] choices =
             [
+                ("Double press one button", "Fast to test; both presses must be within half a second"),
                 ("Hold one button for 1 second", "Good for a quick deliberate hold"),
                 ("Hold one button for 2 seconds", "Safer against accidental presses"),
                 ("Hold one button for 3 seconds", "Most deliberate single-button option"),
@@ -240,22 +264,22 @@ internal static class VrDashboardRenderer
                 DrawRoundedRectangle(
                     graphics,
                     brushes.Card,
-                    new Rectangle(60, y, 1280, 90),
+                    new Rectangle(60, y, 1280, 78),
                     14);
                 DrawEllipsizedText(
                     graphics,
                     choice.Label,
                     fonts.Body,
                     brushes.White,
-                    new RectangleF(92, y + 12, 1120, 36));
+                    new RectangleF(92, y + 7, 1120, 34));
                 graphics.DrawString(
                     choice.Detail,
                     fonts.Small,
                     brushes.Muted,
                     94,
-                    y + 51);
-                graphics.DrawString("›", fonts.Heading, brushes.Blue, 1265, y + 25);
-                y += 105;
+                    y + 40);
+                graphics.DrawString("›", fonts.Heading, brushes.Blue, 1265, y + 19);
+                y += 90;
             }
 
             DrawRoundedRectangle(
@@ -265,7 +289,7 @@ internal static class VrDashboardRenderer
                 16);
             DrawCenteredText(
                 graphics,
-                "Back to actions",
+                "Back to button choices",
                 fonts.Body,
                 brushes.White,
                 new Rectangle(60, 800, 1280, 64));
@@ -274,12 +298,15 @@ internal static class VrDashboardRenderer
 
     public static string RenderQuickInputPicker(
         string actionName,
-        IReadOnlyList<ControllerInputBinding> inputs)
+        IReadOnlyList<ControllerInputBinding> inputs,
+        bool isEditing = false)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
             graphics.DrawString(
-                "Choose your controller shortcut",
+                isEditing
+                    ? "Edit your controller shortcut"
+                    : "Choose your controller shortcut",
                 fonts.Title,
                 brushes.White,
                 60,
@@ -304,39 +331,65 @@ internal static class VrDashboardRenderer
                     input.FriendlyName,
                     fonts.Body,
                     brushes.White,
-                    new RectangleF(92, y + 9, 1080, 36));
-                graphics.DrawString(
-                    "Hold for 2 seconds",
-                    fonts.Small,
-                    brushes.Muted,
-                    94,
-                    y + 43);
-                graphics.DrawString("›", fonts.Heading, brushes.Blue, 1265, y + 19);
+                    new RectangleF(92, y + 22, 390, 36));
+                DrawRoundedRectangle(
+                    graphics,
+                    brushes.Blue,
+                    new Rectangle(500, y + 10, 380, 58),
+                    12);
+                DrawCenteredText(
+                    graphics,
+                    "Double press",
+                    fonts.Body,
+                    brushes.White,
+                    new Rectangle(500, y + 10, 380, 58));
+                DrawRoundedRectangle(
+                    graphics,
+                    brushes.Disabled,
+                    new Rectangle(900, y + 10, 410, 58),
+                    12);
+                DrawCenteredText(
+                    graphics,
+                    "Hold 2 sec",
+                    fonts.Body,
+                    brushes.White,
+                    new Rectangle(900, y + 10, 410, 58));
                 y += 91;
             }
 
             DrawRoundedRectangle(
                 graphics,
                 brushes.Disabled,
-                new Rectangle(60, 800, 620, 64),
+                new Rectangle(60, 800, 350, 64),
                 16);
             DrawCenteredText(
                 graphics,
-                "Back to actions",
+                isEditing ? "Cancel edit" : "Back",
                 fonts.Body,
                 brushes.White,
-                new Rectangle(60, 800, 620, 64));
+                new Rectangle(60, 800, 350, 64));
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(430, 800, 440, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Change action",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(430, 800, 440, 64));
             DrawRoundedRectangle(
                 graphics,
                 brushes.Blue,
-                new Rectangle(700, 800, 640, 64),
+                new Rectangle(890, 800, 450, 64),
                 16);
             DrawCenteredText(
                 graphics,
                 "More shortcut options",
                 fonts.Body,
                 brushes.White,
-                new Rectangle(700, 800, 640, 64));
+                new Rectangle(890, 800, 450, 64));
         });
     }
 
