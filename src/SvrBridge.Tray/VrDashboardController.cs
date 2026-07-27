@@ -100,15 +100,38 @@ internal sealed class VrDashboardController
                 else if (action is not null)
                 {
                     _selectedAction = action;
-                    _page = DashboardPage.GesturePicker;
-                    ShowGesturePicker();
+                    _page = DashboardPage.QuickInputPicker;
+                    ShowQuickInputPicker();
+                }
+
+                break;
+            }
+            case DashboardPage.QuickInputPicker when y >= 780 && x < 700:
+                _page = DashboardPage.ActionPicker;
+                ShowActionPicker();
+                break;
+            case DashboardPage.QuickInputPicker when y >= 780:
+                _page = DashboardPage.GesturePicker;
+                ShowGesturePicker();
+                break;
+            case DashboardPage.QuickInputPicker when y < 165:
+                break;
+            case DashboardPage.QuickInputPicker:
+            {
+                var index = (int)((y - 165) / 91);
+                var options = QuickInputOptions();
+                if (index >= 0 && index < options.Count)
+                {
+                    _gestureMode = ChordMode.LongPress;
+                    _holdMs = 2000;
+                    CompleteRecording(options[index], options[index]);
                 }
 
                 break;
             }
             case DashboardPage.GesturePicker when y >= 780:
-                _page = DashboardPage.ActionPicker;
-                ShowActionPicker();
+                _page = DashboardPage.QuickInputPicker;
+                ShowQuickInputPicker();
                 break;
             case DashboardPage.GesturePicker when y < 165:
                 break;
@@ -245,6 +268,27 @@ internal sealed class VrDashboardController
             VrDashboardRenderer.RenderGesturePicker(
                 _selectedAction?.Name ?? "Selected action"));
 
+    private void ShowQuickInputPicker() =>
+        _openVr.ShowDashboard(
+            VrDashboardRenderer.RenderQuickInputPicker(
+                _selectedAction?.Name ?? "Selected action",
+                QuickInputOptions()));
+
+    private IReadOnlyList<ControllerInputBinding> QuickInputOptions()
+    {
+        var left = ControllerInputs.AvailableInputs(ControllerHand.Left, _setup);
+        var right = ControllerInputs.AvailableInputs(ControllerHand.Right, _setup);
+        return Enumerable.Range(0, 3)
+            .SelectMany(index => new[]
+            {
+                left.ElementAtOrDefault(index),
+                right.ElementAtOrDefault(index)
+            })
+            .Where(input => input is not null)
+            .Cast<ControllerInputBinding>()
+            .ToArray();
+    }
+
     private void StartInputSelection(ChordMode mode, int holdMs = 1000)
     {
         _gestureMode = mode;
@@ -297,6 +341,7 @@ internal sealed class VrDashboardController
     {
         List,
         ActionPicker,
+        QuickInputPicker,
         GesturePicker,
         InputHandPicker,
         InputButtonPicker

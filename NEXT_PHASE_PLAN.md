@@ -249,10 +249,10 @@ Implemented on `codex/shortcut-manager`:
   and remove.
 - The SteamVR dashboard lists the saved gestures and actions. Its guided wizard
   opens at the Streamer.bot group level, expands a group into its actions,
-  supports controller scrolling and large Previous/Next controls, offers
-  single-button long holds or two-button gestures, records the chosen physical
-  input(s), and saves the resulting shortcut back to the shared desktop
-  settings.
+  supports controller scrolling and large Previous/Next controls, and presents
+  common two-second button holds as one-tap choices. Less common hold durations
+  and two-button gestures remain under **More shortcut options**. The resulting
+  shortcut saves back to the shared desktop settings.
 - Direct physical input selection is Vive-first. Other controller families retain
   the official SteamVR binding fallback until they pass the hardware matrix.
 - The dashboard remains inside the disposable OpenVR worker, preserving the
@@ -276,9 +276,10 @@ Live gates for this checkpoint:
 
 - Single physical inputs can trigger after a 1-, 2-, or 3-second hold and fire
   only once until released.
-- The VR wizard asks for a gesture style, controller hand, and named physical
-  button, so it no longer depends on raw button state while SteamVR's dashboard
-  owns input focus or assumes every shortcut needs Safety and Action inputs.
+- The common VR path asks for one named physical button and saves a two-second
+  hold immediately. The advanced path still supports other hold durations and
+  two-button gestures without depending on raw button state while SteamVR's
+  dashboard owns input focus.
 - Scroll bursts are limited to one page redraw per 500 ms.
 - Dashboard renders rotate across image files so SteamVR never reads a PNG
   while the next redraw overwrites it.

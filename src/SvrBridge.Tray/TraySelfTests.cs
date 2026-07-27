@@ -194,6 +194,23 @@ internal static class TraySelfTests
             preview.Width == 1400 && preview.Height == 900,
             "The grouped VR action picker rendered at the wrong size.");
 
+        var quickInputPath = VrDashboardRenderer.RenderQuickInputPicker(
+            "Change scene",
+            [
+                SvrBridge.Core.ControllerInputBinding.Physical(
+                    SvrBridge.Core.ControllerHand.Left,
+                    1,
+                    "Left Menu Button"),
+                SvrBridge.Core.ControllerInputBinding.Physical(
+                    SvrBridge.Core.ControllerHand.Right,
+                    1,
+                    "Right Menu Button")
+            ]);
+        using var quickInputPreview = new Bitmap(quickInputPath);
+        Assert(
+            quickInputPreview.Width == 1400 && quickInputPreview.Height == 900,
+            "The quick VR input picker rendered at the wrong size.");
+
         var gesturePath = VrDashboardRenderer.RenderGesturePicker("Change scene");
         using var gesturePreview = new Bitmap(gesturePath);
         Assert(

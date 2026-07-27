@@ -397,7 +397,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         "dashboard.shortcut_saved",
                         $"Saved “{shortcut.Name}” automatically."));
                 await RestartRuntimeAsync();
-                await EnsureDashboardAvailableAsync(true);
             }
             catch (Exception exception)
             {

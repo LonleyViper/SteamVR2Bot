@@ -272,6 +272,74 @@ internal static class VrDashboardRenderer
         });
     }
 
+    public static string RenderQuickInputPicker(
+        string actionName,
+        IReadOnlyList<ControllerInputBinding> inputs)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            graphics.DrawString(
+                "Choose your controller shortcut",
+                fonts.Title,
+                brushes.White,
+                60,
+                42);
+            DrawEllipsizedText(
+                graphics,
+                $"Runs: {actionName}",
+                fonts.Subtitle,
+                brushes.Muted,
+                new RectangleF(64, 108, 1270, 36));
+
+            var y = 165;
+            foreach (var input in inputs.Take(6))
+            {
+                DrawRoundedRectangle(
+                    graphics,
+                    brushes.Card,
+                    new Rectangle(60, y, 1280, 78),
+                    14);
+                DrawEllipsizedText(
+                    graphics,
+                    input.FriendlyName,
+                    fonts.Body,
+                    brushes.White,
+                    new RectangleF(92, y + 9, 1080, 36));
+                graphics.DrawString(
+                    "Hold for 2 seconds",
+                    fonts.Small,
+                    brushes.Muted,
+                    94,
+                    y + 43);
+                graphics.DrawString("›", fonts.Heading, brushes.Blue, 1265, y + 19);
+                y += 91;
+            }
+
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(60, 800, 620, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Back to actions",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(60, 800, 620, 64));
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Blue,
+                new Rectangle(700, 800, 640, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "More shortcut options",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(700, 800, 640, 64));
+        });
+    }
+
     public static string RenderHandPicker(
         string controllerFamily,
         string? firstInput = null)
