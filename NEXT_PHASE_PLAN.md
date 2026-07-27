@@ -210,9 +210,15 @@ Automated checks now cover delayed Streamer.bot availability, authenticated
 delivery, protected settings, redacted structured logs, and the rule that an
 unconfirmed request is not retried.
 
+The tray also remained open across SteamVR and Streamer.bot restarts, then
+started cleanly and delivered 18/18 controller commands without a duplicate.
+This confirms post-restart startup, but the shortcut was stopped during the
+restarts.
+
 Remaining live gates:
 
-1. Restart SteamVR while SVR Bridge is running and confirm it returns to Ready.
+1. With the shortcut already Ready, restart SteamVR and confirm it returns to
+   Ready without restarting SVR Bridge.
 2. Restart Streamer.bot, confirm the first uncertain command is not duplicated,
    then confirm the next command reconnects.
 3. Repeat the shell and GERONIMO 20-attempt matrices after the recovery tests.

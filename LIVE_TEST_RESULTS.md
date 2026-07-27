@@ -429,3 +429,22 @@ binding:
 
 This is an implementation checkpoint, not the restart acceptance result. The
 remaining live matrix is listed in `NEXT_PHASE_PLAN.md`.
+
+### Post-restart startup run
+
+The tray process remained open while both SteamVR and Streamer.bot were
+restarted. Process start times placed the tray at 13:08:52, SteamVR at 13:10:29,
+and Streamer.bot at 13:10:40. The controller shortcut was then started at
+13:14:01 and reached Ready before the physical run.
+
+| Measure | Result |
+|---|---:|
+| Accepted controller presses | 18 |
+| Streamer.bot acknowledgements | 18 |
+| Missed or duplicate actions | 0 |
+| Final bridge state | Stopped normally |
+
+This passes post-restart startup and delivery. It does not close the active
+reconnection gate because the controller shortcut was stopped during both
+service restarts; that gate requires restarting each service while the shortcut
+is already Ready.
