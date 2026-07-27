@@ -89,8 +89,8 @@ logical controls are:
 - **Action Button (press)**
 
 The bridge has passed 20/20 attempts in the SteamVR shell through both the
-diagnostic and tray hosts, plus 20/20 attempts in GERONIMO through the
-diagnostic host with the dashboard closed. See
+diagnostic and tray hosts. With GERONIMO active and the dashboard closed, it
+passed 20/20 through the diagnostic host and 21/21 through the tray host. See
 `LIVE_TEST_RESULTS.md` for the evidence.
 
 ## Status messages

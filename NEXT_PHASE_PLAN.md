@@ -180,8 +180,9 @@ The live regression status through the tray app is:
 2. **Pass:** **Test Streamer.bot** produced one acknowledged action.
 3. **Pass:** In-app SteamVR setup and **Save and Start** reached the ready state.
 4. **Pass:** SteamVR shell physical run produced 20/20 actions with no duplicate.
-5. **Pending:** Repeat the 20-attempt GERONIMO dashboard-closed test through the
-   tray host.
+5. **Pass:** GERONIMO dashboard-closed physical run produced 21/21 actions with
+   no miss or duplicate.
 
-After that passes, continue with Phase 1 step 4: long-running reconnect/backoff,
-restart recovery, structured local logs, and binding-unavailable detection.
+The first implementation slice is accepted. Continue with Phase 1 step 4:
+long-running reconnect/backoff, restart recovery, structured local logs, and
+binding-unavailable detection.

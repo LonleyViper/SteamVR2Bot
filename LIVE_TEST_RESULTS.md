@@ -382,6 +382,29 @@ inspected, so this is recorded as the SteamVR shell regression.
 | Minimum inter-press gap | 392 ms |
 | Maximum inter-press gap | 517 ms |
 
-The remaining release gate is the matching physical 20/20 regression through
-the tray host while GERONIMO is the active scene application and the SteamVR
-dashboard is closed.
+### GERONIMO tray-host regression
+
+GERONIMO started at 12:38:59 local time. SteamVR recorded PID `29408` changing
+from `VRApplication_OpenXRInstance` to `VRApplication_OpenXRScene` at 12:39:01.
+The tray connected as `VRApplication_Overlay` immediately afterward and loaded
+the packaged Vive binding. The user then completed the dashboard-closed
+controller run.
+
+The operator produced 21 accepted physical trigger presses, one more than the
+20-attempt minimum:
+
+| Measure | Result |
+|---|---:|
+| Raw right-trigger presses in tray activity | 21 |
+| Tray action confirmations | 21 |
+| Streamer.bot acknowledgements | 21 |
+| Unique WebSocket request IDs | 21 |
+| Streamer.bot queue entries | 21 |
+| Streamer.bot executions | 21 |
+| Missed or duplicate actions | 0 |
+| Minimum inter-press gap | 406 ms |
+| Maximum inter-press gap | 573 ms |
+
+This closes the first tray-application release gate. The extracted engine
+preserved the proven input coexistence and one-gesture/one-action behavior in
+both the SteamVR shell and an active VR scene application.
