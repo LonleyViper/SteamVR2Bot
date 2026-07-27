@@ -9,6 +9,7 @@
     <AssemblyName>SteamVR2Bot</AssemblyName>
     <RootNamespace>SvrBridge.Tray</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>assets\SteamVR2Bot.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
