@@ -59,18 +59,18 @@ setup page. It shows the currently saved shortcuts and what each one runs.
 
 To create one without leaving VR:
 
-1. Select **Record a new shortcut**.
+1. Select **Create a new shortcut**.
 2. Open a Streamer.bot action group, such as **Scenes** or **Sounds**.
 3. Scroll with the controller, or use **Previous** and **Next**, then choose the
    action by its familiar name. Select **All groups** to go back.
 4. Choose how it should trigger. Single-button holds are available for 1, 2,
    or 3 seconds, alongside the two-button options.
-5. Release all controller buttons, then press the button or buttons the page
-   asks for.
+5. Choose **Left controller** or **Right controller**, then select the physical
+   button by name. For a two-button gesture, repeat this for the second input.
 
-For example, choose **Hold one button for 2 seconds**, release the controllers,
-then press the left Vive Menu button. The saved shortcut will run once after
-that button has been held for two seconds.
+For example, choose **Hold one button for 2 seconds**, **Left controller**, then
+**Left Menu Button**. The saved shortcut will run once after that button has
+been held for two seconds.
 
 The shortcut is saved immediately, appears in the desktop list, and activates
 automatically. Streamer.bot actions are loaded automatically at launch; the
@@ -78,9 +78,9 @@ desktop refresh button remains available if actions change later.
 
 ## Controller inputs
 
-The recorder reads the connected controller directly and stores friendly
-physical input names, such as **Left Grip** and **Right Trigger**. This enables
-several different gestures at the same time.
+The VR picker presents controller-aware physical input names, such as **Left
+Menu Button**, **Left Grip**, and **Right Trigger**. This avoids SteamVR's
+dashboard consuming a button while the wizard is trying to observe it.
 
 The recorder is validated first for Vive controllers. Controller button layouts
 vary by family. For Index, Touch, WMR, Cosmos, or another controller, verify the

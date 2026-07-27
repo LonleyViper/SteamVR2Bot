@@ -15,6 +15,7 @@ internal static class SelfTests
         TestLongPress();
         TestCooldown();
         TestPhysicalControllerInputs();
+        TestAvailableControllerInputs();
         TestDashboardPointerTracking();
         TestAuthenticationHash();
         await TestStreamerBotRoundTripAsync();
@@ -55,6 +56,39 @@ internal static class SelfTests
         Assert(
             !wrongHand.IsPressed(snapshot),
             "A button on the wrong controller was treated as pressed.");
+    }
+
+    private static void TestAvailableControllerInputs()
+    {
+        var setup = new ControllerSetup(
+            [
+                new ControllerDevice(
+                    "vive_controller",
+                    "HTC Vive controllers",
+                    "Left",
+                    "Vive Controller MV"),
+                new ControllerDevice(
+                    "vive_controller",
+                    "HTC Vive controllers",
+                    "Right",
+                    "Vive Controller MV")
+            ],
+            null,
+            null,
+            BindingAvailability.Ready,
+            "Vive controllers detected.",
+            true);
+        var left = ControllerInputs.AvailableInputs(ControllerHand.Left, setup);
+
+        Assert(left.Count == 4, "The Vive input picker returned the wrong input count.");
+        Assert(
+            left[0].Id == "left:1"
+            && left[0].FriendlyName == "Left Menu Button",
+            "The Vive input picker did not put Left Menu first.");
+        Assert(
+            left.Any(input => input.Id == "left:33"
+                              && input.FriendlyName == "Left Trigger"),
+            "The Vive input picker omitted Left Trigger.");
     }
 
     private static void TestDashboardPointerTracking()

@@ -12,9 +12,10 @@ internal sealed class VrDashboardController
     private DashboardPage _page;
     private StreamerBotAction? _selectedAction;
     private ControllerInputBinding? _firstInput;
-    private bool _recordingArmed;
     private ChordMode _gestureMode;
     private int _holdMs = 1000;
+    private ControllerHand _selectedHand;
+    private ControllerSetup _setup = ControllerSetup.Unknown;
 
     public VrDashboardController(
         OpenVrInput openVr,
@@ -32,6 +33,7 @@ internal sealed class VrDashboardController
 
     public void Tick(InputSnapshot snapshot, ControllerSetup setup)
     {
+        _setup = setup;
         if (_openVr.TryGetDashboardInteraction(out var interaction))
         {
             if (interaction.Kind == DashboardInteractionKind.Click)
@@ -42,53 +44,6 @@ internal sealed class VrDashboardController
             {
                 HandleScroll(interaction.ScrollY);
             }
-        }
-
-        if (_page != DashboardPage.Recording)
-        {
-            return;
-        }
-
-        var pressed = ControllerInputs.PressedInputs(snapshot, setup);
-        if (!_recordingArmed)
-        {
-            if (pressed.Count == 0)
-            {
-                _recordingArmed = true;
-            }
-
-            return;
-        }
-
-        if (_firstInput is null)
-        {
-            if (_gestureMode == ChordMode.LongPress
-                && pressed.FirstOrDefault() is { } heldInput)
-            {
-                CompleteRecording(heldInput, heldInput);
-                return;
-            }
-
-            if (pressed.Count >= 2)
-            {
-                CompleteRecording(pressed[0], pressed[1]);
-                return;
-            }
-
-            if (pressed.FirstOrDefault() is { } first)
-            {
-                _firstInput = first;
-                ShowRecording();
-            }
-
-            return;
-        }
-
-        var second = pressed.FirstOrDefault(input =>
-            !input.Id.Equals(_firstInput.Id, StringComparison.OrdinalIgnoreCase));
-        if (second is not null)
-        {
-            CompleteRecording(_firstInput, second);
         }
     }
 
@@ -163,28 +118,64 @@ internal sealed class VrDashboardController
                 switch (index)
                 {
                     case 0:
-                        StartRecording(ChordMode.LongPress, 1000);
+                        StartInputSelection(ChordMode.LongPress, 1000);
                         break;
                     case 1:
-                        StartRecording(ChordMode.LongPress, 2000);
+                        StartInputSelection(ChordMode.LongPress, 2000);
                         break;
                     case 2:
-                        StartRecording(ChordMode.LongPress, 3000);
+                        StartInputSelection(ChordMode.LongPress, 3000);
                         break;
                     case 3:
-                        StartRecording(ChordMode.Modifier);
+                        StartInputSelection(ChordMode.Modifier);
                         break;
                     case 4:
-                        StartRecording(ChordMode.Simultaneous);
+                        StartInputSelection(ChordMode.Simultaneous);
                         break;
                 }
 
                 break;
             }
-            case DashboardPage.Recording when y >= 780:
-                _page = DashboardPage.GesturePicker;
-                ShowGesturePicker();
+            case DashboardPage.InputHandPicker when y >= 780:
+                if (_firstInput is null)
+                {
+                    _page = DashboardPage.GesturePicker;
+                    ShowGesturePicker();
+                }
+                else
+                {
+                    _firstInput = null;
+                    ShowHandPicker();
+                }
+
                 break;
+            case DashboardPage.InputHandPicker when y is >= 230 and < 410:
+                _selectedHand = ControllerHand.Left;
+                _page = DashboardPage.InputButtonPicker;
+                ShowButtonPicker();
+                break;
+            case DashboardPage.InputHandPicker when y is >= 430 and < 610:
+                _selectedHand = ControllerHand.Right;
+                _page = DashboardPage.InputButtonPicker;
+                ShowButtonPicker();
+                break;
+            case DashboardPage.InputButtonPicker when y >= 780:
+                _page = DashboardPage.InputHandPicker;
+                ShowHandPicker();
+                break;
+            case DashboardPage.InputButtonPicker when y < 165:
+                break;
+            case DashboardPage.InputButtonPicker:
+            {
+                var index = (int)((y - 165) / 91);
+                var options = CurrentButtonOptions();
+                if (index >= 0 && index < options.Count)
+                {
+                    SelectInput(options[index]);
+                }
+
+                break;
+            }
         }
     }
 
@@ -240,18 +231,10 @@ internal sealed class VrDashboardController
         _page = DashboardPage.List;
         _selectedAction = null;
         _firstInput = null;
-        _recordingArmed = false;
         _openVr.UpdateDashboard(
             VrDashboardRenderer.Render(_shortcuts),
             activate);
     }
-
-    private void ShowRecording() =>
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderRecording(
-                _gestureMode,
-                _firstInput?.FriendlyName,
-                _holdMs));
 
     private void ShowActionPicker() =>
         _openVr.ShowDashboard(
@@ -262,14 +245,52 @@ internal sealed class VrDashboardController
             VrDashboardRenderer.RenderGesturePicker(
                 _selectedAction?.Name ?? "Selected action"));
 
-    private void StartRecording(ChordMode mode, int holdMs = 1000)
+    private void StartInputSelection(ChordMode mode, int holdMs = 1000)
     {
         _gestureMode = mode;
         _holdMs = holdMs;
         _firstInput = null;
-        _recordingArmed = false;
-        _page = DashboardPage.Recording;
-        ShowRecording();
+        _page = DashboardPage.InputHandPicker;
+        ShowHandPicker();
+    }
+
+    private void ShowHandPicker() =>
+        _openVr.ShowDashboard(
+            VrDashboardRenderer.RenderHandPicker(
+                ControllerInputs.ControllerFamily(_setup),
+                _firstInput?.FriendlyName));
+
+    private void ShowButtonPicker() =>
+        _openVr.ShowDashboard(
+            VrDashboardRenderer.RenderButtonPicker(
+                _selectedHand,
+                CurrentButtonOptions(),
+                _firstInput?.FriendlyName));
+
+    private IReadOnlyList<ControllerInputBinding> CurrentButtonOptions() =>
+        ControllerInputs.AvailableInputs(_selectedHand, _setup)
+            .Where(input =>
+                _firstInput is null
+                || !input.Id.Equals(_firstInput.Id, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+    private void SelectInput(ControllerInputBinding input)
+    {
+        if (_gestureMode == ChordMode.LongPress)
+        {
+            CompleteRecording(input, input);
+            return;
+        }
+
+        if (_firstInput is null)
+        {
+            _firstInput = input;
+            _page = DashboardPage.InputHandPicker;
+            ShowHandPicker();
+            return;
+        }
+
+        CompleteRecording(_firstInput, input);
     }
 
     private enum DashboardPage
@@ -277,6 +298,7 @@ internal sealed class VrDashboardController
         List,
         ActionPicker,
         GesturePicker,
-        Recording
+        InputHandPicker,
+        InputButtonPicker
     }
 }

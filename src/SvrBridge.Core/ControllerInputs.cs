@@ -31,10 +31,12 @@ public static class ControllerInputs
             0 => "System Button",
             1 => "Menu Button",
             2 => "Grip",
+            7 when controllerType.Contains("knuckles") => "A Button",
             7 => hand == ControllerHand.Left ? "X Button" : "A Button",
             32 when controllerType.Contains("vive") => "Trackpad",
             32 => "Thumbstick / Trackpad",
             33 => "Trigger",
+            34 when controllerType.Contains("knuckles") => "B Button",
             34 => hand == ControllerHand.Left ? "Y Button" : "B Button",
             _ => $"Button {button}"
         };
@@ -46,6 +48,28 @@ public static class ControllerInputs
             .Select(controller => controller.FriendlyName)
             .Distinct(StringComparer.CurrentCultureIgnoreCase)
             .FirstOrDefault() ?? "VR controller";
+
+    public static IReadOnlyList<ControllerInputBinding> AvailableInputs(
+        ControllerHand hand,
+        ControllerSetup setup)
+    {
+        var handName = hand == ControllerHand.Left ? "Left" : "Right";
+        var controllerType = setup.Controllers
+            .FirstOrDefault(controller =>
+                controller.Hand.Equals(handName, StringComparison.OrdinalIgnoreCase))
+            ?.ControllerType
+            .ToLowerInvariant() ?? "";
+        uint[] buttons = controllerType.Contains("vive")
+            ? [1, 2, 33, 32]
+            : [1, 2, 33, 32, 7, 34];
+
+        return buttons
+            .Select(button => ControllerInputBinding.Physical(
+                hand,
+                button,
+                FriendlyName(hand, button, setup)))
+            .ToArray();
+    }
 
     private static void AddPressed(
         ICollection<ControllerInputBinding> result,

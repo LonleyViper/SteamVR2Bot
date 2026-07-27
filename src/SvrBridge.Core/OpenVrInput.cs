@@ -24,6 +24,7 @@ public sealed class OpenVrInput : IOpenVrSession
     private ulong _dashboardHandle;
     private ulong _dashboardThumbnailHandle;
     private readonly DashboardPointerTracker _dashboardPointer = new();
+    private long _lastDashboardScrollLogAt = long.MinValue;
     private bool _disposed;
 
     public OpenVrInput(
@@ -328,7 +329,13 @@ public sealed class OpenVrInput : IOpenVrSession
                 }
                 else
                 {
-                    _log($"SteamVR dashboard scroll: {interaction.ScrollY:0.##}.");
+                    var nowMs = Environment.TickCount64;
+                    if (_lastDashboardScrollLogAt == long.MinValue
+                        || nowMs - _lastDashboardScrollLogAt >= 500)
+                    {
+                        _lastDashboardScrollLogAt = nowMs;
+                        _log($"SteamVR dashboard scroll: {interaction.ScrollY:0.##}.");
+                    }
                 }
 
                 return true;

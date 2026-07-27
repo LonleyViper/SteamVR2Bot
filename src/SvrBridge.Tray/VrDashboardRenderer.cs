@@ -110,7 +110,7 @@ internal static class VrDashboardRenderer
             new Rectangle(60, 800, 1280, 64),
             16);
         graphics.DrawString(
-            "Record a new shortcut",
+            "Create a new shortcut",
             bodyFont,
             white,
             550,
@@ -272,69 +272,110 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderRecording(
-        ChordMode mode,
-        string? firstInput = null,
-        int holdMs = 1000)
+    public static string RenderHandPicker(
+        string controllerFamily,
+        string? firstInput = null)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
-            var isLongPress = mode == ChordMode.LongPress;
             graphics.DrawString(
-                isLongPress ? "Choose the button to hold" : "Record controller inputs",
+                firstInput is null
+                    ? "Choose a controller"
+                    : "Choose the second controller",
+                fonts.Title,
+                brushes.White,
+                60,
+                42);
+            DrawEllipsizedText(
+                graphics,
+                firstInput is null
+                    ? controllerFamily
+                    : $"First input: {firstInput}",
+                fonts.Subtitle,
+                brushes.Muted,
+                new RectangleF(64, 108, 1270, 36));
+
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Card,
+                new Rectangle(60, 230, 1280, 180),
+                20);
+            graphics.DrawString("L", fonts.Title, brushes.Blue, 150, 282);
+            graphics.DrawString(
+                "Left controller",
+                fonts.Heading,
+                brushes.White,
+                245,
+                300);
+            graphics.DrawString("›", fonts.Title, brushes.Blue, 1250, 282);
+
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Card,
+                new Rectangle(60, 430, 1280, 180),
+                20);
+            graphics.DrawString("R", fonts.Title, brushes.Blue, 150, 482);
+            graphics.DrawString(
+                "Right controller",
+                fonts.Heading,
+                brushes.White,
+                245,
+                500);
+            graphics.DrawString("›", fonts.Title, brushes.Blue, 1250, 482);
+
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(60, 800, 1280, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Back",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(60, 800, 1280, 64));
+        });
+    }
+
+    public static string RenderButtonPicker(
+        ControllerHand hand,
+        IReadOnlyList<ControllerInputBinding> inputs,
+        string? firstInput = null)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            var handName = hand == ControllerHand.Left ? "left" : "right";
+            graphics.DrawString(
+                $"Choose a {handName} button",
                 fonts.Title,
                 brushes.White,
                 60,
                 42);
             graphics.DrawString(
-                isLongPress
-                    ? $"Release all buttons, then press one. It will trigger after {holdMs / 1000d:0.#} seconds."
-                    : firstInput is null
-                        ? mode == ChordMode.Simultaneous
-                            ? "Release all buttons, then press the two inputs you want together."
-                            : "Release all buttons, then hold the first input."
-                        : $"{firstInput} recorded — keep holding it and press the second input.",
+                firstInput is null
+                    ? "Select the physical input from the list."
+                    : $"First input: {firstInput}",
                 fonts.Subtitle,
                 brushes.Muted,
                 64,
-                115);
+                108);
 
-            DrawRoundedRectangle(
-                graphics,
-                brushes.Card,
-                new Rectangle(150, 250, 1100, 330),
-                24);
-            if (isLongPress)
+            var y = 165;
+            foreach (var input in inputs.Take(6))
             {
-                graphics.DrawString("1", fonts.Title, brushes.Blue, 350, 350);
+                DrawRoundedRectangle(
+                    graphics,
+                    brushes.Card,
+                    new Rectangle(60, y, 1280, 78),
+                    14);
                 graphics.DrawString(
-                    "Press the button to hold",
-                    fonts.Heading,
+                    input.FriendlyName,
+                    fonts.Body,
                     brushes.White,
-                    430,
-                    355);
-            }
-            else
-            {
-                graphics.DrawString(
-                    firstInput is null ? "1" : "✓",
-                    fonts.Title,
-                    firstInput is null ? brushes.Blue : brushes.Green,
-                    255,
-                    350);
-                graphics.DrawString(
-                    firstInput is null ? "First input" : firstInput,
-                    fonts.Heading,
-                    brushes.White,
-                    330,
-                    355);
-                graphics.DrawString("2", fonts.Title, brushes.Blue, 760, 350);
-                graphics.DrawString(
-                    "Second input",
-                    fonts.Heading,
-                    brushes.White,
-                    835,
-                    355);
+                    92,
+                    y + 22);
+                graphics.DrawString("›", fonts.Heading, brushes.Blue, 1265, y + 19);
+                y += 91;
             }
 
             DrawRoundedRectangle(
@@ -342,7 +383,12 @@ internal static class VrDashboardRenderer
                 brushes.Disabled,
                 new Rectangle(60, 800, 1280, 64),
                 16);
-            graphics.DrawString("Cancel", fonts.Body, brushes.White, 655, 817);
+            DrawCenteredText(
+                graphics,
+                "Back to controllers",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(60, 800, 1280, 64));
         });
     }
 

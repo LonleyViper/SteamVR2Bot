@@ -200,13 +200,28 @@ internal static class TraySelfTests
             gesturePreview.Width == 1400 && gesturePreview.Height == 900,
             "The VR gesture picker rendered at the wrong size.");
 
-        var recordingPath = VrDashboardRenderer.RenderRecording(
-            SvrBridge.Core.ChordMode.LongPress,
-            holdMs: 2000);
-        using var recordingPreview = new Bitmap(recordingPath);
+        var handPath = VrDashboardRenderer.RenderHandPicker("HTC Vive controllers");
+        using var handPreview = new Bitmap(handPath);
         Assert(
-            recordingPreview.Width == 1400 && recordingPreview.Height == 900,
-            "The VR long-press recorder rendered at the wrong size.");
+            handPreview.Width == 1400 && handPreview.Height == 900,
+            "The VR controller picker rendered at the wrong size.");
+
+        var buttonPath = VrDashboardRenderer.RenderButtonPicker(
+            SvrBridge.Core.ControllerHand.Left,
+            [
+                SvrBridge.Core.ControllerInputBinding.Physical(
+                    SvrBridge.Core.ControllerHand.Left,
+                    1,
+                    "Left Menu Button"),
+                SvrBridge.Core.ControllerInputBinding.Physical(
+                    SvrBridge.Core.ControllerHand.Left,
+                    2,
+                    "Left Grip")
+            ]);
+        using var buttonPreview = new Bitmap(buttonPath);
+        Assert(
+            buttonPreview.Width == 1400 && buttonPreview.Height == 900,
+            "The VR button picker rendered at the wrong size.");
     }
 
     private static void TestVrScrollLimiter()
