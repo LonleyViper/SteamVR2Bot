@@ -36,6 +36,7 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<string?>>
         _commandResults = new();
+    private readonly ConcurrentQueue<ShortcutConfig> _createdShortcuts = new();
     private InputSnapshot _snapshot;
     private ControllerSetup _setup = ControllerSetup.Unknown;
     private Exception? _failure;
@@ -120,6 +121,56 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         {
             _commandResults.TryRemove(requestId, out _);
         }
+    }
+
+    public void ShowDashboard(string imagePath)
+        => ShowDashboard(imagePath, [], []);
+
+    public void ShowDashboard(
+        string imagePath,
+        IReadOnlyList<ShortcutConfig> shortcuts,
+        IReadOnlyList<StreamerBotAction> actions)
+    {
+        var requestId = Guid.NewGuid().ToString("N");
+        var result = new TaskCompletionSource<string?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_commandResults.TryAdd(requestId, result))
+        {
+            throw new InvalidOperationException("Could not prepare the SteamVR dashboard.");
+        }
+
+        try
+        {
+            SendCommand(
+                new OpenVrWorkerCommand(
+                    "showDashboard",
+                    requestId,
+                    imagePath,
+                    shortcuts,
+                    actions));
+            var error = result.Task.WaitAsync(TimeSpan.FromSeconds(10))
+                .GetAwaiter()
+                .GetResult();
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                throw new InvalidOperationException(error);
+            }
+        }
+        finally
+        {
+            _commandResults.TryRemove(requestId, out _);
+        }
+    }
+
+    public IReadOnlyList<ShortcutConfig> DrainCreatedShortcuts()
+    {
+        var result = new List<ShortcutConfig>();
+        while (_createdShortcuts.TryDequeue(out var shortcut))
+        {
+            result.Add(shortcut);
+        }
+
+        return result;
     }
 
     public void Dispose()
@@ -324,6 +375,13 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
                     new InvalidOperationException(
                         message.Error ?? "SteamVR input worker failed."));
                 break;
+            case "shortcutCreated":
+                if (message.ShortcutCreated is { } shortcut)
+                {
+                    _createdShortcuts.Enqueue(shortcut);
+                }
+
+                break;
         }
     }
 
@@ -423,6 +481,7 @@ internal static class OpenVrWorker
                 actionManifest,
                 message => Emit(new OpenVrWorkerMessage("log", Message: message)));
             var commands = Channel.CreateUnbounded<OpenVrWorkerCommand>();
+            VrDashboardController? dashboard = null;
             _ = Task.Run(() => ReadCommandsAsync(commands.Writer));
 
             var snapshot = openVr.Poll();
@@ -459,9 +518,36 @@ internal static class OpenVrWorker
                                 RequestId: command.RequestId,
                                 Error: error));
                     }
+
+                    if (command.Kind == "showDashboard")
+                    {
+                        string? error = null;
+                        try
+                        {
+                            dashboard = new VrDashboardController(
+                                openVr,
+                                command.Shortcuts ?? [],
+                                command.Actions ?? [],
+                                shortcut => Emit(
+                                    new OpenVrWorkerMessage(
+                                        "shortcutCreated",
+                                        ShortcutCreated: shortcut)));
+                        }
+                        catch (Exception exception)
+                        {
+                            error = exception.Message;
+                        }
+
+                        Emit(
+                            new OpenVrWorkerMessage(
+                                "commandResult",
+                                RequestId: command.RequestId,
+                                Error: error));
+                    }
                 }
 
                 var current = openVr.Poll();
+                dashboard?.Tick(current, setup);
                 if (current != snapshot)
                 {
                     snapshot = current;
@@ -552,7 +638,10 @@ internal static class OpenVrWorker
 
 internal sealed record OpenVrWorkerCommand(
     string Kind,
-    string? RequestId = null);
+    string? RequestId = null,
+    string? ImagePath = null,
+    IReadOnlyList<ShortcutConfig>? Shortcuts = null,
+    IReadOnlyList<StreamerBotAction>? Actions = null);
 
 internal sealed record OpenVrWorkerMessage(
     string Kind,
@@ -560,4 +649,5 @@ internal sealed record OpenVrWorkerMessage(
     ControllerSetup? Setup = null,
     string? Message = null,
     string? RequestId = null,
-    string? Error = null);
+    string? Error = null,
+    ShortcutConfig? ShortcutCreated = null);

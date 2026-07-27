@@ -13,6 +13,7 @@ internal static class SelfTests
         TestModifierChord();
         TestSimultaneousChord();
         TestCooldown();
+        TestPhysicalControllerInputs();
         TestAuthenticationHash();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
@@ -20,9 +21,38 @@ internal static class SelfTests
         await TestUnconfirmedDeliveryIsNotRetriedAsync();
         await TestSteamVrSessionRestartAsync();
         Console.WriteLine(
-            "SELF-TEST PASS: chord detection, authentication, SteamVR worker " +
+            "SELF-TEST PASS: chord detection, physical controller mapping, authentication, SteamVR worker " +
             "recovery, Streamer.bot restart recovery, no-duplicate delivery, " +
             "and DoAction round trip.");
+    }
+
+    private static void TestPhysicalControllerInputs()
+    {
+        var snapshot = new InputSnapshot(
+            false,
+            false,
+            LeftButtons: 1UL << 2,
+            RightButtons: 1UL << 33);
+        var leftGrip = ControllerInputBinding.Physical(
+            ControllerHand.Left,
+            2,
+            "Left Grip");
+        var rightTrigger = ControllerInputBinding.Physical(
+            ControllerHand.Right,
+            33,
+            "Right Trigger");
+        var wrongHand = ControllerInputBinding.Physical(
+            ControllerHand.Left,
+            33,
+            "Left Trigger");
+
+        Assert(leftGrip.IsPressed(snapshot), "Left Grip was not read from the controller mask.");
+        Assert(
+            rightTrigger.IsPressed(snapshot),
+            "Right Trigger was not read from the controller mask.");
+        Assert(
+            !wrongHand.IsPressed(snapshot),
+            "A button on the wrong controller was treated as pressed.");
     }
 
     private static void TestModifierChord()
@@ -99,7 +129,10 @@ internal static class SelfTests
         listener.Start();
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var server = RunMockStreamerBotAsync(listener, timeout.Token);
+        var server = RunMockStreamerBotAsync(
+            listener,
+            timeout.Token,
+            expectedActionName: "Second mapped action");
         var config = new StreamerBotConfig
         {
             WebSocketUrl = $"ws://127.0.0.1:{port}/",
@@ -116,7 +149,11 @@ internal static class SelfTests
             Assert(
                 actions[0].Id == "a0ff6f91-a51e-4b7d-948b-5e03ff4a82f0",
                 "Client returned the wrong action ID.");
-            await client.TriggerAsync("self-test", timeout.Token);
+            await client.TriggerAsync(
+                "self-test",
+                "second-action-id",
+                "Second mapped action",
+                timeout.Token);
         }
 
         await server;
@@ -284,7 +321,8 @@ internal static class SelfTests
         HttpListener listener,
         CancellationToken cancellationToken,
         bool expectGetActions = true,
-        string expectedBinding = "self-test")
+        string expectedBinding = "self-test",
+        string expectedActionName = "SVR POC Test")
     {
         var context = await listener.GetContextAsync().WaitAsync(cancellationToken);
         var webSocketContext = await context.AcceptWebSocketAsync(subProtocol: null);
@@ -344,7 +382,8 @@ internal static class SelfTests
             action.RootElement.GetProperty("request").GetString() == "DoAction",
             "Client did not send DoAction.");
         Assert(
-            action.RootElement.GetProperty("action").GetProperty("name").GetString() == "SVR POC Test",
+            action.RootElement.GetProperty("action").GetProperty("name").GetString()
+            == expectedActionName,
             "Client sent the wrong action name.");
         Assert(
             action.RootElement.GetProperty("args").GetProperty("binding").GetString()

@@ -234,3 +234,37 @@ Steam Input configurations, not SteamVR/OpenVR action bindings, so it is a
 design reference rather than a binding source. Keep live OpenVR inspection and
 SteamVR's binding UI as the authority. Do not reuse its AGPL implementation
 without a deliberate licensing decision.
+
+## Shortcut-manager checkpoint
+
+Implemented on `codex/shortcut-manager`:
+
+- Settings now hold several named shortcuts, and the old single-action settings
+  migrate automatically to the first row.
+- Every shortcut has its own enabled state, friendly controller gesture, and
+  stable Streamer.bot action ID.
+- Runtime routing maintains an independent chord detector per shortcut and
+  invokes only the action attached to the gesture that fired.
+- The desktop Shortcuts page supports add, record, edit, test, enable/disable,
+  and remove.
+- The SteamVR dashboard lists the saved gestures and actions. Its guided wizard
+  pages through discovered actions, records two controller inputs, and saves
+  the resulting shortcut back to the shared desktop settings.
+- Direct physical recording is Vive-first. Other controller families retain
+  the official SteamVR binding fallback until they pass the hardware matrix.
+- The dashboard remains inside the disposable OpenVR worker, preserving the
+  tray application's SteamVR-restart isolation.
+
+Automated checks cover legacy migration, protected multi-shortcut persistence,
+physical left/right button-mask matching, chord behavior, authenticated
+delivery, reconnect behavior, SteamVR worker recovery, and duplicate
+prevention.
+
+Live gates for this checkpoint:
+
+1. Confirm the SteamVR dashboard pointer/click coordinates and action paging in
+   the headset.
+2. Record a second Vive shortcut in VR, restart the bridge once, and confirm
+   that each gesture invokes only its own action.
+3. Repeat the 20-attempt shell and GERONIMO matrices for both shortcuts.
+4. Test each additional controller family before adding a named preset.

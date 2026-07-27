@@ -7,6 +7,17 @@ public interface IOpenVrSession : IDisposable
     ControllerSetup GetControllerSetup();
 
     void OpenBindingUi();
+
+    void ShowDashboard(string imagePath) =>
+        throw new NotSupportedException("This SteamVR session cannot show a dashboard.");
+
+    void ShowDashboard(
+        string imagePath,
+        IReadOnlyList<ShortcutConfig> shortcuts,
+        IReadOnlyList<StreamerBotAction> actions) =>
+        ShowDashboard(imagePath);
+
+    IReadOnlyList<ShortcutConfig> DrainCreatedShortcuts() => [];
 }
 
 public interface IOpenVrSessionFactory

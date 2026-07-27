@@ -30,6 +30,8 @@ public sealed class BridgeEngine
     private readonly IOpenVrSessionFactory _openVrSessionFactory;
     private readonly object _inputGate = new();
     private IOpenVrSession? _currentInput;
+    private IOpenVrSession? _dashboardInput;
+    private CancellationTokenSource? _dashboardMonitorCancellation;
     private string? _streamerBotAttentionDetail;
 
     public BridgeEngine(IOpenVrSessionFactory? openVrSessionFactory = null)
@@ -41,6 +43,7 @@ public sealed class BridgeEngine
     public event Action<BridgeStatus>? StatusChanged;
     public event Action<BridgeActivity>? Activity;
     public event Action<ControllerSetup>? ControllerSetupChanged;
+    public event Action<ShortcutConfig>? ShortcutCreated;
 
     public async Task RunAsync(AppConfig config, CancellationToken cancellationToken)
     {
@@ -93,21 +96,34 @@ public sealed class BridgeEngine
     public async Task TestActionAsync(
         AppConfig config,
         CancellationToken cancellationToken)
+        => await TestActionAsync(
+            config,
+            config.GetShortcuts().First(),
+            cancellationToken);
+
+    public async Task TestActionAsync(
+        AppConfig config,
+        ShortcutConfig shortcut,
+        CancellationToken cancellationToken)
     {
         SetStatus(
             BridgeState.Sending,
             "Testing Streamer.bot…",
-            $"Running “{FriendlyActionName(config.StreamerBot)}”.");
+            $"Running “{FriendlyActionName(shortcut)}”.");
 
         try
         {
             await using var streamerBot = new StreamerBotClient(
                 config.StreamerBot,
                 message => Log("streamerbot.connection", message));
-            await streamerBot.TriggerAsync("settings_test", cancellationToken);
+            await streamerBot.TriggerAsync(
+                $"test:{shortcut.Id}",
+                shortcut.ActionId,
+                shortcut.ActionName,
+                cancellationToken);
             Log(
                 "streamerbot.test_confirmed",
-                $"Test confirmed: {FriendlyActionName(config.StreamerBot)}");
+                $"Test confirmed: {FriendlyActionName(shortcut)}");
             SetStatus(
                 BridgeState.Ready,
                 "Test successful",
@@ -120,6 +136,72 @@ public sealed class BridgeEngine
                 "Test failed",
                 FriendlyErrorDetail(exception));
             throw;
+        }
+    }
+
+    public async Task<RecordedGesture> RecordGestureAsync(
+        AppConfig config,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        lock (_inputGate)
+        {
+            _dashboardMonitorCancellation?.Cancel();
+            _dashboardMonitorCancellation?.Dispose();
+            _dashboardMonitorCancellation = null;
+            _dashboardInput?.Dispose();
+            _dashboardInput = null;
+        }
+
+        var actionManifest = OpenVrInput.ResolveActionManifest(config.ActionManifestPath);
+        using var timeoutCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCancellation.CancelAfter(timeout);
+        var token = timeoutCancellation.Token;
+
+        SetStatus(
+            BridgeState.Starting,
+            "Listening for your controller inputs…",
+            "Release the buttons, then hold your safety input and press the action input.");
+
+        using var input = await _openVrSessionFactory.ConnectAsync(
+            config,
+            actionManifest,
+            message => Log("openvr.recording", message),
+            token);
+        var setup = input.GetControllerSetup();
+
+        // Begin from a released state so an already-held system button is not
+        // mistaken for part of the shortcut.
+        while (ControllerInputs.PressedInputs(input.Poll(), setup).Count > 0)
+        {
+            await Task.Delay(20, token);
+        }
+
+        ControllerInputBinding? first = null;
+        while (first is null)
+        {
+            var pressed = ControllerInputs.PressedInputs(input.Poll(), setup);
+            if (pressed.Count >= 2)
+            {
+                return FinishRecording(pressed[0], pressed[1], setup);
+            }
+
+            first = pressed.FirstOrDefault();
+            await Task.Delay(20, token);
+        }
+
+        while (true)
+        {
+            var pressed = ControllerInputs.PressedInputs(input.Poll(), setup);
+            var second = pressed.FirstOrDefault(candidate =>
+                !candidate.Id.Equals(first.Id, StringComparison.OrdinalIgnoreCase));
+            if (second is not null)
+            {
+                return FinishRecording(first, second, setup);
+            }
+
+            await Task.Delay(20, token);
         }
     }
 
@@ -148,11 +230,73 @@ public sealed class BridgeEngine
         temporaryInput.OpenBindingUi();
     }
 
+    public async Task ShowDashboardAsync(
+        AppConfig config,
+        string imagePath,
+        IReadOnlyList<ShortcutConfig> shortcuts,
+        IReadOnlyList<StreamerBotAction> actions,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_inputGate)
+        {
+            if (_currentInput is not null)
+            {
+                _currentInput.ShowDashboard(imagePath, shortcuts, actions);
+                PublishCreatedShortcuts(_currentInput);
+                return;
+            }
+
+            if (_dashboardInput is not null)
+            {
+                _dashboardInput.ShowDashboard(imagePath, shortcuts, actions);
+                PublishCreatedShortcuts(_dashboardInput);
+                return;
+            }
+        }
+
+        var actionManifest = OpenVrInput.ResolveActionManifest(
+            config.ActionManifestPath);
+        var dashboardInput = await _openVrSessionFactory.ConnectAsync(
+            config,
+            actionManifest,
+            message => Log("openvr.dashboard", message),
+            cancellationToken);
+        try
+        {
+            dashboardInput.ShowDashboard(imagePath, shortcuts, actions);
+            lock (_inputGate)
+            {
+                _dashboardInput = dashboardInput;
+                _dashboardMonitorCancellation?.Cancel();
+                _dashboardMonitorCancellation?.Dispose();
+                _dashboardMonitorCancellation = new CancellationTokenSource();
+                _ = MonitorDashboardAsync(
+                    dashboardInput,
+                    _dashboardMonitorCancellation.Token);
+            }
+        }
+        catch
+        {
+            dashboardInput.Dispose();
+            throw;
+        }
+    }
+
     private async Task RunSteamVrSessionAsync(
         AppConfig config,
         string actionManifest,
         CancellationToken cancellationToken)
     {
+        lock (_inputGate)
+        {
+            _dashboardMonitorCancellation?.Cancel();
+            _dashboardMonitorCancellation?.Dispose();
+            _dashboardMonitorCancellation = null;
+            _dashboardInput?.Dispose();
+            _dashboardInput = null;
+        }
+
         var openVr = await _openVrSessionFactory.ConnectAsync(
             config,
             actionManifest,
@@ -165,7 +309,12 @@ public sealed class BridgeEngine
 
         try
         {
-            var detector = new ChordDetector(config.Chord);
+            var shortcuts = config.GetShortcuts()
+                .Where(shortcut => shortcut.Enabled)
+                .ToArray();
+            var detectors = shortcuts.ToDictionary(
+                shortcut => shortcut.Id,
+                shortcut => new ChordDetector(shortcut.Gesture));
             var stopwatch = Stopwatch.StartNew();
             var bindingRefresh = Stopwatch.StartNew();
             var previous = new InputSnapshot(false, false);
@@ -215,17 +364,23 @@ public sealed class BridgeEngine
                     previous = snapshot;
                 }
 
-                if (detector.Update(
-                        snapshot.ButtonOne,
-                        snapshot.ButtonTwo,
-                        stopwatch.ElapsedMilliseconds))
+                foreach (var shortcut in shortcuts)
                 {
-                    await DeliverActionAsync(
-                        streamerBot,
-                        config,
-                        currentSetup,
-                        cancellationToken);
+                    if (detectors[shortcut.Id].Update(
+                            shortcut.SafetyInput.IsPressed(snapshot),
+                            shortcut.ActionInput.IsPressed(snapshot),
+                            stopwatch.ElapsedMilliseconds))
+                    {
+                        await DeliverActionAsync(
+                            streamerBot,
+                            config,
+                            shortcut,
+                            currentSetup,
+                            cancellationToken);
+                    }
                 }
+
+                PublishCreatedShortcuts(openVr);
 
                 await Task.Delay(config.PollIntervalMs, cancellationToken);
             }
@@ -244,26 +399,72 @@ public sealed class BridgeEngine
         }
     }
 
+    private async Task MonitorDashboardAsync(
+        IOpenVrSession input,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                lock (_inputGate)
+                {
+                    if (!ReferenceEquals(_dashboardInput, input))
+                    {
+                        return;
+                    }
+
+                    _ = input.Poll();
+                    PublishCreatedShortcuts(input);
+                }
+
+                await Task.Delay(100, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Dashboard monitoring stopped normally.
+        }
+        catch (Exception exception)
+        {
+            Log(
+                "dashboard.monitor_stopped",
+                $"VR dashboard closed: {exception.Message}",
+                BridgeLogLevel.Warning);
+        }
+    }
+
+    private void PublishCreatedShortcuts(IOpenVrSession input)
+    {
+        foreach (var shortcut in input.DrainCreatedShortcuts())
+        {
+            ShortcutCreated?.Invoke(shortcut);
+        }
+    }
+
     private async Task DeliverActionAsync(
         StreamerBotClient streamerBot,
         AppConfig config,
+        ShortcutConfig shortcut,
         ControllerSetup setup,
         CancellationToken cancellationToken)
     {
         SetStatus(
             BridgeState.Sending,
             "Running your action…",
-            $"Running “{FriendlyActionName(config.StreamerBot)}” in Streamer.bot.");
+            $"Running “{FriendlyActionName(shortcut)}” in Streamer.bot.");
 
         try
         {
             await streamerBot.TriggerAsync(
-                "safety_input+action_input",
+                shortcut.Id,
+                shortcut.ActionId,
+                shortcut.ActionName,
                 cancellationToken);
             _streamerBotAttentionDetail = null;
             Log(
                 "streamerbot.action_confirmed",
-                $"Action confirmed: {FriendlyActionName(config.StreamerBot)}");
+                $"Action confirmed: {FriendlyActionName(shortcut)}");
             SetReadyStatus(setup, config);
         }
         catch (StreamerBotDeliveryException exception)
@@ -341,9 +542,8 @@ public sealed class BridgeEngine
                 SetStatus(
                     BridgeState.Ready,
                     "Ready for your shortcut",
-                    config.Chord.Mode == ChordMode.Modifier
-                        ? setup.FriendlySummary
-                        : "Press both chosen controller inputs together.");
+                    $"{config.GetShortcuts().Count(shortcut => shortcut.Enabled)} shortcut(s) ready. " +
+                    setup.FriendlySummary);
                 break;
         }
     }
@@ -361,6 +561,30 @@ public sealed class BridgeEngine
         string.IsNullOrWhiteSpace(config.ActionName)
             ? "Selected action"
             : config.ActionName.Trim();
+
+    private static string FriendlyActionName(ShortcutConfig shortcut) =>
+        string.IsNullOrWhiteSpace(shortcut.ActionName)
+            ? "Selected action"
+            : shortcut.ActionName.Trim();
+
+    private RecordedGesture FinishRecording(
+        ControllerInputBinding safetyInput,
+        ControllerInputBinding actionInput,
+        ControllerSetup setup)
+    {
+        var gesture = new RecordedGesture(
+            safetyInput,
+            actionInput,
+            ControllerInputs.ControllerFamily(setup));
+        Log(
+            "controller.gesture_recorded",
+            $"Recorded {safetyInput.FriendlyName} + {actionInput.FriendlyName}.");
+        SetStatus(
+            BridgeState.Stopped,
+            "Inputs recorded",
+            $"Hold {safetyInput.FriendlyName}, then press {actionInput.FriendlyName}.");
+        return gesture;
+    }
 
     private static string FriendlyErrorDetail(Exception exception)
     {

@@ -8,11 +8,42 @@ namespace SvrBridge.Tray;
 internal sealed record UserSettings
 {
     public string StreamerBotAddress { get; init; } = "ws://127.0.0.1:8080/1";
-    public string ActionName { get; init; } = "SVR POC Test";
+    public string ActionName { get; init; } = "";
     public string ActionId { get; init; } = "";
     public string Password { get; init; } = "";
     public ChordMode GestureMode { get; init; } = ChordMode.Modifier;
+    public IReadOnlyList<ShortcutConfig> Shortcuts { get; init; } = [];
     public bool StartBridgeWhenAppOpens { get; init; }
+
+    public IReadOnlyList<ShortcutConfig> GetShortcuts()
+    {
+        if (Shortcuts.Count > 0)
+        {
+            return Shortcuts;
+        }
+
+        if (string.IsNullOrWhiteSpace(ActionName)
+            && string.IsNullOrWhiteSpace(ActionId))
+        {
+            return [];
+        }
+
+        return
+        [
+            ShortcutConfig.FromLegacy(
+                new StreamerBotConfig
+                {
+                    ActionName = ActionName,
+                    ActionId = string.IsNullOrWhiteSpace(ActionId) ? null : ActionId
+                },
+                new ChordConfig
+                {
+                    Mode = GestureMode,
+                    WindowMs = GestureMode == ChordMode.Simultaneous ? 300 : 2000,
+                    CooldownMs = 250
+                })
+        ];
+    }
 
     public AppConfig ToAppConfig() =>
         new()
@@ -28,6 +59,7 @@ internal sealed record UserSettings
                 ActionId = string.IsNullOrWhiteSpace(ActionId) ? null : ActionId.Trim(),
                 DryRun = false
             },
+            Shortcuts = GetShortcuts(),
             Chord = new ChordConfig
             {
                 Mode = GestureMode,
@@ -89,6 +121,7 @@ internal sealed class UserSettingsStore
             ActionId = settings.ActionId.Trim(),
             ProtectedPassword = Protect(settings.Password),
             GestureMode = settings.GestureMode,
+            Shortcuts = settings.GetShortcuts(),
             StartBridgeWhenAppOpens = settings.StartBridgeWhenAppOpens
         };
 
@@ -102,11 +135,14 @@ internal sealed class UserSettingsStore
     {
         ValidateConnection(settings);
 
-        if (string.IsNullOrWhiteSpace(settings.ActionName)
-            && string.IsNullOrWhiteSpace(settings.ActionId))
+        if (settings.GetShortcuts().Count == 0)
         {
-            throw new InvalidDataException(
-                "Choose a Streamer.bot action, or type its friendly name.");
+            throw new InvalidDataException("Add at least one controller shortcut.");
+        }
+
+        foreach (var shortcut in settings.GetShortcuts())
+        {
+            shortcut.Validate();
         }
     }
 
@@ -136,6 +172,7 @@ internal sealed class UserSettingsStore
                 ActionId = saved.ActionId,
                 Password = Unprotect(saved.ProtectedPassword),
                 GestureMode = saved.GestureMode,
+                Shortcuts = saved.Shortcuts ?? [],
                 StartBridgeWhenAppOpens = saved.StartBridgeWhenAppOpens
             };
         }
@@ -210,10 +247,11 @@ internal sealed class UserSettingsStore
     private sealed record SavedSettings
     {
         public string StreamerBotAddress { get; init; } = "ws://127.0.0.1:8080/1";
-        public string ActionName { get; init; } = "SVR POC Test";
+        public string ActionName { get; init; } = "";
         public string ActionId { get; init; } = "";
         public string ProtectedPassword { get; init; } = "";
         public ChordMode GestureMode { get; init; } = ChordMode.Modifier;
+        public IReadOnlyList<ShortcutConfig>? Shortcuts { get; init; }
         public bool StartBridgeWhenAppOpens { get; init; }
     }
 }

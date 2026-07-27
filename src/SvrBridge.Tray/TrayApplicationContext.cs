@@ -40,6 +40,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _mainForm.FindActionsRequested += FindStreamerBotActions;
         _mainForm.SteamVrSetupRequested += SetUpSteamVr;
         _mainForm.BindingsRequested += OpenControllerBindings;
+        _mainForm.DashboardRequested += ShowVrDashboard;
+        _mainForm.RecordRequested += RecordControllerGestureAsync;
         _mainForm.LogsRequested += OpenLogs;
         _mainForm.ExitRequested += ExitApplication;
         _mainForm.Shown += (_, _) =>
@@ -53,6 +55,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _engine.StatusChanged += OnStatusChanged;
         _engine.Activity += OnActivity;
         _engine.ControllerSetupChanged += _mainForm.UpdateControllerSetup;
+        _engine.ShortcutCreated += SaveDashboardShortcut;
 
         var menu = new ContextMenuStrip();
         var open = new ToolStripMenuItem("Open SVR Bridge");
@@ -64,7 +67,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         open.Click += (_, _) => ShowMainWindow();
         _startMenu.Click += (_, _) => StartBridge();
         _stopMenu.Click += (_, _) => StopBridge();
-        test.Click += (_, _) => TestStreamerBot();
+        test.Click += (_, _) =>
+        {
+            if (_mainForm.SelectedShortcut is { } shortcut)
+            {
+                TestStreamerBot(shortcut);
+            }
+            else
+            {
+                ShowMainWindow();
+            }
+        };
         bindings.Click += (_, _) => OpenControllerBindings();
         logs.Click += (_, _) => OpenLogs();
         exit.Click += (_, _) => ExitApplication();
@@ -178,7 +191,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async void TestStreamerBot()
+    private async void TestStreamerBot(ShortcutConfig shortcut)
     {
         UserSettings settings;
         try
@@ -198,7 +211,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await _engine.TestActionAsync(settings.ToAppConfig(), timeout.Token);
+            await _engine.TestActionAsync(
+                settings.ToAppConfig(),
+                shortcut,
+                timeout.Token);
         }
         catch (Exception exception)
         {
@@ -209,6 +225,96 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     BridgeLogLevel.Warning));
             ShowMainWindow();
         }
+    }
+
+    private async Task<RecordedGesture?> RecordControllerGestureAsync()
+    {
+        try
+        {
+            var settings = _mainForm.ReadSettings();
+            UserSettingsStore.ValidateConnection(settings);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            return await _engine.RecordGestureAsync(
+                settings.ToAppConfig(),
+                TimeSpan.FromSeconds(20),
+                timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _mainForm.ShowSettingsError(
+                "No two-input gesture was detected. Make sure both controllers are on, " +
+                "then try again. For unsupported controllers, use SteamVR input bindings.");
+            return null;
+        }
+        catch (Exception exception)
+        {
+            _mainForm.ShowSettingsError(
+                $"Could not record those inputs. {exception.Message}");
+            return null;
+        }
+    }
+
+    private async void ShowVrDashboard()
+    {
+        try
+        {
+            var settings = _mainForm.ReadSettings();
+            var dashboardImage = VrDashboardRenderer.Render(
+                settings.GetShortcuts());
+            await _engine.ShowDashboardAsync(
+                settings.ToAppConfig(),
+                dashboardImage,
+                settings.GetShortcuts(),
+                _mainForm.AvailableActions,
+                CancellationToken.None);
+            OnActivity(
+                new BridgeActivity(
+                    "dashboard.shown",
+                    "Opened the SVR Bridge dashboard in SteamVR."));
+        }
+        catch (Exception exception)
+        {
+            OnStatusChanged(
+                new BridgeStatus(
+                    BridgeState.Error,
+                    "Could not show the VR dashboard",
+                    $"Start SteamVR, then try again. {exception.Message}"));
+        }
+    }
+
+    private void SaveDashboardShortcut(ShortcutConfig shortcut)
+    {
+        _mainForm.BeginInvoke(() =>
+        {
+            var current = _mainForm.ReadSettings();
+            var shortcuts = current.GetShortcuts()
+                .Where(item => item.Id != shortcut.Id)
+                .Append(shortcut)
+                .ToArray();
+            var updated = current with { Shortcuts = shortcuts };
+            try
+            {
+                _settingsStore.Save(updated);
+                _settings = updated;
+                _mainForm.ApplySettings(updated);
+                OnActivity(
+                    new BridgeActivity(
+                        "dashboard.shortcut_saved",
+                        $"Saved “{shortcut.Name}” from the VR dashboard."));
+                OnStatusChanged(
+                    new BridgeStatus(
+                        BridgeState.Stopped,
+                        "VR shortcut saved",
+                        _bridgeTask is { IsCompleted: false }
+                            ? "Stop and start once to activate the new shortcut."
+                            : "Choose Save and start when you are ready."));
+            }
+            catch (Exception exception)
+            {
+                _mainForm.ShowSettingsError(
+                    $"The VR shortcut was recorded but could not be saved. {exception.Message}");
+            }
+        });
     }
 
     private async void FindStreamerBotActions()

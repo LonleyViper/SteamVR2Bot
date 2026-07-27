@@ -1,6 +1,6 @@
 # SVR Bridge
 
-SVR Bridge runs a Streamer.bot action from a safe SteamVR controller shortcut.
+SVR Bridge runs Streamer.bot actions from safe SteamVR controller shortcuts.
 It uses SteamVR actions directly—there is no keyboard emulation, browser overlay,
 or OpenVR2Key layer.
 
@@ -31,24 +31,58 @@ In the SVR Bridge window:
 
 1. Enter the Streamer.bot WebSocket address.
 2. Enter the connection password only if Streamer.bot requires one.
-3. Choose **Find actions**.
-4. Pick the Streamer.bot action by its familiar name.
-5. Choose **Test Streamer.bot** to confirm the connection and action.
-6. Choose **Set up SteamVR** once.
-7. Choose **Save and Start**.
+3. On **Connection & setup**, choose **Refresh Streamer.bot actions**.
+4. On **Shortcuts**, choose **Add shortcut**.
+5. Give it a clear name, choose its Streamer.bot action, then choose
+   **Record controller inputs**.
+6. In VR, release the buttons, hold the safety input, then press the action
+   input.
+7. Save the shortcut and use **Test action**.
+8. Choose **Set up SteamVR** once, then **Save and start**.
+
+The Shortcuts page lists every gesture and the action it runs. Select a row to
+edit, test, enable or disable, or remove it. Existing single-action settings
+are migrated automatically as the first shortcut.
 
 Closing the window keeps SVR Bridge running in the Windows notification area.
 Use its tray menu to open, start, stop, test, or exit the app.
 
+## In-VR setup
+
+Choose **Show in VR** on the Connection & setup page. The SVR Bridge SteamVR
+dashboard shows the currently saved shortcuts and what each one runs.
+
+To create one without leaving VR:
+
+1. Select **Record a new shortcut**.
+2. Choose the Streamer.bot action by its familiar name. Use **Next** to page
+   through a long action list.
+3. Release all controller buttons.
+4. Hold the safety input, then press the action input.
+
+The shortcut is saved immediately and appears in the desktop list. If the
+bridge was already running, stop and start it once to activate the newly added
+shortcut. Refresh the Streamer.bot action list once on the desktop before using
+the in-VR action picker.
+
 ## Controller inputs
 
-SVR Bridge now detects the active controller family and reads the current
-SteamVR binding for its two logical inputs:
+The recorder reads the connected controller directly and stores friendly
+physical input names, such as **Left Grip** and **Right Trigger**. This enables
+several different gestures at the same time.
+
+The recorder is validated first for Vive controllers. Controller button layouts
+vary by family. For Index, Touch, WMR, Cosmos, or another controller, verify the
+recorded names and run the live test matrix before treating it as a packaged
+default.
+
+The original SteamVR logical-input route remains available as a compatibility
+fallback:
 
 - **Safety Button** — held to prevent an accidental command.
 - **Action Button** — pressed to run the selected Streamer.bot action.
 
-Choose **Change SteamVR inputs…** to open the official binding page directly.
+Choose **SteamVR input bindings** to open the official binding page directly.
 SteamVR keeps a separate binding for each controller family, so changing an
 Index binding does not overwrite a Vive or Touch binding.
 
@@ -56,7 +90,7 @@ The packaged Vive preset—Left Grip plus Right Trigger—is live-validated. Oth
 controller families are detected and can be configured through SteamVR, but no
 untested default preset is labelled as validated.
 
-The **Gesture behavior** setting supports:
+Each shortcut's gesture behavior supports:
 
 - Hold the Safety Button, then press the Action Button.
 - Press both chosen inputs together within 300 ms.

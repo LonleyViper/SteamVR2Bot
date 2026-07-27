@@ -14,11 +14,14 @@ public sealed class OpenVrInput : IOpenVrSession
     private readonly VrShutdownInternal _shutdown;
     private readonly VrInputFunctions _input;
     private readonly VrSystemFunctions? _system;
+    private readonly VrOverlayFunctions? _overlay;
     private readonly bool _supportsBindingInspection;
     private readonly ulong _actionSet;
     private readonly ulong _buttonOne;
     private readonly ulong _buttonTwo;
     private readonly VrActiveActionSet[] _activeSets;
+    private ulong _dashboardHandle;
+    private ulong _dashboardThumbnailHandle;
     private bool _disposed;
 
     public OpenVrInput(
@@ -51,6 +54,7 @@ public sealed class OpenVrInput : IOpenVrSession
                 out _supportsBindingInspection);
             _input = Marshal.PtrToStructure<VrInputFunctions>(tablePointer);
             _system = TryGetSystemTable(getInterface, log);
+            _overlay = TryGetOverlayTable(getInterface, log);
 
             var manifestPointer = Marshal.StringToCoTaskMemUTF8(actionManifestPath);
             try
@@ -112,7 +116,12 @@ public sealed class OpenVrInput : IOpenVrSession
                 (uint)_activeSets.Length),
             "UpdateActionState");
 
-        return new InputSnapshot(ReadDigital(_buttonOne), ReadDigital(_buttonTwo));
+        var (leftButtons, rightButtons) = ReadControllerButtons();
+        return new InputSnapshot(
+            ReadDigital(_buttonOne),
+            ReadDigital(_buttonTwo),
+            leftButtons,
+            rightButtons);
     }
 
     public ControllerSetup GetControllerSetup()
@@ -196,6 +205,104 @@ public sealed class OpenVrInput : IOpenVrSession
         finally
         {
             Marshal.FreeCoTaskMem(appKey);
+        }
+    }
+
+    public void ShowDashboard(string imagePath)
+    {
+        ThrowIfDisposed();
+        if (_overlay is null)
+        {
+            throw new InvalidOperationException(
+                "This SteamVR version did not expose dashboard overlays.");
+        }
+
+        if (!File.Exists(imagePath))
+        {
+            throw new FileNotFoundException("VR dashboard image not found.", imagePath);
+        }
+
+        var key = Marshal.StringToCoTaskMemUTF8("ie.lonelyviper.svrbridge.dashboard");
+        var name = Marshal.StringToCoTaskMemUTF8("SVR Bridge");
+        var image = Marshal.StringToCoTaskMemUTF8(imagePath);
+        try
+        {
+            if (_dashboardHandle == 0)
+            {
+                EnsureOverlaySuccess(
+                    _overlay.Value.CreateDashboardOverlay(
+                        key,
+                        name,
+                        ref _dashboardHandle,
+                        ref _dashboardThumbnailHandle),
+                    "CreateDashboardOverlay");
+                EnsureOverlaySuccess(
+                    _overlay.Value.SetOverlayWidthInMeters(_dashboardHandle, 2.2f),
+                    "SetOverlayWidthInMeters");
+                EnsureOverlaySuccess(
+                    _overlay.Value.SetOverlayInputMethod(_dashboardHandle, 1),
+                    "SetOverlayInputMethod");
+                var mouseScale = new HmdVector2 { X = 1400, Y = 900 };
+                EnsureOverlaySuccess(
+                    _overlay.Value.SetOverlayMouseScale(
+                        _dashboardHandle,
+                        ref mouseScale),
+                    "SetOverlayMouseScale");
+            }
+
+            EnsureOverlaySuccess(
+                _overlay.Value.SetOverlayFromFile(_dashboardHandle, image),
+                "SetOverlayFromFile");
+            EnsureOverlaySuccess(
+                _overlay.Value.SetOverlayFromFile(_dashboardThumbnailHandle, image),
+                "SetOverlayFromFile(thumbnail)");
+            _overlay.Value.ShowDashboard(key);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(key);
+            Marshal.FreeCoTaskMem(name);
+            Marshal.FreeCoTaskMem(image);
+        }
+    }
+
+    public bool TryGetDashboardClick(out float x, out float y)
+    {
+        x = 0;
+        y = 0;
+        if (_overlay is null || _dashboardHandle == 0)
+        {
+            return false;
+        }
+
+        const int eventBufferSize = 128;
+        var eventBuffer = Marshal.AllocCoTaskMem(eventBufferSize);
+        try
+        {
+            while (_overlay.Value.PollNextOverlayEvent(
+                       _dashboardHandle,
+                       eventBuffer,
+                       eventBufferSize))
+            {
+                // VREvent_MouseButtonDown. VREvent_t uses OpenVR's 4-byte
+                // event packing, so the mouse union begins at byte 12.
+                if (Marshal.ReadInt32(eventBuffer) != 301)
+                {
+                    continue;
+                }
+
+                x = BitConverter.Int32BitsToSingle(
+                    Marshal.ReadInt32(eventBuffer, 12));
+                y = 900 - BitConverter.Int32BitsToSingle(
+                    Marshal.ReadInt32(eventBuffer, 16));
+                return true;
+            }
+
+            return false;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(eventBuffer);
         }
     }
 
@@ -317,6 +424,28 @@ public sealed class OpenVrInput : IOpenVrSession
         return Marshal.PtrToStructure<VrSystemFunctions>(pointer);
     }
 
+    private static VrOverlayFunctions? TryGetOverlayTable(
+        VrGetGenericInterface getInterface,
+        Action<string> log)
+    {
+        var error = VrInitError.None;
+        var pointer = getInterface("FnTable:IVROverlay_028", ref error);
+        if (pointer == nint.Zero || error != VrInitError.None)
+        {
+            log("SteamVR dashboard overlays are unavailable in this SteamVR version.");
+            return null;
+        }
+
+        return new VrOverlayFunctions(
+            GetTableDelegate<SetOverlayWidthInMetersDelegate>(pointer, 22),
+            GetTableDelegate<PollNextOverlayEventDelegate>(pointer, 48),
+            GetTableDelegate<SetOverlayInputMethodDelegate>(pointer, 50),
+            GetTableDelegate<SetOverlayMouseScaleDelegate>(pointer, 52),
+            GetTableDelegate<SetOverlayFromFileDelegate>(pointer, 63),
+            GetTableDelegate<CreateDashboardOverlayDelegate>(pointer, 67),
+            GetTableDelegate<ShowDashboardDelegate>(pointer, 72));
+    }
+
     private ulong GetActionHandle(string actionPath)
     {
         ulong handle = 0;
@@ -351,6 +480,47 @@ public sealed class OpenVrInput : IOpenVrSession
 
         EnsureSuccess(error, "GetDigitalActionData");
         return data.Active && data.State;
+    }
+
+    private (ulong Left, ulong Right) ReadControllerButtons()
+    {
+        if (_system is null || _system.Value.GetControllerState is null)
+        {
+            return (0, 0);
+        }
+
+        ulong left = 0;
+        ulong right = 0;
+        for (uint index = 0; index < 64; index++)
+        {
+            var role = _system.Value.GetControllerRoleForTrackedDeviceIndex(index);
+            if (role is not (TrackedControllerRole.LeftHand or TrackedControllerRole.RightHand)
+                || _system.Value.GetTrackedDeviceClass(index) != TrackedDeviceClass.Controller
+                || !_system.Value.IsTrackedDeviceConnected(index))
+            {
+                continue;
+            }
+
+            var state = new VrControllerState();
+            if (!_system.Value.GetControllerState(
+                    index,
+                    ref state,
+                    (uint)Marshal.SizeOf<VrControllerState>()))
+            {
+                continue;
+            }
+
+            if (role == TrackedControllerRole.LeftHand)
+            {
+                left = state.ButtonPressed;
+            }
+            else
+            {
+                right = state.ButtonPressed;
+            }
+        }
+
+        return (left, right);
     }
 
     private IReadOnlyList<ControllerDevice> GetControllers()
@@ -491,11 +661,26 @@ public sealed class OpenVrInput : IOpenVrSession
     private static T LoadExport<T>(nint library, string name) where T : Delegate =>
         Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(library, name));
 
+    private static T GetTableDelegate<T>(nint table, int index) where T : Delegate =>
+        Marshal.GetDelegateForFunctionPointer<T>(
+            Marshal.ReadIntPtr(table, index * IntPtr.Size));
+
     private static void EnsureSuccess(VrInputError error, string operation)
     {
         if (error != VrInputError.None)
         {
             throw new InvalidOperationException($"{operation} failed: {error} ({(int)error}).");
+        }
+    }
+
+    private static void EnsureOverlaySuccess(
+        VrOverlayError error,
+        string operation)
+    {
+        if (error != VrOverlayError.None)
+        {
+            throw new InvalidOperationException(
+                $"{operation} failed: {error} ({(int)error}).");
         }
     }
 
@@ -545,6 +730,11 @@ public sealed class OpenVrInput : IOpenVrSession
         InvalidPriority = 18,
         PermissionDenied = 19,
         InvalidRenderModel = 20
+    }
+
+    private enum VrOverlayError
+    {
+        None = 0
     }
 
     private enum TrackedDeviceClass
@@ -668,6 +858,18 @@ public sealed class OpenVrInput : IOpenVrSession
 
         [MarshalAs(UnmanagedType.FunctionPtr)]
         public GetStringTrackedDevicePropertyDelegate GetStringTrackedDeviceProperty;
+
+        private nint GetPropErrorNameFromEnum;
+        private nint PollNextEvent;
+        private nint PollNextEventWithPose;
+        private nint PollNextEventWithPoseAndOverlays;
+        private nint GetEventTypeNameFromEnum;
+        private nint GetHiddenAreaMesh;
+        private nint GetEyeTrackedFoveationCenter;
+        private nint GetEyeTrackedFoveationCenterForProjection;
+
+        [MarshalAs(UnmanagedType.FunctionPtr)]
+        public GetControllerStateDelegate? GetControllerState;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -729,6 +931,66 @@ public sealed class OpenVrInput : IOpenVrSession
         uint bufferSize,
         ref TrackedPropertyError error);
 
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate VrOverlayError SetOverlayWidthInMetersDelegate(
+        ulong overlayHandle,
+        float widthInMeters);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private delegate bool PollNextOverlayEventDelegate(
+        ulong overlayHandle,
+        nint eventBuffer,
+        uint eventBufferSize);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate VrOverlayError SetOverlayInputMethodDelegate(
+        ulong overlayHandle,
+        int inputMethod);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate VrOverlayError SetOverlayMouseScaleDelegate(
+        ulong overlayHandle,
+        ref HmdVector2 mouseScale);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate VrOverlayError SetOverlayFromFileDelegate(
+        ulong overlayHandle,
+        nint filePath);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate VrOverlayError CreateDashboardOverlayDelegate(
+        nint overlayKey,
+        nint friendlyName,
+        ref ulong mainHandle,
+        ref ulong thumbnailHandle);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate void ShowDashboardDelegate(nint overlayKey);
+
+    private readonly record struct VrOverlayFunctions(
+        SetOverlayWidthInMetersDelegate SetOverlayWidthInMeters,
+        PollNextOverlayEventDelegate PollNextOverlayEvent,
+        SetOverlayInputMethodDelegate SetOverlayInputMethod,
+        SetOverlayMouseScaleDelegate SetOverlayMouseScale,
+        SetOverlayFromFileDelegate SetOverlayFromFile,
+        CreateDashboardOverlayDelegate CreateDashboardOverlay,
+        ShowDashboardDelegate ShowDashboard);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HmdVector2
+    {
+        public float X;
+        public float Y;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private delegate bool GetControllerStateDelegate(
+        uint deviceIndex,
+        ref VrControllerState state,
+        uint stateSize);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct VrActiveActionSet
     {
@@ -756,6 +1018,26 @@ public sealed class OpenVrInput : IOpenVrSession
         public float UpdateTime;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct VrControllerState
+    {
+        public uint PacketNumber;
+        public ulong ButtonPressed;
+        public ulong ButtonTouched;
+        public VrControllerAxis Axis0;
+        public VrControllerAxis Axis1;
+        public VrControllerAxis Axis2;
+        public VrControllerAxis Axis3;
+        public VrControllerAxis Axis4;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct VrControllerAxis
+    {
+        public float X;
+        public float Y;
+    }
+
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
     private struct InputBindingInfo
     {
@@ -776,4 +1058,13 @@ public sealed class OpenVrInput : IOpenVrSession
     }
 }
 
-public readonly record struct InputSnapshot(bool ButtonOne, bool ButtonTwo);
+public readonly record struct InputSnapshot(
+    bool ButtonOne,
+    bool ButtonTwo,
+    ulong LeftButtons = 0,
+    ulong RightButtons = 0);
+
+public sealed record RecordedGesture(
+    ControllerInputBinding SafetyInput,
+    ControllerInputBinding ActionInput,
+    string ControllerFamily);

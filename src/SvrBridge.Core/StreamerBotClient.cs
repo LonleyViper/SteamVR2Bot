@@ -47,19 +47,30 @@ public sealed class StreamerBotClient : IAsyncDisposable
     }
 
     public async Task TriggerAsync(string bindingName, CancellationToken cancellationToken)
+        => await TriggerAsync(
+            bindingName,
+            _config.ActionId,
+            _config.ActionName,
+            cancellationToken);
+
+    public async Task TriggerAsync(
+        string bindingName,
+        string? actionId,
+        string? actionName,
+        CancellationToken cancellationToken)
     {
         if (_config.DryRun)
         {
             _log(
                 $"DRY RUN: would execute Streamer.bot action " +
-                $"'{_config.ActionName}' ({_config.ActionId ?? "no id"}).");
+                $"'{actionName}' ({actionId ?? "no id"}).");
             return;
         }
 
         await EnsureConnectedWithBackoffAsync(cancellationToken);
         try
         {
-            await SendActionAsync(bindingName, cancellationToken);
+            await SendActionAsync(bindingName, actionId, actionName, cancellationToken);
         }
         catch (Exception exception) when (IsConnectionFailure(exception))
         {
@@ -203,7 +214,11 @@ public sealed class StreamerBotClient : IAsyncDisposable
         _log($"Connected to Streamer.bot at {_config.WebSocketUrl}");
     }
 
-    private async Task SendActionAsync(string bindingName, CancellationToken cancellationToken)
+    private async Task SendActionAsync(
+        string bindingName,
+        string? actionId,
+        string? actionName,
+        CancellationToken cancellationToken)
     {
         var socket = _socket ?? throw new InvalidOperationException("WebSocket is not connected.");
         var id = $"svr-action-{Guid.NewGuid():N}";
@@ -213,8 +228,8 @@ public sealed class StreamerBotClient : IAsyncDisposable
             id,
             action = new
             {
-                id = string.IsNullOrWhiteSpace(_config.ActionId) ? null : _config.ActionId,
-                name = string.IsNullOrWhiteSpace(_config.ActionName) ? null : _config.ActionName
+                id = string.IsNullOrWhiteSpace(actionId) ? null : actionId,
+                name = string.IsNullOrWhiteSpace(actionName) ? null : actionName
             },
             args = new
             {
@@ -227,7 +242,7 @@ public sealed class StreamerBotClient : IAsyncDisposable
         await SendJsonAsync(socket, payload, cancellationToken);
         using var response = await ReceiveJsonAsync(socket, cancellationToken);
         EnsureSuccessfulResponse(response.RootElement, id, "DoAction");
-        _log($"Streamer.bot acknowledged '{_config.ActionName}'.");
+        _log($"Streamer.bot acknowledged '{actionName}'.");
     }
 
     private static void EnsureSuccessfulResponse(JsonElement response, string expectedId, string operation)

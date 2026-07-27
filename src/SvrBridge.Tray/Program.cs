@@ -17,8 +17,9 @@ internal static class Program
                 TraySelfTests.Run();
                 return 0;
             }
-            catch
+            catch (Exception exception)
             {
+                Console.Error.WriteLine(exception);
                 return 1;
             }
         }

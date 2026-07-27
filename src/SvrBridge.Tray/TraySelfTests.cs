@@ -19,6 +19,26 @@ internal static class TraySelfTests
                 ActionId = "a0ff6f91-a51e-4b7d-948b-5e03ff4a82f0",
                 Password = "self-test-secret",
                 GestureMode = SvrBridge.Core.ChordMode.Simultaneous,
+                Shortcuts =
+                [
+                    new SvrBridge.Core.ShortcutConfig
+                    {
+                        Id = "settings-round-trip",
+                        Name = "Friendly VR shortcut",
+                        SafetyInput =
+                            SvrBridge.Core.ControllerInputBinding.SteamVrSafety,
+                        ActionInput =
+                            SvrBridge.Core.ControllerInputBinding.SteamVrAction,
+                        Gesture = new SvrBridge.Core.ChordConfig
+                        {
+                            Mode = SvrBridge.Core.ChordMode.Simultaneous,
+                            WindowMs = 300,
+                            CooldownMs = 250
+                        },
+                        ActionName = "Friendly VR action",
+                        ActionId = "a0ff6f91-a51e-4b7d-948b-5e03ff4a82f0"
+                    }
+                ],
                 StartBridgeWhenAppOpens = true
             };
 
@@ -30,7 +50,20 @@ internal static class TraySelfTests
                 "The password was saved as readable text.");
 
             var actual = store.Load();
-            Assert(actual == expected, "Protected settings did not round-trip.");
+            var actualShortcut = actual.GetShortcuts().Single();
+            var expectedShortcut = expected.GetShortcuts().Single();
+            Assert(
+                actual.StreamerBotAddress == expected.StreamerBotAddress
+                && actual.Password == expected.Password
+                && actual.StartBridgeWhenAppOpens
+                && actualShortcut.Id == expectedShortcut.Id
+                && actualShortcut.Name == expectedShortcut.Name
+                && actualShortcut.SafetyInput == expectedShortcut.SafetyInput
+                && actualShortcut.ActionInput == expectedShortcut.ActionInput
+                && actualShortcut.ActionId == expectedShortcut.ActionId
+                && actualShortcut.ActionName == expectedShortcut.ActionName
+                && actualShortcut.Gesture.Mode == expectedShortcut.Gesture.Mode,
+                "Protected multi-shortcut settings did not round-trip.");
 
             var logDirectory = Path.Combine(testDirectory, "logs");
             var log = new StructuredActivityLog(logDirectory);
@@ -53,7 +86,17 @@ internal static class TraySelfTests
                 "A non-WebSocket address was accepted.");
             AssertThrows(
                 () => UserSettingsStore.Validate(
-                    expected with { ActionName = "", ActionId = "" }),
+                    expected with
+                    {
+                        Shortcuts =
+                        [
+                            expected.GetShortcuts()[0] with
+                            {
+                                ActionName = "",
+                                ActionId = ""
+                            }
+                        ]
+                    }),
                 "Empty action settings were accepted.");
         }
         finally
