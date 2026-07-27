@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace SvrBridge.Core;
 
-public sealed class OpenVrInput : IDisposable
+public sealed class OpenVrInput : IOpenVrSession
 {
     private const string ActionSetPath = "/actions/svrbridge";
     private const string ButtonOnePath = "/actions/svrbridge/in/button_one";

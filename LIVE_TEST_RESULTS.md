@@ -448,3 +448,39 @@ This passes post-restart startup and delivery. It does not close the active
 reconnection gate because the controller shortcut was stopped during both
 service restarts; that gate requires restarting each service while the shortcut
 is already Ready.
+
+### Active SteamVR restart failure and recovery fix
+
+The first active restart attempt exposed a process-lifecycle flaw. SteamVR's
+`vrserver.txt` recorded:
+
+- 13:16:43 — sent a Quit event to tray PID `27692`.
+- 13:16:48 — forcibly killed PID `27692` because it had not exited.
+
+There was no .NET crash. The tray and OpenVR client were the same process, so
+SteamVR's normal shutdown enforcement removed the host that was supposed to
+retry. Streamer.bot could not show recovery activity after that host was gone.
+
+The fix moves the OpenVR connection into a child input worker. The tray owns
+settings, status, logs, and Streamer.bot delivery and no longer connects to
+OpenVR itself.
+
+A non-disruptive live worker-loss test then produced:
+
+| Check | Result |
+|---|---|
+| Persistent tray PID | **Pass:** PID `23204` survived |
+| Terminated input worker | PID `31380` |
+| Reconnect status | **Pass:** retry announced after 1 second |
+| Replacement input worker | **Pass:** PID `18832` |
+| Binding restored | **Pass:** Left Grip + Right Trigger |
+| Final state | **Pass:** Ready for your shortcut |
+
+The self-contained published build repeated the boundary test successfully:
+tray PID `21824` survived worker replacement `24908` → `23660`, then **Stop**
+removed the worker cleanly.
+
+Automated coverage also confirms that a Streamer.bot restart leaves an uncertain
+request unresent and allows the following request to reconnect successfully.
+An actual SteamVR restart remains the final confirmation of this new process
+boundary.

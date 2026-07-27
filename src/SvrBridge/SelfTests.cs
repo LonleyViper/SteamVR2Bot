@@ -16,10 +16,13 @@ internal static class SelfTests
         TestAuthenticationHash();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
+        await TestStreamerBotRestartRecoveryAsync();
         await TestUnconfirmedDeliveryIsNotRetriedAsync();
+        await TestSteamVrSessionRestartAsync();
         Console.WriteLine(
-            "SELF-TEST PASS: chord detection, authentication, reconnect, " +
-            "no-duplicate delivery, and DoAction round trip.");
+            "SELF-TEST PASS: chord detection, authentication, SteamVR worker " +
+            "recovery, Streamer.bot restart recovery, no-duplicate delivery, " +
+            "and DoAction round trip.");
     }
 
     private static void TestModifierChord()
@@ -167,6 +170,7 @@ internal static class SelfTests
         var config = new StreamerBotConfig
         {
             WebSocketUrl = $"ws://127.0.0.1:{port}/",
+            Password = "password",
             ActionName = "SVR POC Test",
             DryRun = false
         };
@@ -186,6 +190,94 @@ internal static class SelfTests
         }
 
         await server;
+    }
+
+    private static async Task TestStreamerBotRestartRecoveryAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var config = new StreamerBotConfig
+        {
+            WebSocketUrl = $"ws://127.0.0.1:{port}/",
+            Password = "password",
+            ActionName = "SVR POC Test",
+            DryRun = false
+        };
+
+        using (var firstListener = new HttpListener())
+        {
+            firstListener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            firstListener.Start();
+            var firstServer = RunMockStreamerBotAsync(
+                firstListener,
+                timeout.Token,
+                expectGetActions: false,
+                expectedBinding: "before-restart");
+
+            await using var client = new StreamerBotClient(config);
+            await client.TriggerAsync("before-restart", timeout.Token);
+            await firstServer;
+            firstListener.Stop();
+
+            try
+            {
+                await client.TriggerAsync("during-restart", timeout.Token);
+                throw new InvalidOperationException(
+                    "SELF-TEST FAIL: delivery succeeded while Streamer.bot was stopped.");
+            }
+            catch (StreamerBotDeliveryException)
+            {
+                // Expected: this request is either safely unsent or unconfirmed.
+            }
+
+            using var secondListener = new HttpListener();
+            secondListener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            secondListener.Start();
+            var secondServer = RunMockStreamerBotAsync(
+                secondListener,
+                timeout.Token,
+                expectGetActions: false,
+                expectedBinding: "after-restart");
+            await client.TriggerAsync("after-restart", timeout.Token);
+            await secondServer;
+        }
+    }
+
+    private static async Task TestSteamVrSessionRestartAsync()
+    {
+        var factory = new RestartingOpenVrSessionFactory();
+        var engine = new BridgeEngine(factory);
+        var reconnectLogged = false;
+        engine.Activity += activity =>
+        {
+            reconnectLogged |= activity.EventName == "steamvr.reconnect";
+        };
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var config = new AppConfig
+        {
+            ActionManifestPath = Path.Combine(
+                AppContext.BaseDirectory,
+                "actions.json"),
+            PollIntervalMs = 1,
+            StreamerBot = new StreamerBotConfig
+            {
+                ActionName = "SVR POC Test",
+                DryRun = true
+            }
+        };
+
+        var run = engine.RunAsync(config, timeout.Token);
+        await factory.SecondSessionStarted.Task.WaitAsync(timeout.Token);
+        timeout.Cancel();
+        await run;
+
+        Assert(factory.ConnectionCount >= 2, "SteamVR session was not recreated.");
+        Assert(reconnectLogged, "SteamVR session loss was not logged.");
     }
 
     private static async Task RunMockStreamerBotAsync(
@@ -324,6 +416,65 @@ internal static class SelfTests
         if (!condition)
         {
             throw new InvalidOperationException($"SELF-TEST FAIL: {message}");
+        }
+    }
+
+    private sealed class RestartingOpenVrSessionFactory : IOpenVrSessionFactory
+    {
+        private int _connectionCount;
+
+        public int ConnectionCount => _connectionCount;
+
+        public TaskCompletionSource SecondSessionStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<IOpenVrSession> ConnectAsync(
+            AppConfig config,
+            string actionManifest,
+            Action<string> log,
+            CancellationToken cancellationToken)
+        {
+            var connection = Interlocked.Increment(ref _connectionCount);
+            if (connection >= 2)
+            {
+                SecondSessionStarted.TrySetResult();
+            }
+
+            return Task.FromResult<IOpenVrSession>(
+                new RestartingOpenVrSession(failAfterFirstPoll: connection == 1));
+        }
+    }
+
+    private sealed class RestartingOpenVrSession(bool failAfterFirstPoll)
+        : IOpenVrSession
+    {
+        private int _pollCount;
+
+        public InputSnapshot Poll()
+        {
+            if (failAfterFirstPoll && Interlocked.Increment(ref _pollCount) > 1)
+            {
+                throw new InvalidOperationException(
+                    "Simulated SteamVR worker termination.");
+            }
+
+            return default;
+        }
+
+        public ControllerSetup GetControllerSetup() => new(
+            [],
+            null,
+            null,
+            BindingAvailability.Unknown,
+            "Waiting for test controllers.",
+            false);
+
+        public void OpenBindingUi()
+        {
+        }
+
+        public void Dispose()
+        {
         }
     }
 }

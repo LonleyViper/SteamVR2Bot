@@ -5,6 +5,11 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Contains("--openvr-worker", StringComparer.OrdinalIgnoreCase))
+        {
+            return OpenVrWorker.RunAsync(args).GetAwaiter().GetResult();
+        }
+
         if (args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
         {
             try

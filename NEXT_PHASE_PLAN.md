@@ -191,6 +191,8 @@ binding-unavailable detection.
 
 Implemented on `codex/runtime-hardening`:
 
+- OpenVR polling runs in a disposable child worker so SteamVR can terminate its
+  client during shutdown without terminating the persistent tray host.
 - SteamVR sessions reconnect with bounded 1/2/5/10/30-second backoff while the
   tray app remains running.
 - Streamer.bot connections receive three bounded attempts before a gesture is
@@ -217,8 +219,8 @@ restarts.
 
 Remaining live gates:
 
-1. With the shortcut already Ready, restart SteamVR and confirm it returns to
-   Ready without restarting SVR Bridge.
+1. Retest an actual SteamVR restart with the new child-worker build and confirm
+   the tray remains open and returns to Ready.
 2. Restart Streamer.bot, confirm the first uncertain command is not duplicated,
    then confirm the next command reconnects.
 3. Repeat the shell and GERONIMO 20-attempt matrices after the recovery tests.

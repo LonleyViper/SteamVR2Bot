@@ -135,7 +135,8 @@ contain the Streamer.bot password.
 
 ## Restart and network recovery
 
-- If SteamVR is unavailable or restarts, the tray app remains open and retries
+- SteamVR input runs in a small disposable worker. If SteamVR shuts that worker
+  down during a restart, the tray app remains open and creates a new worker
   after 1, 2, 5, 10, then 30 seconds.
 - If Streamer.bot is unavailable before delivery, the bridge makes three
   bounded connection attempts. The next controller shortcut tries again.

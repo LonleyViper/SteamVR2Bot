@@ -27,9 +27,16 @@ public sealed class BridgeEngine
         TimeSpan.FromSeconds(30)
     ];
 
+    private readonly IOpenVrSessionFactory _openVrSessionFactory;
     private readonly object _inputGate = new();
-    private OpenVrInput? _currentInput;
+    private IOpenVrSession? _currentInput;
     private string? _streamerBotAttentionDetail;
+
+    public BridgeEngine(IOpenVrSessionFactory? openVrSessionFactory = null)
+    {
+        _openVrSessionFactory =
+            openVrSessionFactory ?? new InProcessOpenVrSessionFactory();
+    }
 
     public event Action<BridgeStatus>? StatusChanged;
     public event Action<BridgeActivity>? Activity;
@@ -116,42 +123,41 @@ public sealed class BridgeEngine
         }
     }
 
-    public Task OpenBindingUiAsync(
+    public async Task OpenBindingUiAsync(
         AppConfig config,
-        CancellationToken cancellationToken = default) =>
-        Task.Run(
-            () =>
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_inputGate)
+        {
+            if (_currentInput is not null)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                lock (_inputGate)
-                {
-                    if (_currentInput is not null)
-                    {
-                        _currentInput.OpenBindingUi();
-                        return;
-                    }
-                }
+                _currentInput.OpenBindingUi();
+                return;
+            }
+        }
 
-                var actionManifest = OpenVrInput.ResolveActionManifest(
-                    config.ActionManifestPath);
-                using var temporaryInput = new OpenVrInput(
-                    config.OpenVrDllPath,
-                    actionManifest,
-                    message => Log("openvr", message));
-                _ = temporaryInput.Poll();
-                temporaryInput.OpenBindingUi();
-            },
+        var actionManifest = OpenVrInput.ResolveActionManifest(
+            config.ActionManifestPath);
+        using var temporaryInput = await _openVrSessionFactory.ConnectAsync(
+            config,
+            actionManifest,
+            message => Log("openvr", message),
             cancellationToken);
+        _ = temporaryInput.Poll();
+        temporaryInput.OpenBindingUi();
+    }
 
     private async Task RunSteamVrSessionAsync(
         AppConfig config,
         string actionManifest,
         CancellationToken cancellationToken)
     {
-        var openVr = new OpenVrInput(
-            config.OpenVrDllPath,
+        var openVr = await _openVrSessionFactory.ConnectAsync(
+            config,
             actionManifest,
-            message => Log("openvr", message));
+            message => Log("openvr", message),
+            cancellationToken);
         lock (_inputGate)
         {
             _currentInput = openVr;

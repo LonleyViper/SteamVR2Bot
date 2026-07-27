@@ -5,7 +5,7 @@ namespace SvrBridge.Tray;
 
 internal sealed class TrayApplicationContext : ApplicationContext
 {
-    private readonly BridgeEngine _engine = new();
+    private readonly BridgeEngine _engine = new(new OpenVrWorkerSessionFactory());
     private readonly UserSettingsStore _settingsStore = new();
     private readonly StructuredActivityLog _structuredLog = new();
     private readonly MainForm _mainForm = new();
