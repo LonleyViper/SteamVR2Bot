@@ -627,7 +627,9 @@ accepted it and changed nothing; the action set stays at `0x01000000`. The
 existing flow is kept: the recorder offers the controller-aware picker, and its
 instruction now states the live route plainly — close the SteamVR menu, press
 the input, and SteamVR2Bot reopens on Review by itself. The read-only probe
-stays wired, scoped to the recorder page, for future diagnosis.
+stays wired, scoped to the recorder page, for future diagnosis. The
+live-proven-dead legacy `GetControllerState` polling and its probe fields were
+removed afterward; explicit SteamVR actions remain the physical-input source.
 
 ## Rename to SteamVR2Bot and desktop window fix — 2026-07-27
 

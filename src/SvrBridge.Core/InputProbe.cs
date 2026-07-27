@@ -29,7 +29,6 @@ public sealed class InputProbe(Action<string> log)
     private readonly HashSet<int> _reportedOverlayEventTypes = [];
     private readonly List<string> _pressedActions = [];
     private string _dashboardSignature = "";
-    private string _legacySignature = "";
     private int _actionCount;
     private int _activeActionCount;
     private long _overlayEventCount;
@@ -53,7 +52,6 @@ public sealed class InputProbe(Action<string> log)
         _reportedOverlayEventTypes.Clear();
         _pressedActions.Clear();
         _dashboardSignature = "";
-        _legacySignature = "";
         _actionCount = 0;
         _activeActionCount = 0;
         _overlayEventCount = 0;
@@ -126,23 +124,6 @@ public sealed class InputProbe(Action<string> log)
         _log($"input probe action {state.Name}: {signature}.");
     }
 
-    public void ObserveLegacyButtons(ulong left, ulong right)
-    {
-        if (!Enabled)
-        {
-            return;
-        }
-
-        var signature = $"L=0x{left:X} R=0x{right:X}";
-        if (signature == _legacySignature)
-        {
-            return;
-        }
-
-        _legacySignature = signature;
-        _log($"input probe legacy mask: {signature}.");
-    }
-
     /// <summary>
     /// Records an event pulled from the dashboard overlay queue. Controller
     /// button events are always logged because they are the thing we are
@@ -194,7 +175,6 @@ public sealed class InputProbe(Action<string> log)
         _log(
             $"input probe: dashboard {Fallback(_dashboardSignature)} | " +
             $"actions {_activeActionCount}/{_actionCount} active, pressed {pressed} | " +
-            $"legacy {Fallback(_legacySignature)} | " +
             $"overlay events {_overlayEventCount}.");
     }
 

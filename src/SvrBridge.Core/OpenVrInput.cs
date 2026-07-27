@@ -683,8 +683,8 @@ public sealed class OpenVrInput : IOpenVrSession
 
     private (ulong Left, ulong Right) ReadControllerButtons()
     {
-        var (left, right) = ReadLegacyControllerButtons();
-        _probe.ObserveLegacyButtons(left, right);
+        ulong left = 0;
+        ulong right = 0;
         foreach (var definition in PhysicalActions)
         {
             if (!ReadDigital(
@@ -701,47 +701,6 @@ public sealed class OpenVrInput : IOpenVrSession
             else
             {
                 right |= 1UL << (int)definition.Button;
-            }
-        }
-
-        return (left, right);
-    }
-
-    private (ulong Left, ulong Right) ReadLegacyControllerButtons()
-    {
-        if (_system is null || _system.Value.GetControllerState is null)
-        {
-            return (0, 0);
-        }
-
-        ulong left = 0;
-        ulong right = 0;
-        for (uint index = 0; index < 64; index++)
-        {
-            var role = _system.Value.GetControllerRoleForTrackedDeviceIndex(index);
-            if (role is not (TrackedControllerRole.LeftHand or TrackedControllerRole.RightHand)
-                || _system.Value.GetTrackedDeviceClass(index) != TrackedDeviceClass.Controller
-                || !_system.Value.IsTrackedDeviceConnected(index))
-            {
-                continue;
-            }
-
-            var state = new VrControllerState();
-            if (!_system.Value.GetControllerState(
-                    index,
-                    ref state,
-                    (uint)Marshal.SizeOf<VrControllerState>()))
-            {
-                continue;
-            }
-
-            if (role == TrackedControllerRole.LeftHand)
-            {
-                left = state.ButtonPressed;
-            }
-            else
-            {
-                right = state.ButtonPressed;
             }
         }
 
@@ -1096,8 +1055,6 @@ public sealed class OpenVrInput : IOpenVrSession
         private nint GetEyeTrackedFoveationCenter;
         private nint GetEyeTrackedFoveationCenterForProjection;
 
-        [MarshalAs(UnmanagedType.FunctionPtr)]
-        public GetControllerStateDelegate? GetControllerState;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -1238,13 +1195,6 @@ public sealed class OpenVrInput : IOpenVrSession
         public float Y;
     }
 
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    private delegate bool GetControllerStateDelegate(
-        uint deviceIndex,
-        ref VrControllerState state,
-        uint stateSize);
-
     [StructLayout(LayoutKind.Sequential)]
     private struct VrActiveActionSet
     {
@@ -1270,26 +1220,6 @@ public sealed class OpenVrInput : IOpenVrSession
         public bool Changed;
 
         public float UpdateTime;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct VrControllerState
-    {
-        public uint PacketNumber;
-        public ulong ButtonPressed;
-        public ulong ButtonTouched;
-        public VrControllerAxis Axis0;
-        public VrControllerAxis Axis1;
-        public VrControllerAxis Axis2;
-        public VrControllerAxis Axis3;
-        public VrControllerAxis Axis4;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct VrControllerAxis
-    {
-        public float X;
-        public float Y;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]

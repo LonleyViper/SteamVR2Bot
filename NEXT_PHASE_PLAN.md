@@ -338,8 +338,7 @@ second while the recorder page is showing.
 
 - `InputProbe` records dashboard visible/active, per-action
   `GetDigitalActionData` error, `bActive`, `bState`, `bChanged`, and
-  `activeOrigin`, the legacy controller button masks, and every event pulled
-  from the dashboard overlay queue.
+  `activeOrigin`, plus every event pulled from the dashboard overlay queue.
 - Controller button events (`VREvent_ButtonPress`/`ButtonUnpress`/`ButtonTouch`
   /`ButtonUntouch`) are decoded into the existing friendly left/right model.
   Every other overlay event type is reported once per session so the queue's
@@ -376,8 +375,8 @@ Four headset runs settled it. `LIVE_TEST_RESULTS.md` holds the traces.
   button events could never cover all four required inputs. Path 1 is closed for
   the acceptance criteria as written.
 - The legacy `GetControllerState` mask read `0x0` in every state, including at
-  the moment of a confirmed press with a live origin. That path is dead under
-  the current input system and can be dropped from `Poll` rather than debugged.
+  the moment of a confirmed press with a live origin. That dead compatibility
+  path has now been removed from polling and from the input probe.
 - `button_one` and `button_two` never became active in any state; they appear
   unbound in the current Vive binding.
 

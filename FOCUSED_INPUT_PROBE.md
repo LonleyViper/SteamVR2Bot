@@ -10,7 +10,7 @@ outcome. The probe's job is to tell us *why*.
 | File | Change |
 |---|---|
 | `src/SvrBridge.Core/InputProbe.cs` | New. Transition-only logger plus a 1 Hz summary. No OpenVR dependency, so it is unit-tested. |
-| `src/SvrBridge.Core/OpenVrInput.cs` | Feeds the probe. Adds `SetInputProbeEnabled`, caches the last `ControllerSetup` for friendly naming, decodes overlay button events. |
+| `src/SvrBridge.Core/OpenVrInput.cs` | Feeds the probe. Adds `SetInputProbeEnabled`, caches the last `ControllerSetup` for friendly naming, decodes overlay button events. The later live-proven-dead `GetControllerState` fallback has been removed. |
 | `src/SvrBridge.Tray/VrDashboardController.cs` | Enables the probe only while the page is `RecordInput`. |
 | `src/SvrBridge/SelfTests.cs` | `TestInputProbe` covers transition-only behaviour, event decoding, throttling, and the disabled state. |
 
@@ -71,10 +71,9 @@ Then correlate against `%LOCALAPPDATA%\SteamVR2Bot\Logs`.
 input probe: on (recorder page).
 input probe dashboard: visible=1 active=1.
 input probe action right_grip: err=0 active=1 state=1 changed=1 origin=0x....
-input probe legacy mask: L=0x0 R=0x4.
 input probe overlay ButtonPress: device=3 button=2 (Right Grip).
 input probe overlay event 300: first seen this session.
-input probe: dashboard visible=1 active=1 | actions 8/9 active, pressed none | legacy L=0x0 R=0x0 | overlay events 412.
+input probe: dashboard visible=1 active=1 | actions 8/9 active, pressed none | overlay events 412.
 ```
 
 The 1 Hz summary is deliberate: an empty log then means "nothing arrived",
@@ -95,9 +94,9 @@ Read the **dashboard-focused** run first.
 | Nothing changes in any of the three states, including closed | The probe is not reaching the recorder page. | Check that `input probe: on (recorder page).` was logged at all. |
 | Paths 1–4 all fail | Platform constraint. | Document it. Keep the accepted fallback: open recorder → press System once → press desired input → SteamVR2Bot reopens on Review. **Do not** dress up the manual left/right picker as live recording. |
 
-Also compare the **legacy mask**. If `legacy L/R` stays `0x0` in all three
-states, the deprecated `GetControllerState` path is dead under the new input
-system and can be dropped from `Poll` rather than debugged.
+The original probe also compared the deprecated `GetControllerState` mask. It
+stayed `0x0` in all three states, including during a confirmed action press, so
+that dead compatibility path was subsequently removed from `Poll`.
 
 ## Acceptance criteria (unchanged)
 

@@ -129,7 +129,6 @@ internal static class SelfTests
 
         probe.ObserveAction(pressed);
         probe.ObserveDashboard(true, true);
-        probe.ObserveLegacyButtons(4, 0);
         probe.ObserveOverlayEvent(200, 3, 2, "Left Grip");
         Assert(
             lines.Count == 0,
@@ -144,22 +143,19 @@ internal static class SelfTests
         probe.BeginPoll();
         probe.ObserveDashboard(true, true);
         probe.ObserveAction(pressed);
-        probe.ObserveLegacyButtons(4, 0);
         probe.EndPoll(10);
         Assert(
-            lines.Count == 3
+            lines.Count == 2
             && lines[0].Contains("visible=1 active=1", StringComparison.Ordinal)
             && lines[1].Contains(
                 "left_grip: err=0 active=1 state=1 changed=1 origin=0x2A",
-                StringComparison.Ordinal)
-            && lines[2].Contains("L=0x4 R=0x0", StringComparison.Ordinal),
+                StringComparison.Ordinal),
             "The input probe did not report the first observation of each signal.");
 
         lines.Clear();
         probe.BeginPoll();
         probe.ObserveDashboard(true, true);
         probe.ObserveAction(pressed);
-        probe.ObserveLegacyButtons(4, 0);
         probe.EndPoll(20);
         Assert(
             lines.Count == 0,
@@ -197,7 +193,8 @@ internal static class SelfTests
         Assert(
             lines.Any(line => line.Contains(
                 "actions 1/1 active, pressed left_grip",
-                StringComparison.Ordinal)),
+                StringComparison.Ordinal))
+            && lines.All(line => !line.Contains("legacy", StringComparison.OrdinalIgnoreCase)),
             "The input probe did not emit its once-per-second summary.");
 
         lines.Clear();
