@@ -557,7 +557,11 @@ internal static class OpenVrWorker
                                 shortcutId => Emit(
                                     new OpenVrWorkerMessage(
                                         "shortcutDeleted",
-                                        ShortcutDeletedId: shortcutId)));
+                                        ShortcutDeletedId: shortcutId)),
+                                message => Emit(
+                                    new OpenVrWorkerMessage(
+                                        "log",
+                                        Message: message)));
                         }
                         catch (Exception exception)
                         {
@@ -573,7 +577,19 @@ internal static class OpenVrWorker
                 }
 
                 var current = openVr.Poll();
-                dashboard?.Tick(current, setup);
+                try
+                {
+                    dashboard?.Tick(current, setup);
+                }
+                catch (Exception exception)
+                {
+                    Emit(
+                        new OpenVrWorkerMessage(
+                            "log",
+                            Message:
+                            $"SteamVR dashboard interaction was ignored after an error: {exception.Message}"));
+                }
+
                 if (current != snapshot)
                 {
                     snapshot = current;

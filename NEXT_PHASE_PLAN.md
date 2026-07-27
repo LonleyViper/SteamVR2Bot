@@ -258,6 +258,10 @@ Implemented on `codex/shortcut-manager`:
 - Each saved row has direct pencil/edit and X/delete controls. Saves and deletes
   update the active shortcut detectors in place instead of rebooting the
   SteamVR worker or dashboard.
+- Wizard pages replace the active overlay texture without repeatedly
+  re-activating the SteamVR dashboard. Ready-state updates no longer recreate
+  the wizard, and save/delete redraw only once. Page-render failures are logged
+  and contained inside the worker instead of terminating it.
 - Direct physical input selection is Vive-first. Other controller families retain
   the official SteamVR binding fallback until they pass the hardware matrix.
 - Vive physical inputs are backed by explicit SteamVR actions rather than the

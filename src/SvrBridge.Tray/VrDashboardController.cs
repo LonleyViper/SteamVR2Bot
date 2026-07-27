@@ -7,6 +7,7 @@ internal sealed class VrDashboardController
     private readonly OpenVrInput _openVr;
     private readonly Action<ShortcutConfig> _shortcutSaved;
     private readonly Action<string> _shortcutDeleted;
+    private readonly Action<string> _log;
     private readonly List<ShortcutConfig> _shortcuts;
     private readonly IReadOnlyList<StreamerBotAction> _actions;
     private readonly VrActionBrowser _actionBrowser;
@@ -29,7 +30,8 @@ internal sealed class VrDashboardController
         IReadOnlyList<StreamerBotAction> actions,
         bool activate,
         Action<ShortcutConfig> shortcutSaved,
-        Action<string> shortcutDeleted)
+        Action<string> shortcutDeleted,
+        Action<string> log)
     {
         _openVr = openVr;
         _shortcuts = shortcuts.ToList();
@@ -37,7 +39,8 @@ internal sealed class VrDashboardController
         _actionBrowser = new VrActionBrowser(actions);
         _shortcutSaved = shortcutSaved;
         _shortcutDeleted = shortcutDeleted;
-        ShowList(activate);
+        _log = log;
+        ShowList(activate, throwOnError: true);
     }
 
     public void Tick(InputSnapshot snapshot, ControllerSetup setup)
@@ -266,7 +269,6 @@ internal sealed class VrDashboardController
         else if (x < 930)
         {
             _actionBrowser.Reset();
-            _page = DashboardPage.ActionPicker;
             ShowActionPicker();
         }
         else if (_selectedAction is not null)
@@ -368,7 +370,6 @@ internal sealed class VrDashboardController
         _firstInput = null;
         _secondInput = null;
         _recordingArmed = false;
-        _page = DashboardPage.RecordInput;
         ShowRecording();
     }
 
@@ -509,31 +510,34 @@ internal sealed class VrDashboardController
         }
     }
 
-    private void ShowList(bool activate = true)
+    private void ShowList(
+        bool activate = false,
+        bool throwOnError = false)
     {
-        _page = DashboardPage.List;
         _selectedAction = null;
         _firstInput = null;
         _secondInput = null;
         _editingShortcutId = null;
-        _openVr.UpdateDashboard(
-            VrDashboardRenderer.Render(_shortcuts),
-            activate);
+        ShowPage(
+            DashboardPage.List,
+            () => VrDashboardRenderer.Render(_shortcuts),
+            activate,
+            throwOnError);
     }
 
     private void ShowGestureTypes()
     {
-        _page = DashboardPage.GestureType;
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderGestureTypePicker(
+        ShowPage(
+            DashboardPage.GestureType,
+            () => VrDashboardRenderer.RenderGestureTypePicker(
                 _editingShortcutId is not null));
     }
 
     private void ShowTolerance()
     {
-        _page = DashboardPage.Tolerance;
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderTolerancePicker(
+        ShowPage(
+            DashboardPage.Tolerance,
+            () => VrDashboardRenderer.RenderTolerancePicker(
                 _gestureMode,
                 _gestureMode == ChordMode.DoublePress
                     ? _doublePressWindowMs
@@ -542,8 +546,9 @@ internal sealed class VrDashboardController
 
     private void ShowRecording()
     {
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderInputRecorder(
+        ShowPage(
+            DashboardPage.RecordInput,
+            () => VrDashboardRenderer.RenderInputRecorder(
                 _gestureMode,
                 _setup,
                 _firstInput));
@@ -551,9 +556,9 @@ internal sealed class VrDashboardController
 
     private void ShowReview()
     {
-        _page = DashboardPage.Review;
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderShortcutReview(
+        ShowPage(
+            DashboardPage.Review,
+            () => VrDashboardRenderer.RenderShortcutReview(
                 _gestureMode,
                 _firstInput,
                 _secondInput,
@@ -564,8 +569,30 @@ internal sealed class VrDashboardController
     }
 
     private void ShowActionPicker() =>
-        _openVr.ShowDashboard(
-            VrDashboardRenderer.RenderActionPicker(_actionBrowser));
+        ShowPage(
+            DashboardPage.ActionPicker,
+            () => VrDashboardRenderer.RenderActionPicker(_actionBrowser));
+
+    private void ShowPage(
+        DashboardPage page,
+        Func<string> render,
+        bool activate = false,
+        bool throwOnError = false)
+    {
+        try
+        {
+            _openVr.UpdateDashboard(render(), activate);
+            _page = page;
+        }
+        catch (Exception exception)
+        {
+            _log($"SteamVR dashboard page update failed: {exception.Message}");
+            if (throwOnError)
+            {
+                throw;
+            }
+        }
+    }
 
     private enum DashboardPage
     {

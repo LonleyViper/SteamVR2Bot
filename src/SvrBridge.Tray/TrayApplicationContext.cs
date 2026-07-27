@@ -17,6 +17,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private CancellationTokenSource? _bridgeCancellation;
     private Task? _bridgeTask;
     private UserSettings _settings;
+    private bool _dashboardAvailable;
     private bool _isExiting;
 
     public TrayApplicationContext()
@@ -170,6 +171,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         await _runtimeGate.WaitAsync();
         try
         {
+            _dashboardAvailable = false;
             await StopRuntimeLockedAsync();
             try
             {
@@ -335,6 +337,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         await _dashboardGate.WaitAsync();
         try
         {
+            if (!activate && _dashboardAvailable)
+            {
+                return;
+            }
+
             var dashboardImage = VrDashboardRenderer.Render(
                 _settings.GetShortcuts());
             await _engine.ShowDashboardAsync(
@@ -344,6 +351,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _mainForm.AvailableActions,
                 activate,
                 CancellationToken.None);
+            _dashboardAvailable = true;
             OnActivity(
                 new BridgeActivity(
                     activate ? "dashboard.shown" : "dashboard.available",
@@ -353,6 +361,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception exception)
         {
+            _dashboardAvailable = false;
             OnActivity(
                 new BridgeActivity(
                     "dashboard.unavailable",
@@ -617,6 +626,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _mainForm.UpdateStatus(status);
+        if (status.State == BridgeState.Error
+            && status.FriendlyName == "Waiting for SteamVR")
+        {
+            _dashboardAvailable = false;
+        }
         _structuredLog.Write(
             "bridge.status",
             $"{status.FriendlyName}: {status.Detail}",

@@ -36,6 +36,7 @@ public sealed class OpenVrInput : IOpenVrSession
     private readonly VrActiveActionSet[] _activeSets;
     private ulong _dashboardHandle;
     private ulong _dashboardThumbnailHandle;
+    private bool _dashboardThumbnailInitialized;
     private readonly DashboardPointerTracker _dashboardPointer = new();
     private long _lastDashboardScrollLogAt = long.MinValue;
     private bool _disposed;
@@ -290,9 +291,14 @@ public sealed class OpenVrInput : IOpenVrSession
             EnsureOverlaySuccess(
                 _overlay.Value.SetOverlayFromFile(_dashboardHandle, image),
                 "SetOverlayFromFile");
-            EnsureOverlaySuccess(
-                _overlay.Value.SetOverlayFromFile(_dashboardThumbnailHandle, image),
-                "SetOverlayFromFile(thumbnail)");
+            if (!_dashboardThumbnailInitialized)
+            {
+                EnsureOverlaySuccess(
+                    _overlay.Value.SetOverlayFromFile(_dashboardThumbnailHandle, image),
+                    "SetOverlayFromFile(thumbnail)");
+                _dashboardThumbnailInitialized = true;
+            }
+
             if (activate)
             {
                 _overlay.Value.ShowDashboard(key);
