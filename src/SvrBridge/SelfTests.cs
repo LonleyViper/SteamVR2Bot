@@ -15,7 +15,11 @@ internal static class SelfTests
         TestCooldown();
         TestAuthenticationHash();
         await TestStreamerBotRoundTripAsync();
-        Console.WriteLine("SELF-TEST PASS: chord detection, authentication, and DoAction round trip.");
+        await TestStreamerBotReconnectAsync();
+        await TestUnconfirmedDeliveryIsNotRetriedAsync();
+        Console.WriteLine(
+            "SELF-TEST PASS: chord detection, authentication, reconnect, " +
+            "no-duplicate delivery, and DoAction round trip.");
     }
 
     private static void TestModifierChord()
@@ -115,9 +119,80 @@ internal static class SelfTests
         await server;
     }
 
+    private static async Task TestStreamerBotReconnectAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var config = new StreamerBotConfig
+        {
+            WebSocketUrl = $"ws://127.0.0.1:{port}/",
+            Password = "password",
+            ActionName = "SVR POC Test",
+            DryRun = false
+        };
+
+        await using var client = new StreamerBotClient(config);
+        var trigger = client.TriggerAsync("reconnect-test", timeout.Token);
+        await Task.Delay(400, timeout.Token);
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        var server = RunMockStreamerBotAsync(
+            listener,
+            timeout.Token,
+            expectGetActions: false,
+            expectedBinding: "reconnect-test");
+
+        await trigger;
+        await server;
+    }
+
+    private static async Task TestUnconfirmedDeliveryIsNotRetriedAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var server = RunUnconfirmedDeliveryServerAsync(listener, timeout.Token);
+        var config = new StreamerBotConfig
+        {
+            WebSocketUrl = $"ws://127.0.0.1:{port}/",
+            ActionName = "SVR POC Test",
+            DryRun = false
+        };
+
+        await using var client = new StreamerBotClient(config);
+        try
+        {
+            await client.TriggerAsync("no-retry-test", timeout.Token);
+            throw new InvalidOperationException(
+                "SELF-TEST FAIL: unconfirmed delivery unexpectedly succeeded.");
+        }
+        catch (StreamerBotDeliveryException exception)
+        {
+            Assert(
+                exception.DeliveryMayHaveOccurred,
+                "Unconfirmed delivery was not marked as potentially delivered.");
+        }
+
+        await server;
+    }
+
     private static async Task RunMockStreamerBotAsync(
         HttpListener listener,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool expectGetActions = true,
+        string expectedBinding = "self-test")
     {
         var context = await listener.GetContextAsync().WaitAsync(cancellationToken);
         var webSocketContext = await context.AcceptWebSocketAsync(subProtocol: null);
@@ -144,30 +219,33 @@ internal static class SelfTests
         var authenticationId = authentication.RootElement.GetProperty("id").GetString();
         await SendJsonAsync(socket, new { status = "ok", id = authenticationId }, cancellationToken);
 
-        using var getActions = await ReceiveJsonAsync(socket, cancellationToken);
-        Assert(
-            getActions.RootElement.GetProperty("request").GetString() == "GetActions",
-            "Client did not send GetActions.");
-        var getActionsId = getActions.RootElement.GetProperty("id").GetString();
-        await SendJsonAsync(
-            socket,
-            new
-            {
-                count = 1,
-                actions = new[]
+        if (expectGetActions)
+        {
+            using var getActions = await ReceiveJsonAsync(socket, cancellationToken);
+            Assert(
+                getActions.RootElement.GetProperty("request").GetString() == "GetActions",
+                "Client did not send GetActions.");
+            var getActionsId = getActions.RootElement.GetProperty("id").GetString();
+            await SendJsonAsync(
+                socket,
+                new
                 {
-                    new
+                    count = 1,
+                    actions = new[]
                     {
-                        enabled = true,
-                        group = "VR",
-                        id = "a0ff6f91-a51e-4b7d-948b-5e03ff4a82f0",
-                        name = "SVR POC Test"
-                    }
+                        new
+                        {
+                            enabled = true,
+                            group = "VR",
+                            id = "a0ff6f91-a51e-4b7d-948b-5e03ff4a82f0",
+                            name = "SVR POC Test"
+                        }
+                    },
+                    status = "ok",
+                    id = getActionsId
                 },
-                status = "ok",
-                id = getActionsId
-            },
-            cancellationToken);
+                cancellationToken);
+        }
 
         using var action = await ReceiveJsonAsync(socket, cancellationToken);
         Assert(
@@ -177,11 +255,40 @@ internal static class SelfTests
             action.RootElement.GetProperty("action").GetProperty("name").GetString() == "SVR POC Test",
             "Client sent the wrong action name.");
         Assert(
-            action.RootElement.GetProperty("args").GetProperty("binding").GetString() == "self-test",
+            action.RootElement.GetProperty("args").GetProperty("binding").GetString()
+            == expectedBinding,
             "Client omitted the binding argument.");
 
         var actionId = action.RootElement.GetProperty("id").GetString();
         await SendJsonAsync(socket, new { status = "ok", id = actionId }, cancellationToken);
+    }
+
+    private static async Task RunUnconfirmedDeliveryServerAsync(
+        HttpListener listener,
+        CancellationToken cancellationToken)
+    {
+        var context = await listener.GetContextAsync().WaitAsync(cancellationToken);
+        var webSocketContext = await context.AcceptWebSocketAsync(subProtocol: null);
+        using var socket = webSocketContext.WebSocket;
+
+        await SendJsonAsync(
+            socket,
+            new
+            {
+                request = "Hello",
+                info = new { instanceId = "self-test", name = "Mock Streamer.bot" }
+            },
+            cancellationToken);
+
+        using var action = await ReceiveJsonAsync(socket, cancellationToken);
+        Assert(
+            action.RootElement.GetProperty("request").GetString() == "DoAction",
+            "Client did not send the unconfirmed DoAction.");
+        Assert(
+            action.RootElement.GetProperty("args").GetProperty("binding").GetString()
+            == "no-retry-test",
+            "Client sent the wrong unconfirmed binding.");
+        socket.Abort();
     }
 
     private static async Task SendJsonAsync(

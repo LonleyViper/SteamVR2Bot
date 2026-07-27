@@ -13,8 +13,29 @@ public sealed record StreamerBotAction(string Id, string Name, string Group)
             : $"{Group} — {Name}";
 }
 
+public sealed class StreamerBotDeliveryException : Exception
+{
+    public StreamerBotDeliveryException(
+        string message,
+        bool deliveryMayHaveOccurred,
+        Exception innerException)
+        : base(message, innerException)
+    {
+        DeliveryMayHaveOccurred = deliveryMayHaveOccurred;
+    }
+
+    public bool DeliveryMayHaveOccurred { get; }
+}
+
 public sealed class StreamerBotClient : IAsyncDisposable
 {
+    private static readonly TimeSpan[] ConnectionRetryDelays =
+    [
+        TimeSpan.Zero,
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2)
+    ];
+
     private readonly StreamerBotConfig _config;
     private readonly Action<string> _log;
     private ClientWebSocket? _socket;
@@ -35,24 +56,25 @@ public sealed class StreamerBotClient : IAsyncDisposable
             return;
         }
 
+        await EnsureConnectedWithBackoffAsync(cancellationToken);
         try
         {
-            await EnsureConnectedAsync(cancellationToken);
             await SendActionAsync(bindingName, cancellationToken);
         }
-        catch (Exception exception) when (exception is WebSocketException or IOException)
+        catch (Exception exception) when (IsConnectionFailure(exception))
         {
-            _log($"Streamer.bot connection failed; retrying once: {exception.Message}");
             await ResetSocketAsync();
-            await EnsureConnectedAsync(cancellationToken);
-            await SendActionAsync(bindingName, cancellationToken);
+            throw new StreamerBotDeliveryException(
+                "The Streamer.bot connection was lost while delivering the action.",
+                deliveryMayHaveOccurred: true,
+                exception);
         }
     }
 
     public async Task<IReadOnlyList<StreamerBotAction>> GetActionsAsync(
         CancellationToken cancellationToken)
     {
-        await EnsureConnectedAsync(cancellationToken);
+        await EnsureConnectedWithBackoffAsync(cancellationToken);
         var socket = _socket ?? throw new InvalidOperationException("WebSocket is not connected.");
         var id = $"svr-actions-{Guid.NewGuid():N}";
 
@@ -103,15 +125,47 @@ public sealed class StreamerBotClient : IAsyncDisposable
         return Convert.ToBase64String(authenticationBytes);
     }
 
-    private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
+    private async Task EnsureConnectedWithBackoffAsync(CancellationToken cancellationToken)
     {
         if (_socket?.State == WebSocketState.Open)
         {
             return;
         }
 
+        Exception? lastFailure = null;
+        for (var attempt = 0; attempt < ConnectionRetryDelays.Length; attempt++)
+        {
+            var delay = ConnectionRetryDelays[attempt];
+            if (delay > TimeSpan.Zero)
+            {
+                _log(
+                    $"Streamer.bot is unavailable; reconnecting in {delay.TotalSeconds:0} second(s).");
+                await Task.Delay(delay, cancellationToken);
+            }
+
+            try
+            {
+                await ConnectAsync(cancellationToken);
+                return;
+            }
+            catch (Exception exception) when (IsConnectionFailure(exception))
+            {
+                lastFailure = exception;
+                await ResetSocketAsync();
+            }
+        }
+
+        throw new StreamerBotDeliveryException(
+            "Could not connect to Streamer.bot after three attempts.",
+            deliveryMayHaveOccurred: false,
+            lastFailure ?? new WebSocketException("Connection failed."));
+    }
+
+    private async Task ConnectAsync(CancellationToken cancellationToken)
+    {
         await ResetSocketAsync();
         _socket = new ClientWebSocket();
+        _socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(5);
         await _socket.ConnectAsync(new Uri(_config.WebSocketUrl), cancellationToken);
 
         using var hello = await ReceiveJsonAsync(_socket, cancellationToken);
@@ -236,13 +290,15 @@ public sealed class StreamerBotClient : IAsyncDisposable
         {
             if (_socket.State == WebSocketState.Open)
             {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
                 await _socket.CloseAsync(
                     WebSocketCloseStatus.NormalClosure,
                     "SVR Bridge stopping",
-                    CancellationToken.None);
+                    timeout.Token);
             }
         }
-        catch (WebSocketException)
+        catch (Exception exception) when (IsConnectionFailure(exception)
+                                          || exception is OperationCanceledException)
         {
             // The connection is already unusable; disposal below is sufficient.
         }
@@ -250,4 +306,8 @@ public sealed class StreamerBotClient : IAsyncDisposable
         _socket.Dispose();
         _socket = null;
     }
+
+    private static bool IsConnectionFailure(Exception exception) =>
+        exception is WebSocketException or IOException
+        || exception.InnerException is WebSocketException or IOException;
 }

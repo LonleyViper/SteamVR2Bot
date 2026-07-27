@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using SvrBridge.Core;
 
 namespace SvrBridge.Tray;
@@ -6,6 +7,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 {
     private readonly BridgeEngine _engine = new();
     private readonly UserSettingsStore _settingsStore = new();
+    private readonly StructuredActivityLog _structuredLog = new();
     private readonly MainForm _mainForm = new();
     private readonly NotifyIcon _trayIcon;
     private readonly ToolStripMenuItem _startMenu = new("Start controller shortcut");
@@ -37,6 +39,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _mainForm.TestRequested += TestStreamerBot;
         _mainForm.FindActionsRequested += FindStreamerBotActions;
         _mainForm.SteamVrSetupRequested += SetUpSteamVr;
+        _mainForm.BindingsRequested += OpenControllerBindings;
+        _mainForm.LogsRequested += OpenLogs;
         _mainForm.ExitRequested += ExitApplication;
         _mainForm.Shown += (_, _) =>
         {
@@ -48,16 +52,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _engine.StatusChanged += OnStatusChanged;
         _engine.Activity += OnActivity;
+        _engine.ControllerSetupChanged += _mainForm.UpdateControllerSetup;
 
         var menu = new ContextMenuStrip();
         var open = new ToolStripMenuItem("Open SVR Bridge");
         var test = new ToolStripMenuItem("Test Streamer.bot action");
+        var bindings = new ToolStripMenuItem("Change controller inputs");
+        var logs = new ToolStripMenuItem("Open logs");
         var exit = new ToolStripMenuItem("Exit");
 
         open.Click += (_, _) => ShowMainWindow();
         _startMenu.Click += (_, _) => StartBridge();
         _stopMenu.Click += (_, _) => StopBridge();
         test.Click += (_, _) => TestStreamerBot();
+        bindings.Click += (_, _) => OpenControllerBindings();
+        logs.Click += (_, _) => OpenLogs();
         exit.Click += (_, _) => ExitApplication();
         _stopMenu.Enabled = false;
 
@@ -68,6 +77,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _startMenu,
             _stopMenu,
             test,
+            bindings,
+            logs,
             new ToolStripSeparator(),
             exit
         ]);
@@ -134,7 +145,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception exception)
         {
-            OnActivity($"Stopped: {exception.Message}");
+            OnActivity(
+                new BridgeActivity(
+                    "bridge.stopped_with_error",
+                    $"Stopped: {exception.Message}",
+                    BridgeLogLevel.Error));
             ShowMainWindow();
         }
         finally
@@ -187,7 +202,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception exception)
         {
-            OnActivity($"Test failed: {exception.Message}");
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.test_failed",
+                    $"Test failed: {exception.Message}",
+                    BridgeLogLevel.Warning));
             ShowMainWindow();
         }
     }
@@ -207,7 +226,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             await using var client = new StreamerBotClient(
                 settings.ToAppConfig().StreamerBot,
-                OnActivity);
+                message => OnActivity(
+                    new BridgeActivity("streamerbot.connection", message)));
             var actions = await client.GetActionsAsync(timeout.Token);
             _mainForm.ShowActions(actions);
             OnStatusChanged(
@@ -215,7 +235,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     BridgeState.Stopped,
                     $"{actions.Count} actions found",
                     "Choose the action you want, then use Test Streamer.bot."));
-            OnActivity($"Found {actions.Count} enabled Streamer.bot actions.");
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.actions_found",
+                    $"Found {actions.Count} enabled Streamer.bot actions."));
         }
         catch (Exception exception)
         {
@@ -242,7 +265,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 () => SteamVrApplications.Register(
                     Path.Combine(AppContext.BaseDirectory, "app.vrmanifest"),
                     Path.Combine(AppContext.BaseDirectory, "actions.json"),
-                    OnActivity));
+                    message => OnActivity(
+                        new BridgeActivity("steamvr.setup", message))));
 
             OnStatusChanged(
                 new BridgeStatus(
@@ -258,6 +282,49 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     "SteamVR setup failed",
                     exception.Message));
             ShowMainWindow();
+        }
+    }
+
+    private async void OpenControllerBindings()
+    {
+        try
+        {
+            OnStatusChanged(
+                new BridgeStatus(
+                    BridgeState.Starting,
+                    "Opening controller inputs…",
+                    "SteamVR keeps a separate binding for each controller family."));
+            await _engine.OpenBindingUiAsync(_mainForm.ReadSettings().ToAppConfig());
+            OnActivity(
+                new BridgeActivity(
+                    "controller.binding_ui_opened",
+                    "Opened SteamVR controller bindings."));
+        }
+        catch (Exception exception)
+        {
+            OnStatusChanged(
+                new BridgeStatus(
+                    BridgeState.Error,
+                    "Could not open controller inputs",
+                    $"Start SteamVR, then try again. {exception.Message}"));
+            ShowMainWindow();
+        }
+    }
+
+    private void OpenLogs()
+    {
+        try
+        {
+            Directory.CreateDirectory(_structuredLog.LogDirectory);
+            Process.Start(
+                new ProcessStartInfo("explorer.exe", _structuredLog.LogDirectory)
+                {
+                    UseShellExecute = true
+                });
+        }
+        catch (Exception exception)
+        {
+            _mainForm.ShowSettingsError($"Could not open the log folder. {exception.Message}");
         }
     }
 
@@ -290,15 +357,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void OnStatusChanged(BridgeStatus status)
     {
         _mainForm.UpdateStatus(status);
+        _structuredLog.Write(
+            "bridge.status",
+            $"{status.FriendlyName}: {status.Detail}",
+            status.State == BridgeState.Error
+                ? BridgeLogLevel.Warning
+                : BridgeLogLevel.Info);
         var trayText = $"SVR Bridge — {status.FriendlyName}";
         _trayIcon.Text = trayText.Length <= 63
             ? trayText
             : trayText[..63];
     }
 
-    private void OnActivity(string message)
+    private void OnActivity(BridgeActivity activity)
     {
-        _mainForm.AddActivity(message);
+        _mainForm.AddActivity(activity.Message);
+        _structuredLog.Write(activity);
     }
 
     private void SetRunning(bool running)

@@ -25,6 +25,36 @@ internal static class Program
                 return 0;
             }
 
+            if (args.Contains("--inspect-bindings", StringComparer.OrdinalIgnoreCase)
+                || args.Contains("--open-bindings", StringComparer.OrdinalIgnoreCase))
+            {
+                var actionManifest = OpenVrInput.ResolveActionManifest(
+                    GetArgumentValue(args, "--action-manifest"));
+                using var openVr = new OpenVrInput(
+                    configuredDllPath: null,
+                    actionManifest);
+                _ = openVr.Poll();
+
+                if (args.Contains("--open-bindings", StringComparer.OrdinalIgnoreCase))
+                {
+                    openVr.OpenBindingUi();
+                    Console.WriteLine("Opened SteamVR controller bindings for SVR Bridge.");
+                    return 0;
+                }
+
+                var setup = openVr.GetControllerSetup();
+                Console.WriteLine($"Binding status: {setup.Availability}");
+                Console.WriteLine($"Shortcut: {setup.FriendlySummary}");
+                foreach (var controller in setup.Controllers)
+                {
+                    Console.WriteLine(
+                        $"Controller: {controller.Hand} {controller.FriendlyName} " +
+                        $"({controller.ControllerType}, {controller.Model})");
+                }
+
+                return 0;
+            }
+
             var configPath = GetArgumentValue(args, "--config")
                              ?? Path.Combine(AppContext.BaseDirectory, "appsettings.json");
             EnsureConfigExists(configPath);

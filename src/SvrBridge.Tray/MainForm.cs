@@ -12,6 +12,11 @@ internal sealed class MainForm : Form
     private readonly Button _findActions = new();
     private readonly TextBox _password = new();
     private readonly CheckBox _showPassword = new();
+    private readonly ComboBox _gestureStyle = new();
+    private readonly Label _controllerFamily = new();
+    private readonly Label _shortcutSummary = new();
+    private readonly Label _bindingDetail = new();
+    private readonly Button _changeBindings = new();
     private readonly CheckBox _startWhenOpened = new();
     private readonly Button _start = new();
     private readonly Button _stop = new();
@@ -20,6 +25,7 @@ internal sealed class MainForm : Form
     private readonly TextBox _activity = new();
     private string _selectedActionId = "";
     private bool _applyingActionChoice;
+    private ControllerSetup _controllerSetup = ControllerSetup.Unknown;
     private bool _allowClose;
 
     public event Action? StartRequested;
@@ -27,14 +33,16 @@ internal sealed class MainForm : Form
     public event Action? TestRequested;
     public event Action? FindActionsRequested;
     public event Action? SteamVrSetupRequested;
+    public event Action? BindingsRequested;
+    public event Action? LogsRequested;
     public event Action? ExitRequested;
 
     public MainForm()
     {
         Text = "SVR Bridge";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(760, 720);
-        Size = new Size(800, 900);
+        MinimumSize = new Size(780, 720);
+        Size = new Size(820, 940);
         Font = new Font("Segoe UI", 10F);
         BackColor = Color.FromArgb(247, 248, 250);
         ForeColor = Color.FromArgb(32, 37, 43);
@@ -62,6 +70,9 @@ internal sealed class MainForm : Form
                 : _action.Text,
             ActionId = _selectedActionId,
             Password = _password.Text,
+            GestureMode = _gestureStyle.SelectedItem is GestureChoice gesture
+                ? gesture.Mode
+                : ChordMode.Modifier,
             StartBridgeWhenAppOpens = _startWhenOpened.Checked
         };
 
@@ -70,6 +81,9 @@ internal sealed class MainForm : Form
         _address.Text = settings.StreamerBotAddress;
         SetActionChoice(settings.ActionName, settings.ActionId);
         _password.Text = settings.Password;
+        _gestureStyle.SelectedItem = _gestureStyle.Items
+            .Cast<GestureChoice>()
+            .First(choice => choice.Mode == settings.GestureMode);
         _startWhenOpened.Checked = settings.StartBridgeWhenAppOpens;
     }
 
@@ -122,7 +136,37 @@ internal sealed class MainForm : Form
         _findActions.Enabled = !running;
         _password.Enabled = !running;
         _showPassword.Enabled = !running;
+        _gestureStyle.Enabled = !running;
         _startWhenOpened.Enabled = !running;
+    }
+
+    public void UpdateControllerSetup(ControllerSetup setup)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => UpdateControllerSetup(setup));
+            return;
+        }
+
+        _controllerSetup = setup;
+        var families = setup.Controllers
+            .Select(controller => controller.FriendlyName)
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+        _controllerFamily.Text = families.Length == 0
+            ? "Controllers: waiting for an active controller"
+            : $"Controllers: {string.Join(", ", families)}";
+        _bindingDetail.Text = setup.Availability switch
+        {
+            BindingAvailability.Ready when setup.UsesValidatedVivePreset
+                => "Validated Vive preset active. Each controller family keeps its own SteamVR binding.",
+            BindingAvailability.Ready
+                => "Custom SteamVR binding active for this controller family.",
+            BindingAvailability.NeedsSetup
+                => "Binding setup is incomplete. Choose Change SteamVR inputs.",
+            _ => "Turn on both controllers to inspect their current bindings."
+        };
+        RefreshShortcutSummary();
     }
 
     public void ShowSettingsError(string message)
@@ -254,24 +298,55 @@ internal sealed class MainForm : Form
     private Control CreateShortcutCard()
     {
         var card = CreateCard("Controller shortcut");
-        var shortcut = new Label
-        {
-            Text = "Hold Left Grip, then press Right Trigger",
-            Font = new Font(Font.FontFamily, 12F, FontStyle.Bold),
-            AutoSize = true,
-            Location = new Point(18, 48)
-        };
-        var note = new Label
-        {
-            Text = "The left grip acts as a safety button, so the action cannot run from the trigger alone.",
-            ForeColor = Color.FromArgb(91, 99, 110),
-            AutoSize = false,
-            Size = new Size(640, 40),
-            Location = new Point(18, 78)
-        };
-        card.Height = 130;
-        card.Controls.Add(shortcut);
-        card.Controls.Add(note);
+        card.Height = 230;
+
+        _controllerFamily.Text = "Controllers: not checked yet";
+        _controllerFamily.AutoSize = true;
+        _controllerFamily.ForeColor = Color.FromArgb(91, 99, 110);
+        _controllerFamily.Location = new Point(18, 48);
+
+        _shortcutSummary.Text = "Hold Left Grip, then press Right Trigger";
+        _shortcutSummary.Font = new Font(Font.FontFamily, 12F, FontStyle.Bold);
+        _shortcutSummary.AutoSize = true;
+        _shortcutSummary.Location = new Point(18, 75);
+
+        _bindingDetail.Text =
+            "Each controller family keeps its own SteamVR binding. The packaged Vive preset is validated.";
+        _bindingDetail.ForeColor = Color.FromArgb(91, 99, 110);
+        _bindingDetail.AutoSize = false;
+        _bindingDetail.Size = new Size(680, 38);
+        _bindingDetail.Location = new Point(18, 105);
+
+        _gestureStyle.DropDownStyle = ComboBoxStyle.DropDownList;
+        _gestureStyle.FlatStyle = FlatStyle.Flat;
+        _gestureStyle.Size = new Size(220, 30);
+        _gestureStyle.Items.AddRange(
+        [
+            new GestureChoice(
+                ChordMode.Modifier,
+                "Hold safety, then press action"),
+            new GestureChoice(
+                ChordMode.Simultaneous,
+                "Press both inputs together")
+        ]);
+        _gestureStyle.SelectedIndex = 0;
+        _gestureStyle.SelectedIndexChanged += (_, _) => RefreshShortcutSummary();
+        AddField(
+            card,
+            "Gesture behavior",
+            "Physical buttons are selected separately for each controller family in SteamVR.",
+            _gestureStyle,
+            155);
+
+        ConfigureButton(_changeBindings, "Change SteamVR inputs…", false);
+        _changeBindings.Location = new Point(520, 151);
+        _changeBindings.MinimumSize = new Size(150, 34);
+        _changeBindings.Click += (_, _) => BindingsRequested?.Invoke();
+
+        card.Controls.Add(_controllerFamily);
+        card.Controls.Add(_shortcutSummary);
+        card.Controls.Add(_bindingDetail);
+        card.Controls.Add(_changeBindings);
         return card;
     }
 
@@ -406,10 +481,18 @@ internal sealed class MainForm : Form
         {
             Text = "Exit SVR Bridge",
             AutoSize = true,
-            Location = new Point(560, 18)
+            Location = new Point(620, 18)
         };
+        var logs = new LinkLabel
+        {
+            Text = "Open logs",
+            AutoSize = true,
+            Location = new Point(535, 18)
+        };
+        logs.LinkClicked += (_, _) => LogsRequested?.Invoke();
         exit.LinkClicked += (_, _) => ExitRequested?.Invoke();
         panel.Controls.Add(hint);
+        panel.Controls.Add(logs);
         panel.Controls.Add(exit);
         return panel;
     }
@@ -490,6 +573,56 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void RefreshShortcutSummary()
+    {
+        if (_shortcutSummary.IsDisposed)
+        {
+            return;
+        }
+
+        var mode = _gestureStyle.SelectedItem is GestureChoice choice
+            ? choice.Mode
+            : ChordMode.Modifier;
+        if (_controllerSetup.SafetyInput is not null
+            && _controllerSetup.ActionInput is not null)
+        {
+            var safety = FriendlyInputName(_controllerSetup.SafetyInput);
+            var action = FriendlyInputName(_controllerSetup.ActionInput);
+            _shortcutSummary.Text = mode == ChordMode.Modifier
+                ? $"Hold {safety}, then press {action}"
+                : $"Press {safety} and {action} together";
+            return;
+        }
+
+        _shortcutSummary.Text = mode == ChordMode.Modifier
+            ? "Hold the Safety Button, then press the Action Button"
+            : "Press both chosen controller inputs together";
+    }
+
+    private static string FriendlyInputName(ActionBinding binding)
+    {
+        var hand = binding.DevicePath.Contains("/left", StringComparison.OrdinalIgnoreCase)
+            ? "Left "
+            : binding.DevicePath.Contains("/right", StringComparison.OrdinalIgnoreCase)
+                ? "Right "
+                : "";
+        var path = binding.InputPath.ToLowerInvariant();
+        var input = path switch
+        {
+            _ when path.Contains("/grip") => "Grip",
+            _ when path.Contains("/trigger") => "Trigger",
+            _ when path.Contains("/trackpad") => "Trackpad",
+            _ when path.Contains("/thumbstick") => "Thumbstick",
+            _ when path.Contains("/input/a") => "A Button",
+            _ when path.Contains("/input/b") => "B Button",
+            _ when path.Contains("/input/x") => "X Button",
+            _ when path.Contains("/input/y") => "Y Button",
+            _ when path.Contains("/menu") => "Menu Button",
+            _ => "chosen input"
+        };
+        return hand + input;
+    }
+
     private static void ConfigureButton(Button button, string text, bool primary)
     {
         button.Text = text;
@@ -514,5 +647,10 @@ internal sealed class MainForm : Form
 
         eventArgs.Cancel = true;
         Hide();
+    }
+
+    private sealed record GestureChoice(ChordMode Mode, string FriendlyName)
+    {
+        public override string ToString() => FriendlyName;
     }
 }

@@ -186,3 +186,43 @@ The live regression status through the tray app is:
 The first implementation slice is accepted. Continue with Phase 1 step 4:
 long-running reconnect/backoff, restart recovery, structured local logs, and
 binding-unavailable detection.
+
+## Runtime-hardening checkpoint
+
+Implemented on `codex/runtime-hardening`:
+
+- SteamVR sessions reconnect with bounded 1/2/5/10/30-second backoff while the
+  tray app remains running.
+- Streamer.bot connections receive three bounded attempts before a gesture is
+  reported as unconfirmed.
+- An action that may already have crossed the network is never blindly resent,
+  preventing a reconnect from duplicating a command.
+- Daily structured JSONL logs are kept for 14 days under the current Windows
+  user's local app data, with credential-value redaction.
+- The active controller family and both logical action bindings are inspected
+  through public OpenVR interfaces.
+- The app opens SteamVR's official per-controller binding page directly.
+- Gesture behavior can be modifier-first or simultaneous.
+- Vive remains the only shipped validated default; other controller families
+  are detected and guided through custom binding setup.
+
+Automated checks now cover delayed Streamer.bot availability, authenticated
+delivery, protected settings, redacted structured logs, and the rule that an
+unconfirmed request is not retried.
+
+Remaining live gates:
+
+1. Restart SteamVR while SVR Bridge is running and confirm it returns to Ready.
+2. Restart Streamer.bot, confirm the first uncertain command is not duplicated,
+   then confirm the next command reconnects.
+3. Repeat the shell and GERONIMO 20-attempt matrices after the recovery tests.
+4. Before adding a packaged default for Index, Touch, WMR, Cosmos, or another
+   family, run that hardware through the same matrix.
+
+Future preset discovery can borrow the user-friendly pattern demonstrated by
+[SteamInputDB](https://www.steaminputdb.com/): show only layouts relevant to
+connected controllers and use recognizable names. SteamInputDB stores standard
+Steam Input configurations, not SteamVR/OpenVR action bindings, so it is a
+design reference rather than a binding source. Keep live OpenVR inspection and
+SteamVR's binding UI as the authority. Do not reuse its AGPL implementation
+without a deliberate licensing decision.

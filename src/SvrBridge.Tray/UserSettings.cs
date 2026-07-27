@@ -11,6 +11,7 @@ internal sealed record UserSettings
     public string ActionName { get; init; } = "SVR POC Test";
     public string ActionId { get; init; } = "";
     public string Password { get; init; } = "";
+    public ChordMode GestureMode { get; init; } = ChordMode.Modifier;
     public bool StartBridgeWhenAppOpens { get; init; }
 
     public AppConfig ToAppConfig() =>
@@ -29,8 +30,8 @@ internal sealed record UserSettings
             },
             Chord = new ChordConfig
             {
-                Mode = ChordMode.Modifier,
-                WindowMs = 2000,
+                Mode = GestureMode,
+                WindowMs = GestureMode == ChordMode.Simultaneous ? 300 : 2000,
                 CooldownMs = 250
             }
         };
@@ -87,6 +88,7 @@ internal sealed class UserSettingsStore
             ActionName = settings.ActionName.Trim(),
             ActionId = settings.ActionId.Trim(),
             ProtectedPassword = Protect(settings.Password),
+            GestureMode = settings.GestureMode,
             StartBridgeWhenAppOpens = settings.StartBridgeWhenAppOpens
         };
 
@@ -133,6 +135,7 @@ internal sealed class UserSettingsStore
                 ActionName = saved.ActionName,
                 ActionId = saved.ActionId,
                 Password = Unprotect(saved.ProtectedPassword),
+                GestureMode = saved.GestureMode,
                 StartBridgeWhenAppOpens = saved.StartBridgeWhenAppOpens
             };
         }
@@ -166,6 +169,7 @@ internal sealed class UserSettingsStore
                 ActionName = legacy.StreamerBot.ActionName,
                 ActionId = legacy.StreamerBot.ActionId ?? "",
                 Password = legacy.StreamerBot.Password,
+                GestureMode = legacy.Chord.Mode,
                 StartBridgeWhenAppOpens = false
             };
         }
@@ -209,6 +213,7 @@ internal sealed class UserSettingsStore
         public string ActionName { get; init; } = "SVR POC Test";
         public string ActionId { get; init; } = "";
         public string ProtectedPassword { get; init; } = "";
+        public ChordMode GestureMode { get; init; } = ChordMode.Modifier;
         public bool StartBridgeWhenAppOpens { get; init; }
     }
 }

@@ -408,3 +408,24 @@ The operator produced 21 accepted physical trigger presses, one more than the
 This closes the first tray-application release gate. The extracted engine
 preserved the proven input coexistence and one-gesture/one-action behavior in
 both the SteamVR shell and an active VR scene application.
+
+## Runtime-hardening development checkpoint — 2026-07-27
+
+The next branch adds recovery, persistent diagnostics, and controller-aware
+binding setup. Safe checks completed without changing the validated Vive
+binding:
+
+| Check | Result |
+|---|---|
+| Public OpenVR controller detection | **Pass:** left and right HTC Vive controllers |
+| Current binding inspection | **Pass:** Left Grip + Right Trigger |
+| Official SteamVR binding UI launch | **Pass** |
+| Delayed Streamer.bot availability | **Pass:** bounded reconnect succeeded |
+| Unconfirmed-delivery safety | **Pass:** request was not resent |
+| Structured JSONL output | **Pass:** all entries parsed |
+| Credential redaction | **Pass:** no readable password value |
+| Protected settings with gesture mode | **Pass** |
+| Release builds | **Pass:** zero warnings and errors |
+
+This is an implementation checkpoint, not the restart acceptance result. The
+remaining live matrix is listed in `NEXT_PHASE_PLAN.md`.

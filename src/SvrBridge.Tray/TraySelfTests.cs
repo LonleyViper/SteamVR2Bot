@@ -18,6 +18,7 @@ internal static class TraySelfTests
                 ActionName = "Friendly VR action",
                 ActionId = "a0ff6f91-a51e-4b7d-948b-5e03ff4a82f0",
                 Password = "self-test-secret",
+                GestureMode = SvrBridge.Core.ChordMode.Simultaneous,
                 StartBridgeWhenAppOpens = true
             };
 
@@ -30,6 +31,21 @@ internal static class TraySelfTests
 
             var actual = store.Load();
             Assert(actual == expected, "Protected settings did not round-trip.");
+
+            var logDirectory = Path.Combine(testDirectory, "logs");
+            var log = new StructuredActivityLog(logDirectory);
+            log.Write(
+                "self_test",
+                "A safe message with password=self-test-secret",
+                SvrBridge.Core.BridgeLogLevel.Warning);
+            var logText = File.ReadAllText(
+                Directory.GetFiles(logDirectory, "*.jsonl").Single());
+            Assert(
+                !logText.Contains("self-test-secret", StringComparison.Ordinal),
+                "The structured log exposed a secret value.");
+            Assert(
+                logText.Contains("\"event\":\"self_test\"", StringComparison.Ordinal),
+                "The structured log omitted its event name.");
 
             AssertThrows(
                 () => UserSettingsStore.Validate(

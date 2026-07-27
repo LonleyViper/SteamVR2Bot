@@ -40,6 +40,27 @@ In the SVR Bridge window:
 Closing the window keeps SVR Bridge running in the Windows notification area.
 Use its tray menu to open, start, stop, test, or exit the app.
 
+## Controller inputs
+
+SVR Bridge now detects the active controller family and reads the current
+SteamVR binding for its two logical inputs:
+
+- **Safety Button** — held to prevent an accidental command.
+- **Action Button** — pressed to run the selected Streamer.bot action.
+
+Choose **Change SteamVR inputs…** to open the official binding page directly.
+SteamVR keeps a separate binding for each controller family, so changing an
+Index binding does not overwrite a Vive or Touch binding.
+
+The packaged Vive preset—Left Grip plus Right Trigger—is live-validated. Other
+controller families are detected and can be configured through SteamVR, but no
+untested default preset is labelled as validated.
+
+The **Gesture behavior** setting supports:
+
+- Hold the Safety Button, then press the Action Button.
+- Press both chosen inputs together within 300 ms.
+
 ## Streamer.bot address
 
 When Streamer.bot is on the same PC, the usual address is:
@@ -103,6 +124,25 @@ passed 20/20 through the diagnostic host and 21/21 through the tray host. See
 
 Recent activity shows input and delivery events without exposing credentials.
 
+The same events are written as structured JSON lines under:
+
+```text
+%LOCALAPPDATA%\SVR Bridge\Logs
+```
+
+Use **Open logs** in the app or tray menu. Logs are kept for 14 days and never
+contain the Streamer.bot password.
+
+## Restart and network recovery
+
+- If SteamVR is unavailable or restarts, the tray app remains open and retries
+  after 1, 2, 5, 10, then 30 seconds.
+- If Streamer.bot is unavailable before delivery, the bridge makes three
+  bounded connection attempts. The next controller shortcut tries again.
+- If the connection is lost after delivery begins, the action is not blindly
+  resent. The status says that confirmation was lost; avoiding a possible
+  duplicate takes priority.
+
 ## Diagnostics
 
 The console diagnostic remains available at:
@@ -116,6 +156,8 @@ Useful checks:
 ```powershell
 .\artifacts\publish\diagnostics\SvrBridge.exe --self-test
 .\artifacts\publish\diagnostics\SvrBridge.exe --simulate
+.\artifacts\publish\diagnostics\SvrBridge.exe --inspect-bindings
+.\artifacts\publish\diagnostics\SvrBridge.exe --open-bindings
 .\scripts\Register-SteamVrApp.ps1
 ```
 
