@@ -9,6 +9,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly BridgeEngine _engine = new(new OpenVrWorkerSessionFactory());
     private readonly UserSettingsStore _settingsStore = new();
     private readonly StructuredActivityLog _structuredLog = new();
+    private readonly Icon _applicationIcon = LoadApplicationIcon();
     private readonly MainForm _mainForm = new();
     private readonly NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _settingsTimer =
@@ -23,6 +24,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     public TrayApplicationContext()
     {
+        _mainForm.Icon = _applicationIcon;
+
         try
         {
             _settings = _settingsStore.Load();
@@ -100,7 +103,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _trayIcon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = _applicationIcon,
             Text = "SteamVR2Bot — Starting automatically",
             Visible = true,
             ContextMenuStrip = menu
@@ -123,9 +126,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _runtimeGate.Dispose();
             _dashboardGate.Dispose();
             _mainForm.Dispose();
+            _applicationIcon.Dispose();
         }
 
         base.Dispose(disposing);
+    }
+
+    private static Icon LoadApplicationIcon()
+    {
+        if (Environment.ProcessPath is { } executablePath
+            && Icon.ExtractAssociatedIcon(executablePath) is { } icon)
+        {
+            return icon;
+        }
+
+        return (Icon)SystemIcons.Application.Clone();
     }
 
     private async Task InitializeAsync()
