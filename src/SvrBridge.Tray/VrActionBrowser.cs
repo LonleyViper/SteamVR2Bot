@@ -145,3 +145,26 @@ internal sealed record VrActionBrowserRow(
     string Label,
     string? Detail,
     StreamerBotAction? Action);
+
+internal sealed class VrDashboardScrollLimiter
+{
+    private readonly long _minimumIntervalMs;
+    private long _lastAcceptedAt = long.MinValue;
+
+    public VrDashboardScrollLimiter(long minimumIntervalMs = 500)
+    {
+        _minimumIntervalMs = minimumIntervalMs;
+    }
+
+    public bool TryAccept(long nowMs)
+    {
+        if (_lastAcceptedAt != long.MinValue
+            && nowMs - _lastAcceptedAt < _minimumIntervalMs)
+        {
+            return false;
+        }
+
+        _lastAcceptedAt = nowMs;
+        return true;
+    }
+}

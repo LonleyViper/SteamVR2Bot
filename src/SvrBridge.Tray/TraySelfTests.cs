@@ -5,6 +5,7 @@ internal static class TraySelfTests
     public static void Run()
     {
         TestVrActionBrowser();
+        TestVrScrollLimiter();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -64,8 +65,37 @@ internal static class TraySelfTests
                 && actualShortcut.ActionInput == expectedShortcut.ActionInput
                 && actualShortcut.ActionId == expectedShortcut.ActionId
                 && actualShortcut.ActionName == expectedShortcut.ActionName
-                && actualShortcut.Gesture.Mode == expectedShortcut.Gesture.Mode,
+                && actualShortcut.Gesture.Mode == expectedShortcut.Gesture.Mode
+                && actualShortcut.Gesture.HoldMs == expectedShortcut.Gesture.HoldMs,
                 "Protected multi-shortcut settings did not round-trip.");
+
+            UserSettingsStore.ValidateForSave(
+                expected with
+                {
+                    Shortcuts =
+                    [
+                        expectedShortcut with
+                        {
+                            SafetyInput =
+                                SvrBridge.Core.ControllerInputBinding.Physical(
+                                    SvrBridge.Core.ControllerHand.Left,
+                                    1,
+                                    "Left Menu Button"),
+                            ActionInput =
+                                SvrBridge.Core.ControllerInputBinding.Physical(
+                                    SvrBridge.Core.ControllerHand.Left,
+                                    1,
+                                    "Left Menu Button"),
+                            Gesture = new SvrBridge.Core.ChordConfig
+                            {
+                                Mode = SvrBridge.Core.ChordMode.LongPress,
+                                HoldMs = 2000,
+                                CooldownMs = 250,
+                                WindowMs = 2000
+                            }
+                        }
+                    ]
+                });
 
             var logDirectory = Path.Combine(testDirectory, "logs");
             var log = new StructuredActivityLog(logDirectory);
@@ -163,6 +193,35 @@ internal static class TraySelfTests
         Assert(
             preview.Width == 1400 && preview.Height == 900,
             "The grouped VR action picker rendered at the wrong size.");
+
+        var gesturePath = VrDashboardRenderer.RenderGesturePicker("Change scene");
+        using var gesturePreview = new Bitmap(gesturePath);
+        Assert(
+            gesturePreview.Width == 1400 && gesturePreview.Height == 900,
+            "The VR gesture picker rendered at the wrong size.");
+
+        var recordingPath = VrDashboardRenderer.RenderRecording(
+            SvrBridge.Core.ChordMode.LongPress,
+            holdMs: 2000);
+        using var recordingPreview = new Bitmap(recordingPath);
+        Assert(
+            recordingPreview.Width == 1400 && recordingPreview.Height == 900,
+            "The VR long-press recorder rendered at the wrong size.");
+    }
+
+    private static void TestVrScrollLimiter()
+    {
+        var limiter = new VrDashboardScrollLimiter(500);
+        Assert(limiter.TryAccept(1000), "The first VR scroll was suppressed.");
+        Assert(!limiter.TryAccept(1499), "A VR scroll burst was not throttled.");
+        Assert(limiter.TryAccept(1500), "A later VR scroll was incorrectly suppressed.");
+
+        var burstLimiter = new VrDashboardScrollLimiter(500);
+        var accepted = Enumerable.Range(0, 31)
+            .Count(index => burstLimiter.TryAccept(index * 60L));
+        Assert(
+            accepted == 4,
+            "A VR scroll burst would still cause too many dashboard redraws.");
     }
 
     private static void Assert(bool condition, string message)

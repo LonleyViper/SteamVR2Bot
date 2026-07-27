@@ -36,7 +36,7 @@ internal sealed class MainForm : Form
     public event Action? DashboardRequested;
     public event Action? LogsRequested;
     public event Action? ExitRequested;
-    public event Func<Task<RecordedGesture?>>? RecordRequested;
+    public event Func<ChordMode, Task<RecordedGesture?>>? RecordRequested;
 
     public MainForm()
     {
@@ -161,7 +161,7 @@ internal sealed class MainForm : Form
         _bindingDetail.Text = setup.Availability switch
         {
             BindingAvailability.Ready when setup.UsesValidatedVivePreset
-                => "Validated Vive SteamVR binding is active.",
+                => "Direct Vive button recording is available.",
             BindingAvailability.Ready
                 => "SteamVR controller binding is active.",
             BindingAvailability.NeedsSetup
@@ -530,8 +530,8 @@ internal sealed class MainForm : Form
             Margin = new Padding(0, 8, 0, 3)
         };
 
-    private Task<RecordedGesture?> InvokeRecordAsync() =>
-        RecordRequested?.Invoke()
+    private Task<RecordedGesture?> InvokeRecordAsync(ChordMode mode) =>
+        RecordRequested?.Invoke(mode)
         ?? Task.FromResult<RecordedGesture?>(null);
 
     private void NotifySettingsChanged()
@@ -572,9 +572,11 @@ internal sealed class ShortcutEditorForm : Form
     private readonly TextBox _name = new();
     private readonly ComboBox _mode = new();
     private readonly Label _gesture = new();
+    private readonly Label _holdDurationLabel = new();
+    private readonly NumericUpDown _holdDuration = new();
     private readonly ComboBox _action = new();
     private readonly Label _recordingStatus = new();
-    private readonly Func<Task<RecordedGesture?>>? _record;
+    private readonly Func<ChordMode, Task<RecordedGesture?>>? _record;
     private ControllerInputBinding _safety;
     private ControllerInputBinding _actionInput;
     private string? _actionId;
@@ -582,7 +584,7 @@ internal sealed class ShortcutEditorForm : Form
     public ShortcutEditorForm(
         ShortcutConfig shortcut,
         IReadOnlyList<StreamerBotAction> actions,
-        Func<Task<RecordedGesture?>>? record,
+        Func<ChordMode, Task<RecordedGesture?>>? record,
         Action? openBindings)
     {
         _record = record;
@@ -617,10 +619,36 @@ internal sealed class ShortcutEditorForm : Form
         panel.Controls.Add(_gesture);
         _mode.DropDownStyle = ComboBoxStyle.DropDownList;
         _mode.Width = 310;
-        _mode.Items.AddRange(["Hold first, then press second", "Press both together"]);
-        _mode.SelectedIndex = shortcut.Gesture.Mode == ChordMode.Modifier ? 0 : 1;
-        _mode.SelectedIndexChanged += (_, _) => RefreshGesture();
+        _mode.Items.AddRange(
+        [
+            "Hold one button",
+            "Hold first, then press second",
+            "Press both together"
+        ]);
+        _mode.SelectedIndex = shortcut.Gesture.Mode switch
+        {
+            ChordMode.LongPress => 0,
+            ChordMode.Modifier => 1,
+            _ => 2
+        };
+        _mode.SelectedIndexChanged += (_, _) =>
+        {
+            RefreshGesture();
+            RefreshHoldDurationVisibility();
+        };
         panel.Controls.Add(_mode);
+        _holdDurationLabel.Text = "Hold duration (seconds)";
+        _holdDurationLabel.AutoSize = true;
+        _holdDurationLabel.Font = new Font(Font, FontStyle.Bold);
+        _holdDuration.Minimum = 0.5m;
+        _holdDuration.Maximum = 10m;
+        _holdDuration.Increment = 0.5m;
+        _holdDuration.DecimalPlaces = 1;
+        _holdDuration.Width = 120;
+        _holdDuration.Value = Math.Clamp(shortcut.Gesture.HoldMs / 1000m, 0.5m, 10m);
+        _holdDuration.ValueChanged += (_, _) => RefreshGesture();
+        panel.Controls.Add(_holdDurationLabel);
+        panel.Controls.Add(_holdDuration);
 
         var inputRow = new FlowLayoutPanel { AutoSize = true };
         var recordButton = new Button();
@@ -631,7 +659,9 @@ internal sealed class ShortcutEditorForm : Form
         bindingButton.Click += (_, _) =>
         {
             _safety = ControllerInputBinding.SteamVrSafety;
-            _actionInput = ControllerInputBinding.SteamVrAction;
+            _actionInput = SelectedMode == ChordMode.LongPress
+                ? ControllerInputBinding.SteamVrSafety
+                : ControllerInputBinding.SteamVrAction;
             RefreshGesture();
             openBindings?.Invoke();
         };
@@ -695,6 +725,7 @@ internal sealed class ShortcutEditorForm : Form
         AcceptButton = save;
         CancelButton = cancel;
         RefreshGesture();
+        RefreshHoldDurationVisibility();
     }
 
     public ShortcutConfig Shortcut { get; private set; } = new();
@@ -707,11 +738,12 @@ internal sealed class ShortcutEditorForm : Form
         }
 
         button.Enabled = false;
-        _recordingStatus.Text =
-            "In VR: release all buttons, then hold the first input and press the second.";
+        _recordingStatus.Text = SelectedMode == ChordMode.LongPress
+            ? "In VR: release all buttons, then press the button you want to hold."
+            : "In VR: release all buttons, then hold the first input and press the second.";
         try
         {
-            var recorded = await _record();
+            var recorded = await _record(SelectedMode);
             if (recorded is not null)
             {
                 _safety = recorded.SafetyInput;
@@ -739,11 +771,10 @@ internal sealed class ShortcutEditorForm : Form
             ActionInput = _actionInput,
             Gesture = new ChordConfig
             {
-                Mode = _mode.SelectedIndex == 1
-                    ? ChordMode.Simultaneous
-                    : ChordMode.Modifier,
-                WindowMs = _mode.SelectedIndex == 1 ? 300 : 2000,
-                CooldownMs = 250
+                Mode = SelectedMode,
+                WindowMs = SelectedMode == ChordMode.Simultaneous ? 300 : 2000,
+                CooldownMs = 250,
+                HoldMs = (int)(_holdDuration.Value * 1000)
             },
             ActionName = actionName,
             ActionId = _actionId
@@ -771,9 +802,29 @@ internal sealed class ShortcutEditorForm : Form
 
     private void RefreshGesture()
     {
-        _gesture.Text = _mode.SelectedIndex == 1
-            ? $"Press {_safety.FriendlyName} and {_actionInput.FriendlyName} together"
-            : $"Hold {_safety.FriendlyName}, then press {_actionInput.FriendlyName}";
+        _gesture.Text = SelectedMode switch
+        {
+            ChordMode.LongPress =>
+                $"Hold {_safety.FriendlyName} for {_holdDuration.Value:0.#} seconds",
+            ChordMode.Simultaneous =>
+                $"Press {_safety.FriendlyName} and {_actionInput.FriendlyName} together",
+            _ =>
+                $"Hold {_safety.FriendlyName}, then press {_actionInput.FriendlyName}"
+        };
+    }
+
+    private ChordMode SelectedMode => _mode.SelectedIndex switch
+    {
+        0 => ChordMode.LongPress,
+        2 => ChordMode.Simultaneous,
+        _ => ChordMode.Modifier
+    };
+
+    private void RefreshHoldDurationVisibility()
+    {
+        var visible = SelectedMode == ChordMode.LongPress;
+        _holdDurationLabel.Visible = visible;
+        _holdDuration.Visible = visible;
     }
 
     private static Label Heading(string text) =>

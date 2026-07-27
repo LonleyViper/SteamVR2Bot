@@ -286,7 +286,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async Task<RecordedGesture?> RecordControllerGestureAsync()
+    private async Task<RecordedGesture?> RecordControllerGestureAsync(ChordMode mode)
     {
         await _runtimeGate.WaitAsync();
         try
@@ -305,14 +305,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
             return await _engine.RecordGestureAsync(
                 settings.ToAppConfig(),
+                mode,
                 TimeSpan.FromSeconds(20),
                 timeout.Token);
         }
         catch (OperationCanceledException)
         {
-            _mainForm.ShowSettingsError(
-                "No two-input gesture was detected. Make sure both controllers are on, " +
-                "then try again. For unsupported controllers, use SteamVR input bindings.");
+            var detail = mode == ChordMode.LongPress
+                ? "No controller input was detected. Make sure the controller is on, then try again."
+                : "No two-input gesture was detected. Make sure both controllers are on, " +
+                  "then try again. For unsupported controllers, use SteamVR input bindings.";
+            _mainForm.ShowSettingsError(detail);
             return null;
         }
         catch (Exception exception)

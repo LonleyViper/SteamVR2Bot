@@ -77,7 +77,8 @@ public sealed class StreamerBotConfig
 public enum ChordMode
 {
     Simultaneous,
-    Modifier
+    Modifier,
+    LongPress
 }
 
 public sealed class ChordConfig
@@ -85,6 +86,7 @@ public sealed class ChordConfig
     public ChordMode Mode { get; init; } = ChordMode.Modifier;
     public int WindowMs { get; init; } = 2000;
     public int CooldownMs { get; init; } = 250;
+    public int HoldMs { get; init; } = 1000;
 
     public void Validate()
     {
@@ -96,6 +98,11 @@ public sealed class ChordConfig
         if (CooldownMs is < 0 or > 30_000)
         {
             throw new InvalidDataException("chord.cooldownMs must be between 0 and 30000.");
+        }
+
+        if (HoldMs is < 250 or > 30_000)
+        {
+            throw new InvalidDataException("chord.holdMs must be between 250 and 30000.");
         }
     }
 }
@@ -168,9 +175,15 @@ public sealed record ShortcutConfig
     public string? ActionId { get; init; }
 
     public string FriendlyGesture =>
-        Gesture.Mode == ChordMode.Modifier
-            ? $"Hold {SafetyInput.FriendlyName}, then press {ActionInput.FriendlyName}"
-            : $"Press {SafetyInput.FriendlyName} and {ActionInput.FriendlyName} together";
+        Gesture.Mode switch
+        {
+            ChordMode.LongPress =>
+                $"Hold {SafetyInput.FriendlyName} for {FriendlyDuration(Gesture.HoldMs)}",
+            ChordMode.Modifier =>
+                $"Hold {SafetyInput.FriendlyName}, then press {ActionInput.FriendlyName}",
+            _ =>
+                $"Press {SafetyInput.FriendlyName} and {ActionInput.FriendlyName} together"
+        };
 
     public void Validate()
     {
@@ -184,9 +197,15 @@ public sealed record ShortcutConfig
             throw new InvalidDataException($"Choose a Streamer.bot action for “{Name}”.");
         }
 
-        if (string.IsNullOrWhiteSpace(SafetyInput.Id)
-            || string.IsNullOrWhiteSpace(ActionInput.Id)
-            || SafetyInput.Id.Equals(ActionInput.Id, StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(SafetyInput.Id))
+        {
+            throw new InvalidDataException(
+                $"Choose a controller input for “{Name}”.");
+        }
+
+        if (Gesture.Mode != ChordMode.LongPress
+            && (string.IsNullOrWhiteSpace(ActionInput.Id)
+                || SafetyInput.Id.Equals(ActionInput.Id, StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidDataException(
                 $"Choose two different controller inputs for “{Name}”.");
@@ -194,6 +213,11 @@ public sealed record ShortcutConfig
 
         Gesture.Validate();
     }
+
+    private static string FriendlyDuration(int milliseconds) =>
+        milliseconds % 1000 == 0
+            ? $"{milliseconds / 1000} second{(milliseconds == 1000 ? "" : "s")}"
+            : $"{milliseconds / 1000d:0.#} seconds";
 
     public static ShortcutConfig FromLegacy(
         StreamerBotConfig streamerBot,

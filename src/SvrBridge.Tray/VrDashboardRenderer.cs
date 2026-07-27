@@ -6,13 +6,11 @@ namespace SvrBridge.Tray;
 
 internal static class VrDashboardRenderer
 {
+    private static int _imageSequence;
+
     public static string Render(IReadOnlyList<ShortcutConfig> shortcuts)
     {
-        var directory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SVR Bridge");
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, "vr-dashboard.png");
+        var path = NextDashboardImagePath();
 
         using var bitmap = new Bitmap(1400, 900, PixelFormat.Format32bppArgb);
         using var graphics = Graphics.FromImage(bitmap);
@@ -216,15 +214,86 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderRecording(string? firstInput = null)
+    public static string RenderGesturePicker(string actionName)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
-            graphics.DrawString("Record controller inputs", fonts.Title, brushes.White, 60, 42);
+            graphics.DrawString("How should it trigger?", fonts.Title, brushes.White, 60, 42);
+            DrawEllipsizedText(
+                graphics,
+                $"Runs: {actionName}",
+                fonts.Subtitle,
+                brushes.Muted,
+                new RectangleF(64, 108, 1270, 36));
+
+            (string Label, string Detail)[] choices =
+            [
+                ("Hold one button for 1 second", "Good for a quick deliberate hold"),
+                ("Hold one button for 2 seconds", "Safer against accidental presses"),
+                ("Hold one button for 3 seconds", "Most deliberate single-button option"),
+                ("Hold one, then press another", "A two-button safety shortcut"),
+                ("Press two buttons together", "Both inputs must be pressed close together")
+            ];
+            var y = 165;
+            foreach (var choice in choices)
+            {
+                DrawRoundedRectangle(
+                    graphics,
+                    brushes.Card,
+                    new Rectangle(60, y, 1280, 90),
+                    14);
+                DrawEllipsizedText(
+                    graphics,
+                    choice.Label,
+                    fonts.Body,
+                    brushes.White,
+                    new RectangleF(92, y + 12, 1120, 36));
+                graphics.DrawString(
+                    choice.Detail,
+                    fonts.Small,
+                    brushes.Muted,
+                    94,
+                    y + 51);
+                graphics.DrawString("›", fonts.Heading, brushes.Blue, 1265, y + 25);
+                y += 105;
+            }
+
+            DrawRoundedRectangle(
+                graphics,
+                brushes.Disabled,
+                new Rectangle(60, 800, 1280, 64),
+                16);
+            DrawCenteredText(
+                graphics,
+                "Back to actions",
+                fonts.Body,
+                brushes.White,
+                new Rectangle(60, 800, 1280, 64));
+        });
+    }
+
+    public static string RenderRecording(
+        ChordMode mode,
+        string? firstInput = null,
+        int holdMs = 1000)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            var isLongPress = mode == ChordMode.LongPress;
             graphics.DrawString(
-                firstInput is null
-                    ? "Release all buttons, then hold your safety input."
-                    : $"{firstInput} recorded — keep holding it and press the action input.",
+                isLongPress ? "Choose the button to hold" : "Record controller inputs",
+                fonts.Title,
+                brushes.White,
+                60,
+                42);
+            graphics.DrawString(
+                isLongPress
+                    ? $"Release all buttons, then press one. It will trigger after {holdMs / 1000d:0.#} seconds."
+                    : firstInput is null
+                        ? mode == ChordMode.Simultaneous
+                            ? "Release all buttons, then press the two inputs you want together."
+                            : "Release all buttons, then hold the first input."
+                        : $"{firstInput} recorded — keep holding it and press the second input.",
                 fonts.Subtitle,
                 brushes.Muted,
                 64,
@@ -235,25 +304,38 @@ internal static class VrDashboardRenderer
                 brushes.Card,
                 new Rectangle(150, 250, 1100, 330),
                 24);
-            graphics.DrawString(
-                firstInput is null ? "1" : "✓",
-                fonts.Title,
-                firstInput is null ? brushes.Blue : brushes.Green,
-                255,
-                350);
-            graphics.DrawString(
-                firstInput is null ? "Hold safety input" : firstInput,
-                fonts.Heading,
-                brushes.White,
-                330,
-                355);
-            graphics.DrawString("2", fonts.Title, brushes.Blue, 760, 350);
-            graphics.DrawString(
-                "Press action input",
-                fonts.Heading,
-                brushes.White,
-                835,
-                355);
+            if (isLongPress)
+            {
+                graphics.DrawString("1", fonts.Title, brushes.Blue, 350, 350);
+                graphics.DrawString(
+                    "Press the button to hold",
+                    fonts.Heading,
+                    brushes.White,
+                    430,
+                    355);
+            }
+            else
+            {
+                graphics.DrawString(
+                    firstInput is null ? "1" : "✓",
+                    fonts.Title,
+                    firstInput is null ? brushes.Blue : brushes.Green,
+                    255,
+                    350);
+                graphics.DrawString(
+                    firstInput is null ? "First input" : firstInput,
+                    fonts.Heading,
+                    brushes.White,
+                    330,
+                    355);
+                graphics.DrawString("2", fonts.Title, brushes.Blue, 760, 350);
+                graphics.DrawString(
+                    "Second input",
+                    fonts.Heading,
+                    brushes.White,
+                    835,
+                    355);
+            }
 
             DrawRoundedRectangle(
                 graphics,
@@ -267,11 +349,7 @@ internal static class VrDashboardRenderer
     private static string RenderSimplePage(
         Action<Graphics, DashboardFonts, DashboardBrushes> draw)
     {
-        var directory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SVR Bridge");
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, "vr-dashboard.png");
+        var path = NextDashboardImagePath();
         using var bitmap = new Bitmap(1400, 900, PixelFormat.Format32bppArgb);
         using var graphics = Graphics.FromImage(bitmap);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -283,6 +361,16 @@ internal static class VrDashboardRenderer
         draw(graphics, fonts, brushes);
         bitmap.Save(path, ImageFormat.Png);
         return path;
+    }
+
+    private static string NextDashboardImagePath()
+    {
+        var directory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "SVR Bridge");
+        Directory.CreateDirectory(directory);
+        var slot = (uint)Interlocked.Increment(ref _imageSequence) % 8;
+        return Path.Combine(directory, $"vr-dashboard-{slot}.png");
     }
 
     private static void DrawRoundedRectangle(

@@ -5,6 +5,7 @@ public sealed class ChordDetector
     private readonly ChordMode _mode;
     private readonly long _windowMs;
     private readonly long _cooldownMs;
+    private readonly long _holdMs;
 
     private bool _previousOne;
     private bool _previousTwo;
@@ -18,6 +19,7 @@ public sealed class ChordDetector
         _mode = config.Mode;
         _windowMs = config.WindowMs;
         _cooldownMs = config.CooldownMs;
+        _holdMs = config.HoldMs;
     }
 
     public bool Update(bool buttonOne, bool buttonTwo, long nowMs)
@@ -35,7 +37,7 @@ public sealed class ChordDetector
             _twoPressedAt = nowMs;
         }
 
-        if (!buttonOne || !buttonTwo)
+        if (_mode == ChordMode.LongPress ? !buttonOne : !buttonOne || !buttonTwo)
         {
             _latched = false;
         }
@@ -46,6 +48,8 @@ public sealed class ChordDetector
             ChordMode.Simultaneous => buttonOne
                                       && buttonTwo
                                       && Math.Abs(_onePressedAt - _twoPressedAt) <= _windowMs,
+            ChordMode.LongPress => buttonOne
+                                   && nowMs - _onePressedAt >= _holdMs,
             _ => false
         };
 

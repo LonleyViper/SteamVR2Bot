@@ -12,6 +12,7 @@ internal static class SelfTests
     {
         TestModifierChord();
         TestSimultaneousChord();
+        TestLongPress();
         TestCooldown();
         TestPhysicalControllerInputs();
         TestDashboardPointerTracking();
@@ -130,6 +131,24 @@ internal static class SelfTests
         Assert(!detector.Update(true, true, 300), "Cooldown must suppress an early repeat.");
         Assert(!detector.Update(true, false, 550), "Release must not fire.");
         Assert(detector.Update(true, true, 600), "Chord must fire after cooldown.");
+    }
+
+    private static void TestLongPress()
+    {
+        var detector = new ChordDetector(new ChordConfig
+        {
+            Mode = ChordMode.LongPress,
+            HoldMs = 1000,
+            CooldownMs = 0
+        });
+
+        Assert(!detector.Update(true, false, 100), "Long press fired immediately.");
+        Assert(!detector.Update(true, false, 1099), "Long press fired before its duration.");
+        Assert(detector.Update(true, false, 1100), "Long press did not fire at its duration.");
+        Assert(!detector.Update(true, false, 1500), "Held long press fired more than once.");
+        Assert(!detector.Update(false, false, 1600), "Long press fired on release.");
+        Assert(!detector.Update(true, false, 1700), "Second long press fired immediately.");
+        Assert(detector.Update(true, false, 2700), "Second long press did not re-arm.");
     }
 
     private static void TestAuthenticationHash()

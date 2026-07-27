@@ -63,8 +63,14 @@ To create one without leaving VR:
 2. Open a Streamer.bot action group, such as **Scenes** or **Sounds**.
 3. Scroll with the controller, or use **Previous** and **Next**, then choose the
    action by its familiar name. Select **All groups** to go back.
-4. Release all controller buttons.
-5. Hold the safety input, then press the action input.
+4. Choose how it should trigger. Single-button holds are available for 1, 2,
+   or 3 seconds, alongside the two-button options.
+5. Release all controller buttons, then press the button or buttons the page
+   asks for.
+
+For example, choose **Hold one button for 2 seconds**, release the controllers,
+then press the left Vive Menu button. The saved shortcut will run once after
+that button has been held for two seconds.
 
 The shortcut is saved immediately, appears in the desktop list, and activates
 automatically. Streamer.bot actions are loaded automatically at launch; the
@@ -97,6 +103,7 @@ untested default preset is labelled as validated.
 
 Each shortcut's gesture behavior supports:
 
+- Hold one chosen input for 1, 2, or 3 seconds.
 - Hold the Safety Button, then press the Action Button.
 - Press both chosen inputs together within 300 ms.
 

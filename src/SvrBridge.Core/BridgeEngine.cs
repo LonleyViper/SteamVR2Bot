@@ -141,6 +141,7 @@ public sealed class BridgeEngine
 
     public async Task<RecordedGesture> RecordGestureAsync(
         AppConfig config,
+        ChordMode mode,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
@@ -161,8 +162,10 @@ public sealed class BridgeEngine
 
         SetStatus(
             BridgeState.Starting,
-            "Listening for your controller inputs…",
-            "Release the buttons, then hold your safety input and press the action input.");
+            "Listening for your controller input…",
+            mode == ChordMode.LongPress
+                ? "Release all buttons, then press the button you want to hold."
+                : "Release the buttons, then hold the first input and press the second.");
 
         using var input = await _openVrSessionFactory.ConnectAsync(
             config,
@@ -182,9 +185,15 @@ public sealed class BridgeEngine
         while (first is null)
         {
             var pressed = ControllerInputs.PressedInputs(input.Poll(), setup);
+            if (mode == ChordMode.LongPress
+                && pressed.FirstOrDefault() is { } heldInput)
+            {
+                return FinishRecording(heldInput, heldInput, setup, mode);
+            }
+
             if (pressed.Count >= 2)
             {
-                return FinishRecording(pressed[0], pressed[1], setup);
+                return FinishRecording(pressed[0], pressed[1], setup, mode);
             }
 
             first = pressed.FirstOrDefault();
@@ -198,7 +207,7 @@ public sealed class BridgeEngine
                 !candidate.Id.Equals(first.Id, StringComparison.OrdinalIgnoreCase));
             if (second is not null)
             {
-                return FinishRecording(first, second, setup);
+                return FinishRecording(first, second, setup, mode);
             }
 
             await Task.Delay(20, token);
@@ -525,9 +534,25 @@ public sealed class BridgeEngine
             return;
         }
 
+        var enabledShortcuts = config.GetShortcuts()
+            .Where(shortcut => shortcut.Enabled)
+            .ToArray();
+        var directPhysicalShortcuts = enabledShortcuts.Length > 0
+                                      && enabledShortcuts.All(shortcut =>
+                                          ControllerInputBinding.TryParsePhysical(
+                                              shortcut.SafetyInput.Id,
+                                              out _,
+                                              out _)
+                                          && (shortcut.Gesture.Mode == ChordMode.LongPress
+                                              || ControllerInputBinding.TryParsePhysical(
+                                                  shortcut.ActionInput.Id,
+                                                  out _,
+                                                  out _)));
+
         switch (setup.Availability)
         {
-            case BindingAvailability.NeedsSetup:
+            case BindingAvailability.NeedsSetup
+                when enabledShortcuts.Length > 0 && !directPhysicalShortcuts:
                 SetStatus(
                     BridgeState.Error,
                     "Controller setup needed",
@@ -543,8 +568,14 @@ public sealed class BridgeEngine
                 SetStatus(
                     BridgeState.Ready,
                     "Ready for your shortcut",
-                    $"{config.GetShortcuts().Count(shortcut => shortcut.Enabled)} shortcut(s) ready. " +
-                    setup.FriendlySummary);
+                    enabledShortcuts.Length switch
+                    {
+                        0 => "No shortcuts yet. Add one on the desktop or in the SteamVR dashboard.",
+                        1 => $"{enabledShortcuts[0].FriendlyGesture} → " +
+                             $"{FriendlyActionName(enabledShortcuts[0])}.",
+                        _ => $"{enabledShortcuts.Length} shortcuts are ready. " +
+                             $"Example: {enabledShortcuts[0].FriendlyGesture}."
+                    });
                 break;
         }
     }
@@ -571,7 +602,8 @@ public sealed class BridgeEngine
     private RecordedGesture FinishRecording(
         ControllerInputBinding safetyInput,
         ControllerInputBinding actionInput,
-        ControllerSetup setup)
+        ControllerSetup setup,
+        ChordMode mode)
     {
         var gesture = new RecordedGesture(
             safetyInput,
@@ -579,11 +611,15 @@ public sealed class BridgeEngine
             ControllerInputs.ControllerFamily(setup));
         Log(
             "controller.gesture_recorded",
-            $"Recorded {safetyInput.FriendlyName} + {actionInput.FriendlyName}.");
+            mode == ChordMode.LongPress
+                ? $"Recorded long press of {safetyInput.FriendlyName}."
+                : $"Recorded {safetyInput.FriendlyName} + {actionInput.FriendlyName}.");
         SetStatus(
             BridgeState.Stopped,
-            "Inputs recorded",
-            $"Hold {safetyInput.FriendlyName}, then press {actionInput.FriendlyName}.");
+            mode == ChordMode.LongPress ? "Input recorded" : "Inputs recorded",
+            mode == ChordMode.LongPress
+                ? $"Hold {safetyInput.FriendlyName} to run the action."
+                : $"Hold {safetyInput.FriendlyName}, then press {actionInput.FriendlyName}.");
         return gesture;
     }
 
