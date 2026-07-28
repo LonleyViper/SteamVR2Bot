@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
@@ -13,6 +14,9 @@ public sealed class OpenVrInput : IOpenVrSession
     // SteamVR accepting the band maximum and deactivating this action set under
     // dashboard focus regardless, so there is nothing to gain by raising it.
     private const int OverlayGlobalPriorityMin = 16_777_216;
+    private const int VrEventQuit = 700;
+    private const int MaxTrackedDevices = 64;
+    private const uint InvalidDeviceIndex = uint.MaxValue;
     private static readonly PhysicalActionDefinition[] PhysicalActions =
     [
         new(ControllerHand.Left, 1, "/actions/svrbridge/in/left_menu"),
@@ -39,7 +43,11 @@ public sealed class OpenVrInput : IOpenVrSession
         _physicalButtons;
     private readonly VrActiveActionSet[] _activeSets;
     private readonly InputProbe _probe;
+    private readonly TrackedDevicePose[] _poses = new TrackedDevicePose[MaxTrackedDevices];
     private ControllerSetup _lastSetup = ControllerSetup.Unknown;
+    private uint _leftDeviceIndex = InvalidDeviceIndex;
+    private uint _rightDeviceIndex = InvalidDeviceIndex;
+    private bool _probeMotion;
     private ulong _dashboardHandle;
     private ulong _dashboardThumbnailHandle;
     private bool _dashboardThumbnailInitialized;
@@ -64,11 +72,14 @@ public sealed class OpenVrInput : IOpenVrSession
         var getInterface = LoadExport<VrGetGenericInterface>(_library, "VR_GetGenericInterface");
 
         var initError = VrInitError.None;
-        _ = init(ref initError, VrApplicationType.Overlay);
+        _ = init(ref initError, VrApplicationType.Background);
         if (initError != VrInitError.None)
         {
             NativeLibrary.Free(_library);
-            throw new InvalidOperationException($"OpenVR initialization failed: {initError} ({(int)initError}).");
+            throw new InvalidOperationException(
+                initError == VrInitError.NoServerForBackgroundApp
+                    ? "SteamVR is not running."
+                    : $"OpenVR initialization failed: {initError} ({(int)initError}).");
         }
 
         try
@@ -137,8 +148,24 @@ public sealed class OpenVrInput : IOpenVrSession
     /// Turns the read-only input probe on or off. The probe only logs; it never
     /// changes how input is delivered, so it is safe to leave wired in.
     /// </summary>
-    public void SetInputProbeEnabled(bool enabled) =>
+    public void SetInputProbeEnabled(bool enabled)
+    {
         _probe.SetEnabled(enabled, Environment.TickCount64);
+        _probeMotion = enabled;
+    }
+
+    /// <summary>
+    /// Samples head and controller poses on every <see cref="Poll"/>. Motion
+    /// recognition needs this permanently on; the probe turns it on by itself
+    /// while the recorder page is showing.
+    /// </summary>
+    public bool MotionSamplingEnabled { get; set; }
+
+    /// <summary>
+    /// The most recent motion sample, in the wearer's body frame. Stale when
+    /// motion sampling is off.
+    /// </summary>
+    public MotionSample LatestMotion { get; private set; }
 
     public InputSnapshot Poll()
     {
@@ -153,6 +180,12 @@ public sealed class OpenVrInput : IOpenVrSession
             "UpdateActionState");
 
         ProbeDashboardState();
+        if (MotionSamplingEnabled || _probeMotion)
+        {
+            LatestMotion = SampleMotion(Environment.TickCount64);
+            _probe.ObserveMotion(LatestMotion);
+        }
+
         var (leftButtons, rightButtons) = ReadControllerButtons();
         var snapshot = new InputSnapshot(
             ReadDigital(_buttonOne, "button_one") || IsPressed(leftButtons, 2),
@@ -162,6 +195,124 @@ public sealed class OpenVrInput : IOpenVrSession
         _probe.EndPoll(Environment.TickCount64);
         return snapshot;
     }
+
+    /// <summary>
+    /// Reads head and controller poses and expresses the hands in the wearer's
+    /// body frame.
+    /// <para>
+    /// This deliberately uses <c>IVRSystem.GetDeviceToAbsoluteTrackingPose</c>
+    /// rather than IVRInput pose actions. Poses are a tracking query, not
+    /// input, so they keep arriving while SteamVR's dashboard owns input focus
+    /// — the exact condition that starves the digital action path. It also
+    /// needs no action-manifest or binding changes.
+    /// </para>
+    /// </summary>
+    private MotionSample SampleMotion(long nowMs)
+    {
+        if (_system is null || _system.Value.GetDeviceToAbsoluteTrackingPose is null)
+        {
+            return MotionSample.Untracked(nowMs);
+        }
+
+        // Zero prediction: a predicted pose is smoothed towards where the
+        // device is expected to be, which blunts exactly the direction changes
+        // a gesture recognizer is looking for.
+        _system.Value.GetDeviceToAbsoluteTrackingPose(
+            TrackingUniverseOrigin.Standing,
+            0f,
+            _poses,
+            (uint)_poses.Length);
+
+        var head = _poses[0];
+        if (!head.IsUsable)
+        {
+            return MotionSample.Untracked(nowMs);
+        }
+
+        var frame = BodyFrame.FromHead(head.Position, head.Forward, head.Up);
+        RefreshControllerIndices();
+
+        var tracking = MotionTracking.Head;
+        if (TryReadHand(_leftDeviceIndex, frame, out var leftPosition, out var leftVelocity))
+        {
+            tracking |= MotionTracking.Left;
+        }
+
+        if (TryReadHand(_rightDeviceIndex, frame, out var rightPosition, out var rightVelocity))
+        {
+            tracking |= MotionTracking.Right;
+        }
+
+        return new MotionSample(
+            nowMs,
+            tracking,
+            leftPosition,
+            leftVelocity,
+            rightPosition,
+            rightVelocity,
+            head.Position.Y);
+    }
+
+    private bool TryReadHand(
+        uint deviceIndex,
+        BodyFrame frame,
+        out Vector3 position,
+        out Vector3 velocity)
+    {
+        position = Vector3.Zero;
+        velocity = Vector3.Zero;
+        if (deviceIndex >= (uint)_poses.Length)
+        {
+            return false;
+        }
+
+        var pose = _poses[deviceIndex];
+        if (!pose.IsUsable)
+        {
+            return false;
+        }
+
+        position = frame.ToLocalPoint(pose.Position);
+        velocity = frame.ToLocalDirection(pose.Velocity.ToVector());
+        return true;
+    }
+
+    /// <summary>
+    /// Keeps the cached left/right device indices current. The common case is
+    /// two cheap role lookups; the full scan only runs when a controller is
+    /// swapped, reassigned, or wakes up.
+    /// </summary>
+    private void RefreshControllerIndices()
+    {
+        if (_system is null
+            || (HasRole(_leftDeviceIndex, TrackedControllerRole.LeftHand)
+                && HasRole(_rightDeviceIndex, TrackedControllerRole.RightHand)))
+        {
+            return;
+        }
+
+        _leftDeviceIndex = InvalidDeviceIndex;
+        _rightDeviceIndex = InvalidDeviceIndex;
+        for (uint index = 0; index < (uint)_poses.Length; index++)
+        {
+            switch (_system.Value.GetControllerRoleForTrackedDeviceIndex(index))
+            {
+                case TrackedControllerRole.LeftHand
+                    when _leftDeviceIndex == InvalidDeviceIndex:
+                    _leftDeviceIndex = index;
+                    break;
+                case TrackedControllerRole.RightHand
+                    when _rightDeviceIndex == InvalidDeviceIndex:
+                    _rightDeviceIndex = index;
+                    break;
+            }
+        }
+    }
+
+    private bool HasRole(uint deviceIndex, TrackedControllerRole role) =>
+        _system is not null
+        && deviceIndex < (uint)_poses.Length
+        && _system.Value.GetControllerRoleForTrackedDeviceIndex(deviceIndex) == role;
 
     private void ProbeDashboardState()
     {
@@ -329,9 +480,29 @@ public sealed class OpenVrInput : IOpenVrSession
                 "SetOverlayFromFile");
             if (!_dashboardThumbnailInitialized)
             {
-                EnsureOverlaySuccess(
-                    _overlay.Value.SetOverlayFromFile(_dashboardThumbnailHandle, image),
-                    "SetOverlayFromFile(thumbnail)");
+                // The taskbar strip at the bottom of the SteamVR dashboard shows
+                // this thumbnail while the app is running. It must stay the
+                // static app icon rather than whatever page is currently
+                // rendered, or it flips to a screenshot of the shortcut list.
+                var iconPath = Path.Combine(AppContext.BaseDirectory, "SteamVR2Bot.png");
+                var thumbnailSource = File.Exists(iconPath) ? iconPath : imagePath;
+                var thumbnailImage = thumbnailSource == imagePath
+                    ? image
+                    : Marshal.StringToCoTaskMemUTF8(thumbnailSource);
+                try
+                {
+                    EnsureOverlaySuccess(
+                        _overlay.Value.SetOverlayFromFile(_dashboardThumbnailHandle, thumbnailImage),
+                        "SetOverlayFromFile(thumbnail)");
+                }
+                finally
+                {
+                    if (thumbnailImage != image)
+                    {
+                        Marshal.FreeCoTaskMem(thumbnailImage);
+                    }
+                }
+
                 _dashboardThumbnailInitialized = true;
             }
 
@@ -353,6 +524,40 @@ public sealed class OpenVrInput : IOpenVrSession
         && _dashboardHandle != 0
         && _overlay.Value.IsDashboardVisible()
         && _overlay.Value.IsActiveDashboardOverlay(_dashboardHandle);
+
+    /// <summary>
+    /// True once SteamVR has asked every application to quit. Draining the
+    /// system queue here cannot swallow dashboard input, because overlay
+    /// events are delivered on a separate per-overlay queue.
+    /// </summary>
+    public bool IsQuitRequested()
+    {
+        ThrowIfDisposed();
+        if (_system?.PollNextEvent is not { } pollNextEvent)
+        {
+            return false;
+        }
+
+        const int eventBufferSize = 64;
+        var eventBuffer = Marshal.AllocCoTaskMem(eventBufferSize);
+        try
+        {
+            while (pollNextEvent(eventBuffer, eventBufferSize))
+            {
+                if (Marshal.ReadInt32(eventBuffer) == VrEventQuit)
+                {
+                    _log("SteamVR is shutting down.");
+                    return true;
+                }
+            }
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(eventBuffer);
+        }
+
+        return false;
+    }
 
     public bool TryGetDashboardInteraction(out DashboardInteraction interaction)
     {
@@ -886,12 +1091,17 @@ public sealed class OpenVrInput : IOpenVrSession
 
     private enum VrApplicationType
     {
-        Overlay = 2
+        // Background never starts SteamVR, and does not hold it open once
+        // everything else quits. The app now auto-launches with SteamVR and
+        // exits with it, so booting SteamVR from the desktop would fight both
+        // halves of that lifecycle.
+        Background = 3
     }
 
     private enum VrInitError
     {
-        None = 0
+        None = 0,
+        NoServerForBackgroundApp = 312
     }
 
     private enum VrInputError
@@ -1019,7 +1229,13 @@ public sealed class OpenVrInput : IOpenVrSession
         private nint GetOutputDevice;
         private nint IsDisplayOnDesktop;
         private nint SetDisplayVisibility;
-        private nint GetDeviceToAbsoluteTrackingPose;
+
+        // Index 12. Everything up to GetStringTrackedDeviceProperty is already
+        // proven correct by live controller detection, so this entry is inside
+        // the validated prefix of the table.
+        [MarshalAs(UnmanagedType.FunctionPtr)]
+        public GetDeviceToAbsoluteTrackingPoseDelegate? GetDeviceToAbsoluteTrackingPose;
+
         private nint GetSeatedZeroPoseToStandingAbsoluteTrackingPose;
         private nint GetRawZeroPoseToStandingAbsoluteTrackingPose;
         private nint GetSortedTrackedDeviceIndicesOfClass;
@@ -1047,14 +1263,19 @@ public sealed class OpenVrInput : IOpenVrSession
         public GetStringTrackedDevicePropertyDelegate GetStringTrackedDeviceProperty;
 
         private nint GetPropErrorNameFromEnum;
-        private nint PollNextEvent;
+
+        // VREvent_Quit arrives on the system queue, which is separate from the
+        // dashboard overlay queue, so noticing SteamVR shut down needs this
+        // entry rather than PollNextOverlayEvent.
+        [MarshalAs(UnmanagedType.FunctionPtr)]
+        public PollNextEventDelegate? PollNextEvent;
+
         private nint PollNextEventWithPose;
         private nint PollNextEventWithPoseAndOverlays;
         private nint GetEventTypeNameFromEnum;
         private nint GetHiddenAreaMesh;
         private nint GetEyeTrackedFoveationCenter;
         private nint GetEyeTrackedFoveationCenterForProjection;
-
     }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -1098,6 +1319,13 @@ public sealed class OpenVrInput : IOpenVrSession
         [MarshalAs(UnmanagedType.I1)] bool showOnDesktop);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate void GetDeviceToAbsoluteTrackingPoseDelegate(
+        TrackingUniverseOrigin origin,
+        float predictedSecondsToPhotonsFromNow,
+        [In, Out] TrackedDevicePose[] poses,
+        uint poseCount);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate TrackedControllerRole GetControllerRoleForTrackedDeviceIndexDelegate(
         uint deviceIndex);
 
@@ -1131,6 +1359,12 @@ public sealed class OpenVrInput : IOpenVrSession
     [return: MarshalAs(UnmanagedType.I1)]
     private delegate bool PollNextOverlayEventDelegate(
         ulong overlayHandle,
+        nint eventBuffer,
+        uint eventBufferSize);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private delegate bool PollNextEventDelegate(
         nint eventBuffer,
         uint eventBufferSize);
 
@@ -1193,6 +1427,87 @@ public sealed class OpenVrInput : IOpenVrSession
     {
         public float X;
         public float Y;
+    }
+
+    private enum TrackingUniverseOrigin
+    {
+        Seated = 0,
+        Standing = 1,
+        RawAndUncalibrated = 2
+    }
+
+    private enum TrackingResult
+    {
+        Uninitialized = 1,
+        CalibratingInProgress = 100,
+        CalibratingOutOfRange = 101,
+        RunningOk = 200,
+        RunningOutOfRange = 201,
+        FallbackRotationOnly = 300
+    }
+
+    /// <summary>Row-major 3x4 transform; the fourth column is translation.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HmdMatrix34
+    {
+        public float M00;
+        public float M01;
+        public float M02;
+        public float M03;
+        public float M10;
+        public float M11;
+        public float M12;
+        public float M13;
+        public float M20;
+        public float M21;
+        public float M22;
+        public float M23;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HmdVector3
+    {
+        public float X;
+        public float Y;
+        public float Z;
+
+        public readonly Vector3 ToVector() => new(X, Y, Z);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TrackedDevicePose
+    {
+        public HmdMatrix34 DeviceToAbsoluteTracking;
+        public HmdVector3 Velocity;
+        public HmdVector3 AngularVelocity;
+        public TrackingResult Result;
+
+        // Held as bytes rather than bool so the array stays blittable and can
+        // be pinned. Marshalled bools would force an element-by-element copy of
+        // all 64 poses on every poll.
+        public byte PoseIsValid;
+        public byte DeviceIsConnected;
+
+        public readonly bool IsUsable =>
+            PoseIsValid != 0
+            && DeviceIsConnected != 0
+            && Result == TrackingResult.RunningOk;
+
+        public readonly Vector3 Position => new(
+            DeviceToAbsoluteTracking.M03,
+            DeviceToAbsoluteTracking.M13,
+            DeviceToAbsoluteTracking.M23);
+
+        /// <summary>World direction the device faces; OpenVR looks down -Z.</summary>
+        public readonly Vector3 Forward => new(
+            -DeviceToAbsoluteTracking.M02,
+            -DeviceToAbsoluteTracking.M12,
+            -DeviceToAbsoluteTracking.M22);
+
+        public readonly Vector3 Up => new(
+            DeviceToAbsoluteTracking.M01,
+            DeviceToAbsoluteTracking.M11,
+            DeviceToAbsoluteTracking.M21);
     }
 
     [StructLayout(LayoutKind.Sequential)]

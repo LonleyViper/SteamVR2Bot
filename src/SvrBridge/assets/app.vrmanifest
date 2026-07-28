@@ -7,6 +7,7 @@
       "binary_path_windows": "SteamVR2Bot.exe",
       "action_manifest_path": "actions.json",
       "is_dashboard_overlay": true,
+      "image_path": "SteamVR2Bot.png",
       "strings": {
         "en_us": {
           "name": "SteamVR2Bot",
