@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace SvrBridge.Core;
 
 /// <summary>
@@ -29,6 +31,8 @@ public sealed class InputProbe(Action<string> log)
     private readonly HashSet<int> _reportedOverlayEventTypes = [];
     private readonly List<string> _pressedActions = [];
     private string _dashboardSignature = "";
+    private string _trackingSignature = "";
+    private MotionSample _lastMotion;
     private int _actionCount;
     private int _activeActionCount;
     private long _overlayEventCount;
@@ -52,6 +56,8 @@ public sealed class InputProbe(Action<string> log)
         _reportedOverlayEventTypes.Clear();
         _pressedActions.Clear();
         _dashboardSignature = "";
+        _trackingSignature = "";
+        _lastMotion = default;
         _actionCount = 0;
         _activeActionCount = 0;
         _overlayEventCount = 0;
@@ -125,6 +131,29 @@ public sealed class InputProbe(Action<string> log)
     }
 
     /// <summary>
+    /// Records a motion sample. Poses change on every poll, so only the
+    /// tracking-validity transition is logged immediately; the numbers ride
+    /// along on the once-per-second summary.
+    /// </summary>
+    public void ObserveMotion(MotionSample sample)
+    {
+        if (!Enabled)
+        {
+            return;
+        }
+
+        _lastMotion = sample;
+        var signature = sample.Tracking.ToString();
+        if (signature == _trackingSignature)
+        {
+            return;
+        }
+
+        _trackingSignature = signature;
+        _log($"input probe tracking: {signature}.");
+    }
+
+    /// <summary>
     /// Records an event pulled from the dashboard overlay queue. Controller
     /// button events are always logged because they are the thing we are
     /// hunting; every other event type is logged once per session so we can
@@ -175,8 +204,24 @@ public sealed class InputProbe(Action<string> log)
         _log(
             $"input probe: dashboard {Fallback(_dashboardSignature)} | " +
             $"actions {_activeActionCount}/{_actionCount} active, pressed {pressed} | " +
-            $"overlay events {_overlayEventCount}.");
+            $"overlay events {_overlayEventCount} | " +
+            $"{DescribeMotion()}.");
     }
+
+    /// <summary>
+    /// Body-frame hand positions in metres and hand speeds in metres per
+    /// second: +X right, +Y up, +Z in front of the wearer.
+    /// </summary>
+    private string DescribeMotion() =>
+        _lastMotion.Tracking == MotionTracking.None
+            ? "motion none"
+            : $"motion {_trackingSignature} head {_lastMotion.HeadHeightMeters:0.00}m " +
+              $"L {DescribeHand(_lastMotion.LeftPosition, _lastMotion.LeftVelocity)} " +
+              $"R {DescribeHand(_lastMotion.RightPosition, _lastMotion.RightVelocity)}";
+
+    private static string DescribeHand(Vector3 position, Vector3 velocity) =>
+        $"({position.X:0.00},{position.Y:0.00},{position.Z:0.00})" +
+        $"@{velocity.Length():0.00}m/s";
 
     public static string? OverlayEventName(int eventType) =>
         eventType switch

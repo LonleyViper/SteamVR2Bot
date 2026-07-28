@@ -63,6 +63,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _engine.ControllerSetupChanged += _mainForm.UpdateControllerSetup;
         _engine.ShortcutCreated += SaveDashboardShortcut;
         _engine.ShortcutDeleted += DeleteDashboardShortcut;
+        _engine.VrShutdownRequested += OnVrShutdownRequested;
 
         var menu = new ContextMenuStrip();
         var open = new ToolStripMenuItem("Open SteamVR2Bot");
@@ -634,6 +635,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _trayIcon.Visible = false;
         _mainForm.AllowCloseAndClose();
         ExitThread();
+    }
+
+    /// <summary>
+    /// SteamVR is closing, and the app is registered to launch with it, so it
+    /// closes too rather than lingering in the tray with nothing to talk to.
+    /// </summary>
+    private void OnVrShutdownRequested()
+    {
+        if (_mainForm.InvokeRequired)
+        {
+            _mainForm.BeginInvoke(OnVrShutdownRequested);
+            return;
+        }
+
+        ExitApplication();
     }
 
     private void OnStatusChanged(BridgeStatus status)

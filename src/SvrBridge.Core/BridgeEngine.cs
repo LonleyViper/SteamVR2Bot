@@ -48,6 +48,7 @@ public sealed class BridgeEngine
     public event Action<ControllerSetup>? ControllerSetupChanged;
     public event Action<ShortcutConfig>? ShortcutCreated;
     public event Action<string>? ShortcutDeleted;
+    public event Action? VrShutdownRequested;
 
     public async Task RunAsync(AppConfig config, CancellationToken cancellationToken)
     {
@@ -74,6 +75,16 @@ public sealed class BridgeEngine
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
+            }
+            catch (SteamVrShutdownException)
+            {
+                Log("steamvr.shutdown", "SteamVR closed, so SteamVR2Bot is closing too.");
+                SetStatus(
+                    BridgeState.Stopped,
+                    "SteamVR closed",
+                    "SteamVR2Bot closed with SteamVR.");
+                VrShutdownRequested?.Invoke();
+                return;
             }
             catch (Exception exception)
             {
@@ -365,6 +376,11 @@ public sealed class BridgeEngine
 
             while (!cancellationToken.IsCancellationRequested)
             {
+                if (openVr.IsQuitRequested())
+                {
+                    throw new SteamVrShutdownException();
+                }
+
                 InputSnapshot snapshot;
                 lock (_inputGate)
                 {
@@ -432,6 +448,16 @@ public sealed class BridgeEngine
 
                 await Task.Delay(config.PollIntervalMs, cancellationToken);
             }
+        }
+        catch (Exception exception)
+            when (exception is not (OperationCanceledException
+                      or SteamVrShutdownException)
+                  && openVr.IsQuitRequested())
+        {
+            // The worker reports the quit and then exits at once, so the
+            // session can fail before the loop notices. That is still a
+            // shutdown rather than a dropped connection worth retrying.
+            throw new SteamVrShutdownException();
         }
         finally
         {

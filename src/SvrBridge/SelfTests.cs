@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Numerics;
 using System.Net.WebSockets;
 using System.Text.Json;
 using SvrBridge.Core;
@@ -20,6 +21,7 @@ internal static class SelfTests
         TestAvailableControllerInputs();
         TestDashboardPointerTracking();
         TestInputProbe();
+        TestBodyFrame();
         TestAuthenticationHash();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
@@ -198,14 +200,106 @@ internal static class SelfTests
             "The input probe did not emit its once-per-second summary.");
 
         lines.Clear();
+        lines.Clear();
+        probe.ObserveMotion(
+            MotionSample.Untracked(100) with { Tracking = MotionTracking.All });
+        probe.ObserveMotion(
+            MotionSample.Untracked(110) with { Tracking = MotionTracking.All });
+        probe.ObserveMotion(
+            MotionSample.Untracked(120) with { Tracking = MotionTracking.Head });
+        Assert(
+            lines.Count == 2
+            && lines[0].Contains("tracking: All", StringComparison.Ordinal)
+            && lines[1].Contains("tracking: Head", StringComparison.Ordinal),
+            "The input probe logged poses per poll instead of on tracking changes.");
+
+        lines.Clear();
         probe.SetEnabled(false, 3000);
         probe.BeginPoll();
         probe.ObserveAction(pressed);
+        probe.ObserveMotion(MotionSample.Untracked(4000));
         probe.EndPoll(9000);
         Assert(
             lines.Count == 1 && !probe.Enabled,
             "Disabling the input probe did not stop it logging.");
     }
+
+    private static void TestBodyFrame()
+    {
+        // Facing OpenVR's -Z with the head at the origin.
+        var level = BodyFrame.FromHead(
+            Vector3.Zero,
+            -Vector3.UnitZ,
+            Vector3.UnitY);
+        AssertVector(
+            level.ToLocalPoint(new Vector3(0, 0, -1)),
+            new Vector3(0, 0, 1),
+            "A point ahead of the wearer was not one metre forward in body space.");
+        AssertVector(
+            level.ToLocalPoint(new Vector3(1, 0, 0)),
+            new Vector3(1, 0, 0),
+            "A point beside the wearer was not one metre right in body space.");
+
+        // Turned 90 degrees to the left, so the wearer's right is world -Z.
+        var turned = BodyFrame.FromHead(
+            Vector3.Zero,
+            -Vector3.UnitX,
+            Vector3.UnitY);
+        AssertVector(
+            turned.ToLocalPoint(new Vector3(0, 0, -0.5f)),
+            new Vector3(0.5f, 0, 0),
+            "Body space did not follow the wearer's yaw.");
+
+        // Head pitched down 45 degrees. Pitch must not rotate the gesture
+        // space, otherwise glancing down turns a level sweep into a diagonal.
+        const float diagonal = 0.70710678f;
+        var pitched = BodyFrame.FromHead(
+            Vector3.Zero,
+            new Vector3(0, -diagonal, -diagonal),
+            new Vector3(0, diagonal, -diagonal));
+        AssertVector(
+            pitched.ToLocalPoint(new Vector3(1, 0, 0)),
+            new Vector3(1, 0, 0),
+            "Head pitch leaked into the body frame.");
+
+        // Looking straight down and straight up leave no yaw in the forward
+        // axis; the head's own up axis still carries it.
+        var down = BodyFrame.FromHead(
+            Vector3.Zero,
+            -Vector3.UnitY,
+            -Vector3.UnitZ);
+        AssertVector(
+            down.Forward,
+            -Vector3.UnitZ,
+            "Looking straight down lost the wearer's facing.");
+        var up = BodyFrame.FromHead(
+            Vector3.Zero,
+            Vector3.UnitY,
+            Vector3.UnitZ);
+        AssertVector(
+            up.Forward,
+            -Vector3.UnitZ,
+            "Looking straight up lost the wearer's facing.");
+
+        // A velocity must not pick up the head's position.
+        var offset = BodyFrame.FromHead(
+            new Vector3(5, 1.7f, 3),
+            -Vector3.UnitZ,
+            Vector3.UnitY);
+        AssertVector(
+            offset.ToLocalDirection(Vector3.UnitY),
+            Vector3.UnitY,
+            "Standing away from the origin distorted a velocity.");
+        AssertVector(
+            offset.ToLocalPoint(new Vector3(5, 1.7f, 3)),
+            Vector3.Zero,
+            "The wearer's own head was not the body-space origin.");
+    }
+
+    private static void AssertVector(Vector3 actual, Vector3 expected, string message) =>
+        Assert(
+            Vector3.Distance(actual, expected) < 1e-4f,
+            $"{message} Expected {expected}, saw {actual}.");
 
     private static void TestModifierChord()
     {

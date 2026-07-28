@@ -21,7 +21,20 @@ public interface IOpenVrSession : IDisposable
     IReadOnlyList<ShortcutConfig> DrainCreatedShortcuts() => [];
 
     IReadOnlyList<string> DrainDeletedShortcutIds() => [];
+
+    /// <summary>
+    /// True once SteamVR has asked the app to quit, as opposed to the session
+    /// dropping for a reason worth reconnecting after.
+    /// </summary>
+    bool IsQuitRequested() => false;
 }
+
+/// <summary>
+/// SteamVR asked the app to close. Distinct from a dropped session so the
+/// engine retries the latter and exits for this one.
+/// </summary>
+public sealed class SteamVrShutdownException()
+    : Exception("SteamVR is shutting down.");
 
 public interface IOpenVrSessionFactory
 {

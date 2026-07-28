@@ -20,6 +20,7 @@
     <None Include="..\SvrBridge\assets\actions.json" Link="actions.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\SvrBridge\assets\bindings_vive_controller.json" Link="bindings_vive_controller.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\SvrBridge\assets\app.vrmanifest" Link="app.vrmanifest" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\SvrBridge\assets\SteamVR2Bot.png" Link="SteamVR2Bot.png" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\SvrBridge\appsettings.example.json" Link="appsettings.example.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

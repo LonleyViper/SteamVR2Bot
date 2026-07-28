@@ -41,6 +41,7 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
     private InputSnapshot _snapshot;
     private ControllerSetup _setup = ControllerSetup.Unknown;
     private Exception? _failure;
+    private volatile bool _quitRequested;
     private bool _disposed;
 
     private OpenVrWorkerSession(Process process, Action<string> log)
@@ -175,6 +176,8 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
 
         return result;
     }
+
+    public bool IsQuitRequested() => _quitRequested;
 
     public IReadOnlyList<string> DrainDeletedShortcutIds()
     {
@@ -384,6 +387,12 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
                 }
 
                 break;
+            case "quit":
+                // The worker exits immediately after sending this, so record it
+                // before the resulting process-exit failure lands.
+                _quitRequested = true;
+                _log("SteamVR asked SteamVR2Bot to close.");
+                break;
             case "failure":
                 SetFailure(
                     new InvalidOperationException(
@@ -574,6 +583,14 @@ internal static class OpenVrWorker
                                 RequestId: command.RequestId,
                                 Error: error));
                     }
+                }
+
+                if (openVr.IsQuitRequested())
+                {
+                    // Report before exiting: the parent must tell this apart
+                    // from a worker crash, which it would otherwise retry.
+                    Emit(new OpenVrWorkerMessage("quit"));
+                    return 0;
                 }
 
                 var current = openVr.Poll();
