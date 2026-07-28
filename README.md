@@ -10,6 +10,14 @@ The validated Vive shortcut is:
 
 The left grip is a safety button, so pulling the trigger by itself does nothing.
 
+## The desktop window
+
+![The SteamVR2Bot desktop window on the Shortcuts tab, listing two saved controller shortcuts and the Streamer.bot action each one runs](docs/images/desktop-ui.png)
+
+Every shortcut is one row: the gesture, the controller inputs it listens for,
+and the Streamer.bot action it runs. The banner above the tabs reports the
+current state — captured here before SteamVR was started.
+
 ## Everyday setup
 
 Build the ready-to-run folder:
@@ -51,11 +59,28 @@ Closing the window keeps SteamVR2Bot running in the Windows notification area.
 Use its tray menu to open the app or SteamVR dashboard, test an action, view
 logs, or exit.
 
+## SteamVR lifecycle
+
+SteamVR2Bot adds itself to SteamVR's startup list, so SteamVR launches it, and
+it closes again when SteamVR shuts down. Nothing is left running in the tray
+with no SteamVR to talk to.
+
+Opening SteamVR2Bot from the desktop does not start SteamVR. It waits instead,
+retrying after 1, 2, 5, 10, then 30 seconds, so Streamer.bot settings and
+shortcuts stay editable without a headset.
+
+Only one copy runs at a time. Launching it again brings the existing window
+forward rather than starting a second tray icon, and registration removes any
+SteamVR entry left behind by an older install — otherwise SteamVR would launch
+a copy from each registered folder.
+
 ## In-VR setup
 
 While SteamVR2Bot is open, its tab is always available in the SteamVR dashboard.
 Choose the tab in SteamVR, or use **Open SteamVR dashboard** on the Connection &
 setup page. It shows the currently saved shortcuts and what each one runs.
+
+![The SteamVR2Bot dashboard tab in VR, listing saved shortcuts with edit and delete buttons and a Create a new shortcut button](docs/images/vr-shortcut-list.png)
 
 To create one without leaving VR:
 
@@ -70,6 +95,10 @@ To create one without leaving VR:
    remain available when the menu owns controller focus.
 5. Review the exact recorded input names, choose the Streamer.bot action, then
    select **Save shortcut**.
+
+![The in-VR gesture picker, offering Single Button, Button Combo, Double Press and Long Hold](docs/images/vr-gesture-picker.png)
+
+![The in-VR review page, showing the chosen gesture, the recorded controller input, and the Streamer.bot action before saving](docs/images/vr-review.png)
 
 The input picker and review page make the left/right controller and physical
 input explicit before anything is saved. The shortcut appears in the desktop
@@ -191,9 +220,10 @@ contain the Streamer.bot password.
 
 ## Restart and network recovery
 
-- SteamVR input runs in a small disposable worker. If SteamVR shuts that worker
-  down during a restart, the tray app remains open and creates a new worker
-  after 1, 2, 5, 10, then 30 seconds.
+- SteamVR input runs in a small disposable worker. If that worker stops
+  unexpectedly, the tray app remains open and creates a new one after 1, 2, 5,
+  10, then 30 seconds. A deliberate SteamVR shutdown is told apart from a lost
+  worker, and closes SteamVR2Bot instead of starting that retry cycle.
 - If Streamer.bot is unavailable before delivery, the bridge makes three
   bounded connection attempts. The next controller shortcut tries again.
 - If the connection is lost after delivery begins, the action is not blindly
