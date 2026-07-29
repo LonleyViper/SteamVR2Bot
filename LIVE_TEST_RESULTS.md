@@ -805,9 +805,9 @@ running, at least one saved shortcut bound to a Streamer.bot action.
 | 9 | Click through Create Shortcut → gesture type → tolerance → action picker | All pages render and respond as before; the test overlay stays visible alongside | **PASS** |
 | 10 | Save a shortcut | Saves, appears in the list, no worker restart | not run |
 | 11 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | **PASS** — user-reported working; no miss/duplicate count was taken |
-| 12 | Tray menu → uncheck **Show VR test overlay** | Panel disappears; log shows "The VR test overlay is off" | not run |
-| 13 | Re-check it | Panel reappears — proves `DestroyOverlay` released the key rather than leaking it | not run |
-| 14 | Exit SteamVR2Bot, then relaunch and re-enable | Panel appears; no `KeyInUse` error | not run |
+| 12 | Tray menu → uncheck **Show VR test overlay** | Panel disappears; log shows "The VR test overlay is off" | **PASS** — user-reported clear, ahead of Phase 2 |
+| 13 | Re-check it | Panel reappears — proves `DestroyOverlay` released the key rather than leaking it | **PASS** — user-reported clear, ahead of Phase 2 |
+| 14 | Exit SteamVR2Bot, then relaunch and re-enable | Panel appears; no `KeyInUse` error | **PASS** — user-reported clear, ahead of Phase 2 |
 
 ### What steps 1–9 establish
 
@@ -840,10 +840,12 @@ complete.** What remains is teardown hygiene, not whether the substrate works.
 
 ### Still outstanding
 
-- Steps 12–14 cover overlay teardown: whether `DestroyOverlay` actually releases
-  the key rather than leaking it. A leak shows up as `KeyInUse` on the second
-  enable, so toggling the overlay off and back on once is enough to find it.
-  This is the only outstanding item that could indicate a real defect.
+- Steps 12–14 (overlay teardown: whether `DestroyOverlay` actually releases the
+  key rather than leaking it) were confirmed clear by the user ahead of Phase 2,
+  closing the only item that could have indicated a real defect. No detailed
+  timestamp/log excerpt was captured for that run, so this is recorded as
+  user-reported rather than with a raw trace, consistent with how step 11 above
+  is recorded.
 - Step 10 (saving a *new* shortcut from the VR wizard) was not run; step 11
   covered existing ones only. The save path touches settings persistence and
   `UpdateShortcuts`, neither of which this change went near.
@@ -879,6 +881,126 @@ interop layer.
 ### Version note
 
 The published package is Phase 1 code still carrying the v0.1.1 version from
-the previous release. It has not been tagged or renamed as a new release, and
-steps 12–14 (overlay teardown) are still unrun, so this package is a
-development build rather than a shippable one.
+the previous release. It has not been tagged or renamed as a new release, so
+this package is a development build rather than a shippable one.
+
+## Phase 2 — head-anchored notifications — not yet run
+
+### Scope
+
+A single persistent `VrOverlaySurface` anchored to the HMD, painted once per
+notification through a new WPF `RenderTargetBitmap` pipeline, animated with
+`SetOverlayAlpha` on a fade-in/hold/fade-out timeline sized from the payload's
+`DurationMs`. A bounded, drop-oldest queue plays a burst in sequence. Driven by
+`Target == Notification` payloads on the Phase 0 event stream, gated behind a
+new **Notifications** setting that defaults off. No chat window, wrist anchor,
+gaze detection or interaction — those are Phases 3–5.
+
+### What is already covered without a headset
+
+All automated: `NotificationPlayer` queue ordering and bounded drop-oldest
+behaviour, the 500–60000 ms duration clamp applied end to end from a parsed
+JSON payload through to playback, the alpha curve reading 0 at the start of a
+notification, 1 through its hold, and back towards 0 by the end of its
+duration, `WpfRenderThread` starting and shutting down cleanly (dispatched
+work runs, the OS thread is confirmed joined afterward), and a solid-colour
+render through the full WPF → un-premultiply → BGRA→RGBA-swap pipeline
+reproducing its source bytes within integer-rounding tolerance. Both self-test
+suites pass and both projects build with zero warnings. None of this proves
+the panel is visible, correctly placed, or correctly coloured in the headset —
+only the manual steps below do that.
+
+### Preparation
+
+SteamVR running, both Vive controllers on and tracked, SteamVR2Bot running
+with at least one saved shortcut. In **Settings**, turn on **Listen for
+Streamer.bot chat and events** and **Show notification broadcasts in the
+headset**. Trigger a notification from Streamer.bot with a C# sub-action
+calling `CPH.WebsocketBroadcastJson` with a body such as
+`{"target":"notification","title":"Test","text":"Hello from Streamer.bot","duration":4000,"accent":"#60C8FF"}`.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Turn on both settings above, save, trigger one notification | A panel fades in a comfortable distance in front of and slightly below eye level, wherever the wearer is looking, with the title and text legible and facing the wearer (not blank or mirrored — the head-anchor transform is translation-only, unlike the wrist test overlay's tipped one, and has not been headset-confirmed) | **PASS** — user-reported legible and correctly oriented |
+| 2 | Check colours on the panel and its accent border | Background reads dark navy, the border reads the requested accent colour (`#60C8FF` → blue) — **not** orange/brown, which would mean the BGRA↔RGBA swap is inverted | **PASS** — user-confirmed |
+| 3 | Watch the fade in and the fade out | Both are smooth ramps with no pop to full opacity and no visible step; the panel is not stuck part-way transparent at any point | **PASS** — user-confirmed |
+| 4 | Turn the head while the panel is showing | The panel stays in the same relative spot in front of the eyes rather than staying fixed in the room | not run |
+| 5 | Trigger two notifications back to back (within a second of each other) | They play one after another, not overlapping and not silently dropping the second | **PASS** — subsumed by step 6's burst run |
+| 6 | Trigger four or five notifications in a rapid burst | All queue and play in the order sent; none are skipped and the app does not fall behind indefinitely | **PASS** — activity log shows 5 payloads received within 1 s at 13:32:23–24, then "A notification is showing" four more times at 13:32:23/26/29/31, matching the queued 2.5 s duration with no overlap or drop |
+| 7 | Let a notification finish and leave the feed idle for a minute | The panel is gone and stays gone; no flicker, no stray reappearance | not run |
+| 8 | Send a broadcast with `target` other than `notification` (e.g. `chat`) | No panel appears; the activity log still shows the payload arriving | **PASS** — activity log shows 8 chat payloads received (13:33:19 ×4, 13:33:53–54 ×4) with **no** "A notification is showing" line after any of them |
+| 9 | Turn off **Show notification broadcasts in the headset**, trigger one | No panel appears | **PASS** — activity log shows payload 15 received at 13:34:53 after the setting was unchecked, with no "A notification is showing" line; user confirmed the panel did not appear |
+| 10 | Open the SteamVR dashboard → SteamVR2Bot | Dashboard still opens and renders exactly as before | **PASS** — "SteamVR dashboard image loaded" and repeated activate/deactivate cycles appear throughout the same session with no error |
+| 11 | Click through the shortcut list and action picker on the dashboard | Pages render and respond as before; unaffected by the notification surface | not run — session log only shows the default List page, no navigation into other pages |
+| 12 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | not run — asked but not yet confirmed; see note below |
+| 13 | Trigger a notification while the SteamVR dashboard is open | Panel still appears — per §8 of the plan, notifications are not suppressed while the dashboard is open | not run |
+
+Steps 1–3, 5, 6, 8, 9 and 10 were confirmed from the 2026-07-29 13:28–13:35
+session (tray log pasted by the user) plus direct user confirmation of the
+purely visual checks (legibility/orientation, colour, fade smoothness) that
+the log cannot show. Steps 4, 7, 11 and 13 were not exercised in that session.
+Step 12 is still open: the session log shows dashboard activate/deactivate
+cycles and raw input activity (e.g. "physical inputs: Right Trigger" at
+13:30:36) but no delivery-confirmation line, so it is recorded as not run
+rather than assumed from the input registering.
+
+### Frame-timing impact
+
+Not measured. The design keeps GPU work off the per-frame path — the texture
+is rendered once per notification and the fade is driven by `SetOverlayAlpha`
+alone, which the plan's §4 argues is cheap — but no capture of the running
+game's frame times with and without an active notification has been taken.
+This should be treated as unverified, not as "no impact confirmed", until a
+frame-timing capture is actually run during an active VR game session with
+notifications firing.
+
+## Grip stolen from running games — root-caused and fixed, 2026-07-29
+
+While SteamVR2Bot was running, Grip stopped working inside other VR games
+(confirmed in Contractors VR and Showdown). Closing the app restored it
+immediately, every time.
+
+### Cause
+
+The action set was being activated at `k_nActionSetOverlayGlobalPriorityMin`
+(`0x01000000`). openvr.h defines that as the threshold at which an action set
+**takes input away from the scene application**, and SteamVR's experimental
+override that honours the band was already enabled — `steamvr.vrsettings`
+carries `"globalActionSetPriority" : true`, set during the 2026-07-27
+investigation above and never turned off.
+
+Priority is per-action-set, not per-action, and `bindings_vive_controller.json`
+claims grip, trigger, trackpad and menu on both hands unconditionally —
+independently of what the user has mapped to a shortcut. So the app was not
+observing those controls, it was taking all eight away from every running game.
+The user has no shortcut mapped to Grip; it was being taken anyway.
+
+This is the tail of the 2026-07-27 "Priority elevation ruled out" section. That
+change scoped the *elevation* to the recorder and stated the intent plainly —
+"a running VR game is never outranked outside recording" — but the **base**
+priority was left sitting at the bottom of the overlay-global band rather than
+returned to standard. The elevation was reverted; the base was not.
+
+### Why it resisted diagnosis
+
+| Signal | Why it misled |
+|---|---|
+| The app's own log showed Grip edges arriving normally | It is this app receiving them that *is* the bug, not evidence against it. |
+| SteamVR's Controller Binding UI showed correct bindings | The binding config was fine. What broke is live input routing, which that UI does not show. |
+| Per-commit bisect builds all reproduced it | The steal dates to 2026-07-27 and is present in every build since, so no commit boundary could isolate it. |
+| `artifacts\publish` was believed to be a known-good pre-regression build | Its exe is stamped 2026-07-29 12:43, *after* every feature commit that day, and it ships the identical grip-claiming `actions.json`. |
+
+### Fix
+
+`OpenVrInput.ActionSetPriority` is now `0`, the ordinary band, with the reasoning
+recorded at the constant so it is not re-raised casually.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Grip inside a running VR game with SteamVR2Bot active | **PASS** — user-confirmed in headset |
+| 2 | Mapped shortcuts still fire from inside a running game | **PASS** — user-confirmed in headset; the game and the bridge both receive the input |
+
+Nothing was traded away: the elevated priority was never delivering an edge this
+app needs, which the 2026-07-27 runs had already shown from the other direction
+when SteamVR accepted `0x01FFFFFF` and deactivated the set under dashboard focus
+regardless.

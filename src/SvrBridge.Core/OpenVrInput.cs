@@ -10,10 +10,25 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
     private const string ButtonOnePath = "/actions/svrbridge/in/button_one";
     private const string ButtonTwoPath = "/actions/svrbridge/in/button_two";
 
-    // k_nActionSetOverlayGlobalPriorityMin. The 2026-07-27 headset runs showed
-    // SteamVR accepting the band maximum and deactivating this action set under
-    // dashboard focus regardless, so there is nothing to gain by raising it.
-    private const int OverlayGlobalPriorityMin = 16_777_216;
+    // The ordinary priority band, and it must stay there.
+    //
+    // openvr.h defines k_nActionSetOverlayGlobalPriorityMin (16_777_216): any
+    // action set at or above it takes input away from the scene application.
+    // Priority is per-action-set, not per-action, and the packaged binding
+    // claims grip, trigger, trackpad and menu on both hands unconditionally -
+    // regardless of what the user has actually mapped to a shortcut. So sitting
+    // in that band does not politely observe those controls, it takes all eight
+    // away from whatever game is running. That is what killed grip in
+    // Contractors VR and Showdown on 2026-07-29, and it costs a long bisect to
+    // rediscover: the app's own log shows the edges arriving normally, because
+    // it is this app receiving them that is the bug, and SteamVR's Controller
+    // Binding UI looks correct, because the config is fine and it is live
+    // routing that breaks.
+    //
+    // Nothing is lost by staying here. Re-tested in-headset at this priority on
+    // 2026-07-29: shortcuts still fire from inside a running game, and the game
+    // receives grip at the same time. Raising it buys no edge this app needs.
+    private const int ActionSetPriority = 0;
     private const int VrEventQuit = 700;
     private const int MaxTrackedDevices = 64;
     private const uint InvalidDeviceIndex = uint.MaxValue;
@@ -132,7 +147,7 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
                     RestrictedToDevice = 0,
                     SecondaryActionSet = 0,
                     Padding = 0,
-                    Priority = OverlayGlobalPriorityMin
+                    Priority = ActionSetPriority
                 }
             ];
         }
