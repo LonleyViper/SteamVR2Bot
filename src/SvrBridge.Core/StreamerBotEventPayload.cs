@@ -13,6 +13,16 @@ public enum StreamerBotEventTarget
 }
 
 /// <summary>
+/// One badge on a chat message: a friendly label and, when known, an image
+/// URL. Twitch chatters can carry several at once (broadcaster, subscriber,
+/// bits, Prime, a channel's own custom loyalty badge, ...), so this is a
+/// list on the payload rather than a single guessed "most important" one -
+/// picking just one silently discards the rest, which is exactly what an
+/// earlier version of this app did.
+/// </summary>
+public sealed record ChatBadge(string Label, string ImageUrl);
+
+/// <summary>
 /// One display instruction broadcast by a Streamer.bot action through
 /// <c>CPH.WebsocketBroadcastJson</c>.
 /// <para>
@@ -50,6 +60,39 @@ public sealed record StreamerBotEventPayload
     public int DurationMs { get; init; } = DefaultDurationMs;
     public string Accent { get; init; } = "";
     public string Command { get; init; } = "";
+
+    /// <summary>
+    /// The exact substrings of <see cref="Text"/> a platform identified as
+    /// emotes, e.g. <c>["Kappa", "PogChamp"]</c>. The renderer looks each one
+    /// up in its own emote image cache and embeds the real image when one is
+    /// available, falling back to styled text otherwise. Empty when the
+    /// source has no emote knowledge, which a hand-authored
+    /// <c>General.Custom</c> payload is free to leave unset.
+    /// </summary>
+    public IReadOnlyList<string> EmoteNames { get; init; } = [];
+
+    /// <summary>
+    /// The image URL for <see cref="Badge"/>, when the source has one. The
+    /// renderer embeds this image in place of the bracketed text label once
+    /// it is cached, falling back to the label until then or if this is
+    /// empty. A hand-authored <c>General.Custom</c> payload is free to leave
+    /// it unset.
+    /// <para>
+    /// Kept alongside <see cref="Badges"/> rather than replaced by it, so a
+    /// simple hand-authored payload can still set one badge without building
+    /// a list. <see cref="TwitchChatMessageMapper"/> populates both: this
+    /// field from the first entry, for anything still reading it directly.
+    /// </para>
+    /// </summary>
+    public string BadgeImageUrl { get; init; } = "";
+
+    /// <summary>
+    /// Every badge on the message, not just one. See <see cref="ChatBadge"/>
+    /// for why this exists as a list. Empty for a hand-authored payload that
+    /// only set the singular <see cref="Badge"/>/<see cref="BadgeImageUrl"/> -
+    /// the renderer falls back to treating those as a one-item list.
+    /// </summary>
+    public IReadOnlyList<ChatBadge> Badges { get; init; } = [];
 
     /// <summary>
     /// Parses a payload body, reporting why it was rejected rather than
@@ -121,7 +164,10 @@ public sealed record StreamerBotEventPayload
             Title = ReadString(body, "title"),
             DurationMs = ReadDuration(body),
             Accent = ReadColour(body, "accent"),
-            Command = ReadString(body, "command").Trim()
+            Command = ReadString(body, "command").Trim(),
+            EmoteNames = ReadStringArray(body, "emotes"),
+            BadgeImageUrl = ReadString(body, "badgeImageUrl"),
+            Badges = ReadBadges(body, "badges")
         };
         rejection = "";
         return true;
@@ -188,14 +234,83 @@ public sealed record StreamerBotEventPayload
             };
 
     /// <summary>
+    /// Reads a JSON array of strings, silently skipping any element that is
+    /// not a non-empty string rather than rejecting the whole payload over
+    /// one malformed emote entry.
+    /// </summary>
+    private static IReadOnlyList<string> ReadStringArray(JsonElement body, string name)
+    {
+        if (!body.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var result = new List<string>();
+        foreach (var element in value.EnumerateArray())
+        {
+            if (element.ValueKind == JsonValueKind.String && element.GetString() is { Length: > 0 } text)
+            {
+                result.Add(text);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Reads a JSON array of <c>{"label": "...", "imageUrl": "..."}</c>
+    /// objects for the hand-authored <c>badges</c> field, letting a
+    /// hand-written test/relay action drive the same multi-badge rendering
+    /// path <see cref="TwitchChatMessageMapper"/> feeds from live Twitch
+    /// data. A malformed entry (missing label, wrong types) is skipped
+    /// rather than rejecting the whole payload; <c>imageUrl</c> may be
+    /// empty to test the text-label fallback deliberately.
+    /// </summary>
+    private static IReadOnlyList<ChatBadge> ReadBadges(JsonElement body, string name)
+    {
+        if (!body.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var result = new List<ChatBadge>();
+        foreach (var entry in value.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var label = ReadString(entry, "label");
+            if (label.Length == 0)
+            {
+                continue;
+            }
+
+            result.Add(new ChatBadge(label, ReadString(entry, "imageUrl")));
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Normalises to <c>#RRGGBB</c> and discards anything else. The renderer is
     /// downstream of user-authored JSON, so an unparsable colour has to become
     /// "no colour given" here rather than an exception mid-repaint later.
     /// </summary>
-    private static string ReadColour(JsonElement body, string name)
+    private static string ReadColour(JsonElement body, string name) =>
+        NormaliseColour(ReadString(body, name));
+
+    /// <summary>
+    /// Normalises a raw colour string to <c>#RRGGBB</c>, or "" when it is not
+    /// one. Public so <see cref="TwitchChatMessageMapper"/> applies the exact
+    /// same rule to a Twitch-supplied colour that this type applies to a
+    /// hand-authored one, and the two render identically.
+    /// </summary>
+    public static string NormaliseColour(string value)
     {
-        var value = ReadString(body, name).Trim();
-        var digits = value.StartsWith('#') ? value[1..] : value;
+        var trimmed = value.Trim();
+        var digits = trimmed.StartsWith('#') ? trimmed[1..] : trimmed;
         if (digits.Length != 6)
         {
             return "";

@@ -1006,3 +1006,331 @@ Nothing was traded away: the elevated priority was never delivering an edge this
 app needs, which the 2026-07-27 runs had already shown from the other direction
 when SteamVR accepted `0x01FFFFFF` and deactivated the set under dashboard focus
 regardless.
+
+## Phase 3 — the wrist chat window — not yet run
+
+### Scope
+
+A second, wrist-anchored `VrOverlaySurface` pinned to the left controller,
+permanently present rather than shown on demand: it scales up and fades in on
+gaze via `SetOverlayAlpha`/`SetOverlayWidthInMeters`, driven by a
+`ChatGazeHysteresis` two-threshold state machine so the effect does not
+flicker at the boundary angle. A `ChatRingBuffer` (40 messages, oldest
+evicted first) is written by the event stream's consumption loop and read by
+a second `IVrPanelRenderer<ChatContent>` implementation, `WpfChatRenderer`,
+which reuses the Phase 2 `WpfRenderThread` and `WpfOverlayPixelPipeline`
+rather than forking either. Repaints are throttled to roughly 10 Hz by
+`ChatRepaintThrottle`, decoupled from the gaze animation, which runs every
+tick per §B2. No buttons, no laser, no `SetOverlayInputMethod` — an empty
+`ChatOverlayLayout.Buttons` hit-rectangle table is declared for a later phase
+but nothing reads it yet. Gated behind a new **Chat** setting, off by
+default, mirroring **Notifications**.
+
+### Revision during this phase: direct Twitch subscription, not just a relay action
+
+§5c of the plan was revised mid-phase. The original route required the user
+to hand-write a Streamer.bot C# action that relayed chat via
+`CPH.WebsocketBroadcastJson` in this app's own `target: "chat"` shape. Manual
+testing exposed real friction with that route (a broadcast-signature compile
+error, and no visible confirmation on the Streamer.bot side that anything had
+fired), so the design was changed to subscribe directly to Streamer.bot's own
+`Twitch.ChatMessage` event alongside the existing `General.Custom`
+subscription — Streamer.bot still owns the entire platform integration
+either way, since `Twitch.ChatMessage` is the parsed output of its own Twitch
+connection, OAuth and reconnection handling, not raw Twitch data. This is
+implemented in `StreamerBotEventStream` (Subscribe now asks for both event
+categories) and a new isolated `TwitchChatMessageMapper`, which maps whichever
+of two confirmed Streamer.bot event shapes arrives (see below) into the same
+`StreamerBotEventPayload` a hand-written relay action would have produced.
+`General.Custom` still works unchanged and remains the route for SB-side
+filtered alerts and Phase 2 notifications.
+
+**The exact Twitch.ChatMessage field names were confirmed from documentation,
+not yet from a live payload.** `docs.streamer.bot`'s current schema and the
+`@streamerbot/client` npm package's bundled type definitions (version 2.0.1,
+still the latest published as of this writing) describe two different
+shapes — confirming the plan's own warning that "the event schema has changed
+across Streamer.bot versions":
+
+| | Newer (docs.streamer.bot) | Older (`@streamerbot/client@2.0.1` types) |
+|---|---|---|
+| Wrapper | none — fields at the top level | everything inside a `message` object |
+| Display name | `user.name` | `message.displayName` |
+| Text | top-level `text` | `message.message` |
+| Colour | `user.color` | `message.color` |
+| Badges | `user.badges[].name` | `message.badges[].name` |
+| Subscriber flag | `user.subscribed` | `message.subscriber` |
+
+`TwitchChatMessageMapper` reads both shapes defensively — see its own remarks
+for the exact fallback order — and is covered by unit tests for both shapes
+plus a live mock-WebSocket round trip in `SvrBridge/SelfTests.cs`
+(`TestTwitchChatMessageMapper`, and the Twitch.ChatMessage frame added to
+`TestStreamerBotEventStreamAsync`). None of that proves which shape a real,
+currently-running Streamer.bot instance actually sends — that is still
+outstanding and needs the manual step below.
+
+### Emote handling: real images, fetched through Streamer.bot, no new dependencies
+
+Two stages, both landed in this phase. First, `TwitchChatMessageMapper` was
+extended to read the `emotes` array both schema shapes carry (plus
+`cheerEmotes` on the older shape) into a new `StreamerBotEventPayload.
+EmoteNames` list — a platform-agnostic field a hand-authored `General.Custom`
+payload can populate too, not something Twitch-specific leaking into the
+shared contract — and `WpfChatRenderer` styled any matching token distinctly
+(italic, accent colour) instead of plain body text.
+
+Second, real images. A diagnostic (`SteamVR2Bot.exe --inspect-twitch-emotes`,
+kept in the tray project - connects with the saved Streamer.bot address and
+password and prints one raw `TwitchGetEmotes` response) was run live and
+confirmed that request aggregates **Twitch's own emotes, BetterTTV,
+FrankerFaceZ and 7TV globals in one response**, 608 entries in the session
+tested, each with a ready CDN `imageUrl`. That means none of those platforms'
+own APIs need to be called from SVR Bridge - Streamer.bot has already done
+the aggregation. Still zero new NuGet packages: `HttpClient` and WPF's own
+`BitmapImage` decode are already available.
+
+New pieces:
+
+- `TwitchEmoteCatalog` (Core) - parses that response into a name → URL
+  lookup. Pure, tested without network or headset.
+- `EmoteImageCache` (Tray, runs in the OpenVR worker process) - given a name,
+  returns an already-decoded, frozen `BitmapImage` if one is cached, or
+  starts a background fetch and returns immediately otherwise. Never blocks a
+  repaint. A failed fetch is not cached as a permanent miss - the next
+  occurrence of that emote in chat retries naturally, no separate retry timer.
+- The tray process fetches the catalog once per connected event stream (via
+  the same `StreamerBotEventStream` already used for chat/notifications) and
+  pushes the name → URL map to the OpenVR worker over the existing command
+  channel (`OpenVrWorkerCommand.EmoteCatalog`) - the worker never talks to
+  Streamer.bot directly. A catalog arriving before the chat window has been
+  created yet (its own overlay is created lazily, on the first chat message)
+  is held and applied the moment it is.
+- `WpfChatRenderer` now embeds the real image via `InlineUIContainer` when
+  one is cached, falling back to the styled-text treatment when it is not
+  (self-tests, an image genuinely still downloading, or one Streamer.bot
+  simply does not know about) - the fallback from the first stage never
+  became dead code.
+- `ChatOverlay`'s repaint throttle now combines the ring buffer's version
+  with the image cache's `Version`, so an emote that finishes downloading
+  *after* its message was already painted as text still earns a repaint
+  rather than being stuck as text until a new message arrives.
+
+Covered without a headset or real network: `TestTwitchEmoteCatalog` (parses
+the exact live-confirmed shape, skips malformed entries),
+`TestChatImageCacheFetchesDecodesAndCaches` (a fake `HttpMessageHandler`
+serving a real 1x1 PNG - proves the fetch/decode/cache/`Version` path end to
+end with no network), `TestChatImageCacheRetriesAfterAFailedFetch` (a
+failure is not cached, a later request retries), and
+`TestChatRenderEmbedsCachedEmoteImage` (a message with an already-cached
+emote produces an `InlineUIContainer`, not a text `Run`). Plus the earlier
+`TestChatRenderStylesEmoteTokensDistinctly` for the text-fallback path, and
+the emote assertions in `TestTwitchChatMessageMapper` and
+`TestStreamerBotEventPayload`.
+
+### A real catalog-delivery race, caught live
+
+The first headset test after shipping real emote images showed nothing at
+all - not styled text, not images. The activity log showed why: the tray
+process fetched the catalog from Streamer.bot and tried to hand it to the
+OpenVR worker within about a second of launch, but the worker was not up yet
+(it took ~34 seconds that run). Delivery failed, and the original code only
+tried once - it marked the catalog "already fetched" before checking whether
+delivery actually succeeded, so a perfectly good catalog was fetched and then
+silently dropped forever for that session.
+
+Fixed by separating the two concerns: fetching from Streamer.bot is still
+marked done-once (no point asking twice), but delivering to the worker now
+retries on a 2-second interval for up to 30 seconds, which is what
+`EnsureEmoteCatalogAsync` in `TrayApplicationContext` does now. Confirmed live
+afterward: two more launches both delivered successfully, one within a
+second and one that would have needed the retry window had worker startup
+been slower again.
+
+### Badges: real icons too, no separate request needed
+
+Unlike emotes, badge images did not need a catalog fetch at all. Twitch's own
+`badges` array carries an `imageUrl` right on each entry, confirmed in both
+known schema shapes during the earlier emote research.
+
+The image cache used for emotes was generalised (and renamed `ChatImageCache`,
+from `EmoteImageCache`) to key by URL directly rather than only by emote
+name through a catalog - `TryGet(name)` for emotes still resolves through the
+catalog, and a new `TryGetByUrl(url)` serves badges directly, sharing the same
+fetch/decode/cache machinery and the same repaint-triggering `Version`
+counter.
+
+### A real bug, caught in the same headset session: only one badge ever showed
+
+The first version picked a single badge from four hardcoded name categories
+(broadcaster/moderator/vip/subscriber) and discarded everything else. Live
+testing showed the channel owner's `Broadcaster` badge working, but no Prime
+badge and no channel-specific custom badge - both silently dropped, because
+neither matched any of the four categories and the code only ever kept one
+match anyway. Real Twitch chat clients show every badge a chatter holds side
+by side, not one guessed "most important" one.
+
+Fixed by no longer guessing: `TwitchChatMessageMapper.ReadBadges` now keeps
+every entry in the badges array, in Twitch's own order, each with its own
+image URL. A small set of well-known names (broadcaster, moderator, vip,
+subscriber/founder, premium → "Prime", partner, staff, turbo, bits) get a
+short friendly label; anything else - which is exactly the "channel-specific
+custom badge" case, impossible to enumerate in advance - is shown under its
+own raw name rather than dropped. `StreamerBotEventPayload.Badges` carries
+the full list; the existing singular `Badge`/`BadgeImageUrl` fields now
+mirror the first entry, kept for a hand-authored `General.Custom` payload
+that only ever needs one badge. `WpfChatRenderer` renders each badge in the
+list in sequence, image when cached, bracketed text label otherwise.
+
+Covered without a headset: `TestTwitchChatMessageMapper` now asserts a
+message with three badges (moderator, Prime, an unrecognised
+`glhf-pledge`-style custom badge) keeps all three, not just one - this
+exact assertion caught a real interaction during development, where a
+message with badges *and* the separate `subscribed` flag double-counted a
+`Sub` entry, fixed by only applying that fallback when the badges array
+did not already include one. Also: `TestChatRenderEmbedsCachedBadgeImage`
+(a cached badge renders as an image; a badge with no URL still falls back
+to bracketed text, never to nothing) and `TestChatRenderEmbedsMultipleBadges`
+(three cached badge images all render, not just the first).
+
+### What is already covered without a headset
+
+All automated, in `TraySelfTests`: ring buffer eviction order and version
+counting (`TestChatRingBufferEviction`), a burst of ten messages producing
+exactly one repaint rather than ten (`TestChatRepaintThrottleCoalescesBurst`
+— this caught a real bug during development, below), gaze hysteresis holding
+steady rather than oscillating when fed the exact enter or exit boundary
+value repeatedly (`TestChatGazeHysteresisNoOscillationAtBoundary`), a long
+unbroken string (400 characters, no spaces) wrapping onto multiple lines
+instead of overflowing the panel width (`TestChatRenderWrapsLongUnbrokenString`),
+an empty username and an unparsable colour rendering without throwing
+(`TestChatRenderHandlesEmptyUsernameAndColour`), and the ring buffer surviving
+four writer threads appending 200 messages each while a reader thread
+continuously snapshots it, with no exception and no lost or double-counted
+append (`TestChatRingBufferThreadSafeConcurrentAccess`). Also in
+`SvrBridge/SelfTests.cs`: both known `Twitch.ChatMessage` schema shapes
+mapping correctly (`TestTwitchChatMessageMapper`), a subscriber flag with no
+badges array still producing a `Sub` badge, a minimal payload with only text
+mapping with safe empty defaults, malformed input rejected without throwing,
+and a live mock-WebSocket round trip proving `StreamerBotEventStream` now
+subscribes to `Twitch.ChatMessage` alongside `General.Custom` and routes a
+real frame through the mapper end to end. Both self-test suites pass and both
+projects build with zero warnings in Debug and Release. None of this proves
+the window is visible, legible, correctly placed, scales smoothly, reattaches
+after a sleep/wake cycle, or that the field-name mapping matches what a real
+Streamer.bot instance actually sends — only the manual steps below do that.
+
+### A real bug the throttle self-test caught
+
+`ChatRepaintThrottle` originally seeded its "last painted" timestamp with
+`long.MinValue` so the very first check would always be owed. The very first
+burst test failed instead: `nowMs - long.MinValue` overflows a signed 64-bit
+integer for any `nowMs >= 0`, wrapping around to a large negative number that
+failed the elapsed-time comparison, so the first repaint after construction
+was silently skipped. Fixed by using a nullable timestamp instead of a
+sentinel value, which cannot overflow. This was caught entirely by the
+self-test before ever reaching a headset.
+
+### Preparation
+
+SteamVR running, both Vive controllers on and tracked, SteamVR2Bot running
+with at least one saved shortcut, Streamer.bot connected to a live Twitch
+channel. In **Settings**, turn on **Listen for Streamer.bot chat and
+events** and **Show chat messages on your wrist**. No Streamer.bot action is
+needed for chat itself now — typing in Twitch chat should be enough. The
+`{"target":"chat",...}` broadcast route (e.g. via a hand-written
+`CPH.WebsocketBroadcastJson` action) still works unchanged as an alternative
+or supplement, useful for testing specific field values on demand.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 0 | Type a message in Twitch chat, then check SVR Bridge's activity/debug log for the `streamerbot.event` line it produces | A chat payload is logged as received, confirming the direct subscription reached the app; separately, if the debug-level payload line is visible, compare it against the two shapes in the table above to record which one this Streamer.bot build actually sends | **PASS** — confirmed the newer top-level-`user` shape: a photo of the live wrist window showed a correctly-coloured, correctly-badged (`Broadcaster`) line for the channel owner's own messages, which only the newer shape's `user.color`/`user.badges` could have produced |
+| 1 | Turn on both settings above, look at your left controller before anyone chats | A small, faint panel sits just above and behind the controller, tipped towards you like a watch face | **PASS** — user-confirmed |
+| 2 | Type a chat message on Twitch, without looking at the window | The message is queued in the ring buffer, but the window stays small and faint — it does not pop open | **PASS** — user-confirmed |
+| 3 | Now look directly at the window | It grows and brightens smoothly to a comfortably readable size and opacity, with the message legible | **PASS** — user-confirmed |
+| 4 | Look away | It shrinks and fades back to small and faint, smoothly, not instantly | **PASS** — user-confirmed |
+| 5 | Move your gaze slowly across the enter/exit boundary, back and forth, several times | No flicker or rapid size/opacity oscillation at any point — the hysteresis gap should be felt as a small dead zone, not a hard edge | **PASS** — user-confirmed |
+| 6 | Have a chatter who has set a custom Twitch chat colour send a message | Their username renders in that colour — **not** orange/brown, which would mean the BGRA↔RGBA swap is inverted, and **not** the default blue-gray, which would mean the colour failed to map | **PASS** — the channel owner's messages rendered in their real Twitch colour (red), correctly, not swapped and not defaulted |
+| 6b | Have a chatter who has *never* set a Twitch chat colour send a message | Twitch sends no colour for them at all (a real platform limitation, not a bug); the username should render in the app's own sensible default rather than every such chatter looking identical to a colour-set chatter | **PASS** — user-confirmed |
+| 7 | A message from a chatter with an empty/unusual display name, if one can be produced, or a malformed broadcast via the relay route | It renders as "(no name)" in a sensible default colour rather than a blank or broken line, or the one bad message is dropped without taking the feed down | **PASS** — user-confirmed |
+| 8 | Send a message containing a long unbroken string (a long URL with no spaces) | It wraps onto multiple lines within the panel rather than running off the edge or being clipped | **PASS** — user-confirmed |
+| 9 | A rapid burst of 10+ chat messages within a second | The window does not stall, freeze, or visibly drop frames; all messages that fit the ring buffer appear, newest at the bottom | **PASS** — user-confirmed |
+| 10 | More than 40 messages total over the session | Only the most recent ~40 remain visible; the window does not grow without bound or slow down | not run |
+| 11 | Put the left controller down until it sleeps, then wake it | The window reattaches on its own, following the Phase 1 device re-resolution behaviour; log shows a new "following left controller device N" line | **PASS** — user-confirmed |
+| 12 | Turn the left controller off entirely, then back on | Log shows "waiting for a left controller" while off, with no crash or spam; the window reattaches once it is back on | **PASS** — user-confirmed |
+| 13 | Trigger a notification (Phase 2) while chat is active and visible | Both the head-anchored notification and the wrist chat window work correctly at the same time; neither interferes with the other | **PASS** — user-confirmed |
+| 14 | Open the SteamVR dashboard → SteamVR2Bot | Dashboard still opens and renders exactly as before; the chat window stays visible alongside it | **PASS** — user-confirmed |
+| 15 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates — the product contract, unaffected by the new overlay | **PASS** — user triggered twice; SVR Bridge's own log showed exactly two `streamerbot.action_confirmed` lines, one per press, no duplicates or extra requests on this app's side. Streamer.bot itself reported 22 executions of the target action, traced to that action having other triggers unrelated to this shortcut — not a defect in SVR Bridge's delivery path. See the session record for the full evidence trail. |
+| 16 | A moderator, VIP and subscriber each send a message (or one chatter who holds one of these) | The correct badge label appears for each, derived from Twitch's own badge names — confirms `TwitchChatMessageMapper`'s badge derivation against real data, not just documentation | **PASS** — user-confirmed |
+| 17 | Send a message containing a real, common emote (Twitch, BTTV, FFZ or 7TV) with a keep-alive trigger enabled in Streamer.bot (see the limitation below) | The emote renders as its real image inline with the text, not as plain or styled text | **PASS** — user-confirmed live |
+| 17b | Send a message with an emote immediately (within the first second or two) after connecting - before the catalog fetch and the first image download can possibly have finished | The emote renders as styled text (italic, distinct colour) at first, then switches to the real image on a later repaint once it finishes downloading - proves the fallback and the version-combining repaint both work, not just the steady-state case | not run |
+| 17c | Send a message with an emote unlikely to be in Streamer.bot's global catalog (e.g. a small channel's own custom subscriber emote you don't have access to, or a made-up word coincidentally flagged as an emote) | It renders as styled text indefinitely rather than a broken image or a crash - the catalog only has what `TwitchGetEmotes` returned, and a miss is expected, not an error | **PASS** — user-confirmed |
+| 18 | Send a message as a moderator, VIP, subscriber or the broadcaster | The real badge icon renders alone, matching Twitch's own convention, not the bracketed text label and not both together | **PASS** — user-confirmed |
+| 18b | Send a message from a chatter with a role but no badge image available yet (or with images disabled by killing network access briefly, if that's easy to simulate) | The bracketed text label (`[Mod]`, `[VIP]`, `[Sub]`, `[Broadcaster]`) appears instead - never a blank space where the badge should be | **PASS** — user-confirmed |
+| 18c | Send a message from a chatter with more than one badge - e.g. yourself as broadcaster with a Prime/Premium badge, or anyone with a channel-specific custom badge | All of that chatter's badges render side by side, each as its own real image (or bracketed text if not yet cached) - this is the exact case that was silently dropping Prime and channel-specific badges before the fix above | **PASS** — user-confirmed |
+
+### A pre-existing, unrelated relay action caused duplicate messages
+
+During this manual pass, every chat message briefly appeared twice: once correctly
+coloured and badged `Broadcaster` (the new direct subscription, working as
+intended), and once in a default colour badged literally `Twitch` (matching
+neither `TwitchChatMessageMapper`'s output nor the hand-written relay action
+from earlier in this phase). The user located and disabled a separate,
+previously-existing Streamer.bot action that was independently broadcasting
+`General.Custom` chat payloads with a hardcoded `badge: "Twitch"` and no real
+colour - unrelated to anything built in this phase, but very likely the actual
+cause of the original "test users both came back blue" report that started
+this investigation. Not a defect in SVR Bridge; recorded here because it
+explains earlier confusing results and because anyone repeating this test
+matrix should check for other active chat-relay actions first.
+
+### Platform limitation found and confirmed: Streamer.bot needs a local trigger for chat to flow at all
+
+After removing every relay action (both the mystery one above and the
+hand-written one from earlier in this phase), chat stopped reaching SVR
+Bridge entirely - not dropped, not erroring, just silent. `svr-bridge-
+20260729.jsonl` shows the exact shape of it:
+
+| Time | What happened |
+|---|---|
+| 17:14:25 | Event feed connects; `streamerbot.events_connected` logged |
+| 17:14:47–17:21:07 | 23 chat payloads logged (in duplicate pairs - the mystery action was still active) |
+| 17:21:07 | Last relay action deleted around here |
+| 17:21:07 → 17:53:43 | **Zero** `streamerbot.event` lines for 32 minutes, despite the user actively sending test messages ("BOP" and others) that were confirmed visible in Streamer.bot's own Chat panel the entire time. No `streamerbot.event_dropped`, no `streamerbot.events_unavailable`/reconnect message - the connection never reported a problem, it simply had nothing to forward. |
+| ~17:53 | User added back a bare action - a `Twitch > Chat Message` trigger with zero sub-actions, doing nothing | 
+| 17:53:43 | Payload #24 logged - the very next chat message, arriving the moment the trigger existed again |
+
+Before concluding this was a genuine platform constraint rather than an SVR
+Bridge bug, two things were checked directly against Streamer.bot's own
+documentation rather than assumed:
+
+- The WebSocket events guide (`/api/websocket/guide/events`) was checked for
+  what conditions govern delivery after `Subscribe`. It states outright:
+  *"Documentation Needed - This section is missing documentation."* Streamer.bot
+  does not document this behaviour either way.
+- The full WebSocket request reference (`/api/websocket/requests`) was
+  checked for any request that could create or import a trigger/action
+  remotely. There is none - `DoAction` and `ExecuteCodeTrigger` only run
+  triggers that already exist. SVR Bridge has no way to set this up
+  invisibly even in principle; the capability does not exist in Streamer.bot's
+  API surface to call into.
+
+**Conclusion:** Streamer.bot's own Twitch-chat pipeline appears to only be
+active while at least one local trigger of that type exists and is enabled,
+independent of whether any WebSocket client has subscribed to it. SVR Bridge's
+direct `Twitch.ChatMessage` subscription (§B6 of the chat plan) still removes
+all the platform-specific mapping work a relay action used to require -
+colour, badges and emote names all arrive correctly with zero Streamer.bot
+code once a trigger exists - but it cannot remove the need for that trigger to
+exist at all. This is recorded as a known limitation in `README.md` rather
+than worked around, because there is nothing on SVR Bridge's side left to
+change: the constraint lives entirely inside Streamer.bot, the same category
+as the SteamVR-dashboard-focus limitation documented in earlier phases.
+
+### Frame-timing impact
+
+Not measured. As with Phase 2, the design keeps the gaze animation on
+`SetOverlayAlpha`/`SetOverlayWidthInMeters` alone — no texture work — and
+throttles the actual repaint to ~10 Hz per §B2, but no capture of a running
+game's frame times with chat active and receiving a burst has been taken.
+Treat this as unverified rather than as "no impact confirmed" until a
+frame-timing capture is run during an active VR game session with chat live.

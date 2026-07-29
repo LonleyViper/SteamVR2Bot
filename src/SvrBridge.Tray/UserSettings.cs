@@ -33,6 +33,14 @@ internal sealed record UserSettings
     /// </summary>
     public bool NotificationsEnabled { get; init; }
 
+    /// <summary>
+    /// Whether a Streamer.bot payload with <c>target: "chat"</c> appends to
+    /// the wrist chat window. Off by default and independent of
+    /// <see cref="NotificationsEnabled"/>, for the same reasons that setting
+    /// is independent of <see cref="EventStreamEnabled"/>.
+    /// </summary>
+    public bool ChatEnabled { get; init; }
+
     public IReadOnlyList<ShortcutConfig> GetShortcuts()
     {
         if (Shortcuts.Count > 0)
@@ -153,7 +161,8 @@ internal sealed class UserSettingsStore
             Shortcuts = settings.GetShortcuts(),
             StartBridgeWhenAppOpens = settings.StartBridgeWhenAppOpens,
             EventStreamEnabled = settings.EventStreamEnabled,
-            NotificationsEnabled = settings.NotificationsEnabled
+            NotificationsEnabled = settings.NotificationsEnabled,
+            ChatEnabled = settings.ChatEnabled
         };
 
         var json = JsonSerializer.Serialize(
@@ -212,7 +221,8 @@ internal sealed class UserSettingsStore
                 // Absent from every settings file written before this feature
                 // existed, which is exactly the "off" the default describes.
                 EventStreamEnabled = saved.EventStreamEnabled,
-                NotificationsEnabled = saved.NotificationsEnabled
+                NotificationsEnabled = saved.NotificationsEnabled,
+                ChatEnabled = saved.ChatEnabled
             };
         }
         catch (JsonException exception)
@@ -294,5 +304,6 @@ internal sealed class UserSettingsStore
         public bool StartBridgeWhenAppOpens { get; init; }
         public bool EventStreamEnabled { get; init; }
         public bool NotificationsEnabled { get; init; }
+        public bool ChatEnabled { get; init; }
     }
 }

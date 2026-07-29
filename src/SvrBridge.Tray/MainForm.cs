@@ -16,6 +16,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _eventStream = new();
     private readonly Label _eventStreamState = new();
     private readonly CheckBox _notifications = new();
+    private readonly CheckBox _chat = new();
     private readonly Button _add = new();
     private readonly Button _edit = new();
     private readonly Button _remove = new();
@@ -76,7 +77,8 @@ internal sealed class MainForm : Form
             Shortcuts = _shortcutItems.ToArray(),
             StartBridgeWhenAppOpens = true,
             EventStreamEnabled = _eventStream.Checked,
-            NotificationsEnabled = _notifications.Checked
+            NotificationsEnabled = _notifications.Checked,
+            ChatEnabled = _chat.Checked
         };
     }
 
@@ -89,6 +91,7 @@ internal sealed class MainForm : Form
             _password.Text = settings.Password;
             _eventStream.Checked = settings.EventStreamEnabled;
             _notifications.Checked = settings.NotificationsEnabled;
+            _chat.Checked = settings.ChatEnabled;
             _shortcutItems.Clear();
             _shortcutItems.AddRange(settings.GetShortcuts());
             RefreshShortcutGrid();
@@ -410,6 +413,23 @@ internal sealed class MainForm : Form
         {
             Text = "Payloads with “target”: “notification” draw a head-anchored panel "
                    + "in VR for a few seconds. Requires the event feed above to be turned on.",
+            AutoSize = true,
+            MaximumSize = new Size(650, 0),
+            ForeColor = Color.FromArgb(92, 101, 112),
+            Margin = new Padding(40, 0, 0, 6)
+        });
+
+        _chat.Text = "Show chat messages on your wrist (preview)";
+        _chat.AutoSize = true;
+        _chat.Margin = new Padding(20, 6, 0, 0);
+        _chat.CheckedChanged += (_, _) => NotifySettingsChanged();
+        panel.Controls.Add(_chat);
+        panel.Controls.Add(new Label
+        {
+            Text = "Your Twitch chat appears in a window behind your left controller that "
+                   + "grows and brightens when you look at it - no Streamer.bot action needed. "
+                   + "Payloads with “target”: “chat” from your own actions appear there too. "
+                   + "Requires the event feed above to be turned on.",
             AutoSize = true,
             MaximumSize = new Size(650, 0),
             ForeColor = Color.FromArgb(92, 101, 112),

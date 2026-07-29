@@ -45,6 +45,22 @@ public interface IOpenVrSession : IDisposable
     void ShowNotification(StreamerBotEventPayload payload)
     {
     }
+
+    /// <summary>
+    /// Appends one message to the session's wrist chat window. A no-op by
+    /// default, for the same reason as <see cref="ShowNotification"/>.
+    /// </summary>
+    void ShowChatMessage(StreamerBotEventPayload payload)
+    {
+    }
+
+    /// <summary>
+    /// Replaces the session's known emote name → image URL lookup. A no-op
+    /// by default, for the same reason as <see cref="ShowNotification"/>.
+    /// </summary>
+    void SetEmoteCatalog(IReadOnlyDictionary<string, string> catalog)
+    {
+    }
 }
 
 /// <summary>

@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Text.Json;
+using SvrBridge.Core;
 
 namespace SvrBridge.Tray;
 
@@ -15,6 +17,11 @@ internal static class Program
         if (args.Contains("--openvr-worker", StringComparer.OrdinalIgnoreCase))
         {
             return OpenVrWorker.RunAsync(args).GetAwaiter().GetResult();
+        }
+
+        if (args.Contains("--inspect-twitch-emotes", StringComparer.OrdinalIgnoreCase))
+        {
+            return InspectTwitchEmotesAsync().GetAwaiter().GetResult();
         }
 
         if (args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
@@ -47,6 +54,64 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         Application.Run(new TrayApplicationContext());
         return 0;
+    }
+
+    /// <summary>
+    /// A throwaway diagnostic, not a product feature: connects with the
+    /// same saved Streamer.bot address and password the tray app already
+    /// uses, sends one <c>TwitchGetEmotes</c> request, and prints the raw
+    /// response. Exists purely to answer, against a real running
+    /// Streamer.bot instance, whether that request returns usable emote
+    /// image URLs before any rendering work is built on top of it.
+    /// </summary>
+    private static async Task<int> InspectTwitchEmotesAsync()
+    {
+        var settings = new UserSettingsStore().Load();
+        var config = settings.ToAppConfig().StreamerBot;
+        Console.WriteLine($"Connecting to {config.WebSocketUrl} ...");
+
+        var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var stream = new StreamerBotEventStream(
+            config,
+            activity => Console.WriteLine(activity.Message));
+        stream.StateChanged += state =>
+        {
+            if (state == StreamerBotStreamState.Connected)
+            {
+                connected.TrySetResult();
+            }
+        };
+        stream.Start();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await using (timeout.Token.Register(() => connected.TrySetCanceled()))
+        {
+            try
+            {
+                await connected.Task;
+            }
+            catch (OperationCanceledException)
+            {
+                Console.Error.WriteLine("Timed out waiting to connect to Streamer.bot.");
+                return 1;
+            }
+        }
+
+        Console.WriteLine("Connected. Requesting TwitchGetEmotes...");
+        try
+        {
+            using var response = await stream.SendRequestAsync("TwitchGetEmotes", timeout.Token);
+            Console.WriteLine(
+                JsonSerializer.Serialize(
+                    response.RootElement,
+                    new JsonSerializerOptions { WriteIndented = true }));
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"TwitchGetEmotes failed: {exception.Message}");
+            return 1;
+        }
     }
 
     private static void ActivateRunningInstance()

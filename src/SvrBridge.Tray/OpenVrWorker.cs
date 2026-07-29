@@ -159,7 +159,23 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
     /// queue already exists to absorb.
     /// </summary>
     public void ShowNotification(StreamerBotEventPayload payload) =>
-        SendCommand(new OpenVrWorkerCommand("notify", Notification: payload));
+        SendCommand(new OpenVrWorkerCommand("notify", Payload: payload));
+
+    /// <summary>
+    /// Fire-and-forget, for the same reason as <see cref="ShowNotification"/>:
+    /// the caller is the event feed's consumption loop, and the chat window's
+    /// own <see cref="ChatRingBuffer"/> is what absorbs a burst, not this call.
+    /// </summary>
+    public void ShowChatMessage(StreamerBotEventPayload payload) =>
+        SendCommand(new OpenVrWorkerCommand("chat", Payload: payload));
+
+    /// <summary>
+    /// Fire-and-forget, for the same reason as <see cref="ShowChatMessage"/>:
+    /// the caller is a background fetch in the tray process, not a user
+    /// action waiting on a result.
+    /// </summary>
+    public void SetEmoteCatalog(IReadOnlyDictionary<string, string> catalog) =>
+        SendCommand(new OpenVrWorkerCommand("emoteCatalog", EmoteCatalog: catalog));
 
     public void ShowDashboard(string imagePath)
         => ShowDashboard(imagePath, [], []);
@@ -555,6 +571,16 @@ internal static class OpenVrWorker
             // so a worker that never receives one never reserves the overlay
             // key or stands up a render thread for nothing.
             NotificationOverlay? notificationOverlay = null;
+            // Created lazily by the first "chat" command, for the same
+            // reason - and gated behind a user setting one layer up, so most
+            // workers never create this at all.
+            ChatOverlay? chatOverlay = null;
+            // An "emoteCatalog" command can arrive before the first chat
+            // message does (it is fetched as soon as the event stream
+            // connects), i.e. before chatOverlay exists to receive it. Kept
+            // here so it can be applied the moment chatOverlay is created,
+            // rather than being silently lost.
+            IReadOnlyDictionary<string, string>? latestEmoteCatalog = null;
             _ = Task.Run(() => ReadCommandsAsync(commands.Writer));
 
             var snapshot = openVr.Poll();
@@ -592,7 +618,7 @@ internal static class OpenVrWorker
                                 Error: error));
                     }
 
-                    if (command.Kind == "notify" && command.Notification is { } notification)
+                    if (command.Kind == "notify" && command.Payload is { } notification)
                     {
                         try
                         {
@@ -612,6 +638,62 @@ internal static class OpenVrWorker
                                     "log",
                                     Message: $"A notification could not be shown: {exception.Message}"));
                         }
+                    }
+
+                    if (command.Kind == "chat" && command.Payload is { } chatMessage)
+                    {
+                        try
+                        {
+                            if (chatOverlay is null)
+                            {
+                                chatOverlay = ChatOverlay.TryCreate(
+                                    openVr,
+                                    message => Emit(
+                                        new OpenVrWorkerMessage("log", Message: message)));
+
+                                if (chatOverlay is not null)
+                                {
+                                    // Poses are needed for gaze detection from
+                                    // the moment the window exists; left off
+                                    // until then so a worker that never
+                                    // receives a chat message never pays for
+                                    // pose sampling either.
+                                    openVr.MotionSamplingEnabled = true;
+
+                                    // Applies a catalog that may have arrived
+                                    // before this overlay existed to receive
+                                    // it - see latestEmoteCatalog above.
+                                    if (latestEmoteCatalog is not null)
+                                    {
+                                        chatOverlay.SetEmoteCatalog(latestEmoteCatalog);
+                                    }
+                                }
+                            }
+
+                            chatOverlay?.Enqueue(chatMessage);
+                        }
+                        catch (Exception exception)
+                        {
+                            // Fire-and-forget, for the same reason as "notify"
+                            // above: there is no requester waiting on this.
+                            Emit(
+                                new OpenVrWorkerMessage(
+                                    "log",
+                                    Message: $"A chat message could not be shown: {exception.Message}"));
+                        }
+                    }
+
+                    if (command.Kind == "emoteCatalog" && command.EmoteCatalog is { } emoteCatalog)
+                    {
+                        // Recorded even when chatOverlay does not exist yet -
+                        // see latestEmoteCatalog above - and applied
+                        // immediately when it does. No commandResult and no
+                        // try/catch beyond what SetEmoteCatalog itself
+                        // already guards internally: this only ever replaces
+                        // an in-memory lookup, it cannot fail in a way worth
+                        // reporting.
+                        latestEmoteCatalog = emoteCatalog;
+                        chatOverlay?.SetEmoteCatalog(emoteCatalog);
                     }
 
                     if (command.Kind == "testOverlay")
@@ -692,6 +774,7 @@ internal static class OpenVrWorker
                     // outliving the process that owns them.
                     testOverlay?.Dispose();
                     notificationOverlay?.Dispose();
+                    chatOverlay?.Dispose();
                     Emit(new OpenVrWorkerMessage("quit"));
                     return 0;
                 }
@@ -741,6 +824,23 @@ internal static class OpenVrWorker
                         new OpenVrWorkerMessage(
                             "log",
                             Message: $"Notifications were turned off after an error: {exception.Message}"));
+                }
+
+                try
+                {
+                    // Re-resolves the wrist attachment and advances the
+                    // gaze-scale animation every tick; the text repaint
+                    // inside is throttled on its own, per §B2.
+                    chatOverlay?.Tick(openVr, Environment.TickCount64);
+                }
+                catch (Exception exception)
+                {
+                    chatOverlay?.Dispose();
+                    chatOverlay = null;
+                    Emit(
+                        new OpenVrWorkerMessage(
+                            "log",
+                            Message: $"Chat was turned off after an error: {exception.Message}"));
                 }
 
                 if (current != snapshot)
@@ -839,7 +939,8 @@ internal sealed record OpenVrWorkerCommand(
     IReadOnlyList<StreamerBotAction>? Actions = null,
     bool Activate = true,
     bool Enabled = false,
-    StreamerBotEventPayload? Notification = null);
+    StreamerBotEventPayload? Payload = null,
+    IReadOnlyDictionary<string, string>? EmoteCatalog = null);
 
 internal sealed record OpenVrWorkerMessage(
     string Kind,

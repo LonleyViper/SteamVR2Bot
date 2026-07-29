@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -15,7 +14,7 @@ namespace SvrBridge.Tray;
 /// WPF, per §4 of the notifications plan: real <c>TextWrapping</c> and colour
 /// emoji, at the cost of an STA render thread this type owns outright.
 /// </summary>
-internal sealed class WpfNotificationRenderer : IVrPanelRenderer
+internal sealed class WpfNotificationRenderer : IVrPanelRenderer<NotificationContent>
 {
     public const int PanelWidth = 900;
     public const int PanelHeight = 260;
@@ -48,7 +47,7 @@ internal sealed class WpfNotificationRenderer : IVrPanelRenderer
 
     private static Border BuildPanel(NotificationContent content)
     {
-        var accent = TryParseAccent(content.AccentHex) ?? DefaultAccent;
+        var accent = WpfColourParsing.TryParse(content.AccentHex) ?? DefaultAccent;
         var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
 
         if (!string.IsNullOrWhiteSpace(content.Title))
@@ -87,29 +86,6 @@ internal sealed class WpfNotificationRenderer : IVrPanelRenderer
             Padding = new Thickness(30),
             Child = stack
         };
-    }
-
-    /// <summary>
-    /// Parses the <c>#RRGGBB</c> string <see cref="StreamerBotEventPayload"/>
-    /// already normalises, treating anything else as "no accent given" rather
-    /// than failing the render - a malformed colour must cost the user a
-    /// default border, not a dropped notification.
-    /// </summary>
-    private static WpfColor? TryParseAccent(string hex)
-    {
-        if (hex.Length != 7 || hex[0] != '#')
-        {
-            return null;
-        }
-
-        if (!byte.TryParse(hex.AsSpan(1, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var r)
-            || !byte.TryParse(hex.AsSpan(3, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var g)
-            || !byte.TryParse(hex.AsSpan(5, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var b))
-        {
-            return null;
-        }
-
-        return WpfColor.FromRgb(r, g, b);
     }
 
     public void Dispose()

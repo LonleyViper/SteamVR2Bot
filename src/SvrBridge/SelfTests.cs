@@ -26,6 +26,8 @@ internal static class SelfTests
         TestBodyFrame();
         TestAuthenticationHash();
         TestStreamerBotEventPayload();
+        TestTwitchChatMessageMapper();
+        TestTwitchEmoteCatalog();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
         await TestStreamerBotRestartRecoveryAsync();
@@ -478,6 +480,30 @@ internal static class SelfTests
             ParsePayload("""{"target":"control","command":" show "}""").Command == "show",
             "A control payload lost its command.");
 
+        Assert(
+            ParsePayload("""{"target":"chat","text":"Kappa hi","emotes":["Kappa","",42,"PogChamp"]}""")
+                .EmoteNames.SequenceEqual(["Kappa", "PogChamp"]),
+            "An emotes array did not keep its valid string entries and skip the invalid ones.");
+        Assert(
+            ParsePayload("""{"target":"chat","text":"hi"}""").EmoteNames.Count == 0,
+            "A payload with no emotes field produced a non-empty emote list.");
+
+        Assert(
+            ParsePayload(
+                """
+                {"target":"chat","text":"hi","badges":[
+                  {"label":"One","imageUrl":"https://a.test/one.png"},
+                  {"label":"NoImage","imageUrl":""},
+                  {"imageUrl":"https://a.test/no-label.png"},
+                  "not an object"
+                ]}
+                """).Badges.SequenceEqual(
+                [
+                    new ChatBadge("One", "https://a.test/one.png"),
+                    new ChatBadge("NoImage", "")
+                ]),
+            "A hand-authored badges array did not keep its valid entries and skip the invalid ones.");
+
         // An unusable colour must become "no colour given" here; the renderer
         // this feeds is several phases downstream and cannot recover from it.
         Assert(
@@ -491,6 +517,165 @@ internal static class SelfTests
         AssertDropped("""{"target":"hologram","text":"x"}""", "An unknown target was accepted.");
         AssertDropped("""{"target":7}""", "A non-string target was accepted.");
         AssertDropped("[1,2,3]", "A payload that was not an object was accepted.");
+    }
+
+    /// <summary>
+    /// Covers both known Streamer.bot <c>Twitch.ChatMessage</c> schema shapes -
+    /// see <see cref="TwitchChatMessageMapper"/>'s own remarks for where each
+    /// was confirmed - plus the defensive fallbacks a live payload might still
+    /// need: badge derived from the subscriber flag when no badges array
+    /// names it, and graceful rejection of a payload with no usable text.
+    /// </summary>
+    private static void TestTwitchChatMessageMapper()
+    {
+        var newer = MapTwitchChatMessage(
+            """
+            {
+              "user": {
+                "id": "12345",
+                "login": "testviewer",
+                "name": "TestViewer",
+                "role": 2,
+                "badges": [
+                  { "name": "moderator", "version": "1", "imageUrl": "https://a.test/mod.png" },
+                  { "name": "premium", "version": "1", "imageUrl": "https://a.test/prime.png" },
+                  { "name": "glhf-pledge", "version": "1", "imageUrl": "https://a.test/glhf.png" }
+                ],
+                "color": "#FF0000",
+                "subscribed": false
+              },
+              "messageId": "abc123",
+              "text": "hello from the newer shape Kappa",
+              "emotes": [ { "name": "Kappa", "startIndex": 25, "endIndex": 29 } ]
+            }
+            """);
+        Assert(
+            newer is { Target: StreamerBotEventTarget.Chat }
+            && newer.User == "TestViewer"
+            && newer.Colour == "#FF0000"
+            && newer.Badge == "Mod"
+            && newer.BadgeImageUrl == "https://a.test/mod.png"
+            && newer.Text == "hello from the newer shape Kappa"
+            && newer.EmoteNames.SequenceEqual(["Kappa"]),
+            "The newer top-level-user Twitch.ChatMessage shape did not map correctly.");
+        // The bug this covers: an earlier version picked one badge from four
+        // hardcoded categories and silently dropped everything else,
+        // including Prime and any channel-specific custom badge.
+        Assert(
+            newer.Badges.Count == 3
+            && newer.Badges[0] == new ChatBadge("Mod", "https://a.test/mod.png")
+            && newer.Badges[1] == new ChatBadge("Prime", "https://a.test/prime.png")
+            && newer.Badges[2] == new ChatBadge("glhf-pledge", "https://a.test/glhf.png"),
+            "Not every badge on the message was kept - Prime or the unrecognised "
+            + "channel-specific badge was dropped.");
+
+        var older = MapTwitchChatMessage(
+            """
+            {
+              "message": {
+                "userId": "999",
+                "username": "oldviewer",
+                "displayName": "OldViewer",
+                "role": 1,
+                "subscriber": true,
+                "color": "0000ff",
+                "message": "hi from the older shape PogChamp",
+                "badges": [ { "name": "subscriber", "version": "6", "imageUrl": "https://b.test/sub.png" } ],
+                "emotes": [ { "name": "PogChamp" } ],
+                "cheerEmotes": [ { "name": "Cheer100" } ]
+              }
+            }
+            """);
+        Assert(
+            older is { Target: StreamerBotEventTarget.Chat }
+            && older.User == "OldViewer"
+            && older.Colour == "#0000FF"
+            && older.Badge == "Sub"
+            && older.BadgeImageUrl == "https://b.test/sub.png"
+            && older.Text == "hi from the older shape PogChamp"
+            && older.EmoteNames.SequenceEqual(["PogChamp", "Cheer100"]),
+            "The older message-wrapped Twitch.ChatMessage shape did not map its badge image, "
+            + "emotes and cheer emotes correctly.");
+
+        // No badges array at all, but the older shape's own subscriber flag
+        // is true - the fallback in ReadBadge, not the badge-name scan.
+        var subscriberFallback = MapTwitchChatMessage(
+            """{"message":{"username":"nobadges","subscriber":true,"message":"hi"}}""");
+        Assert(
+            subscriberFallback is { Badge: "Sub", BadgeImageUrl: "" },
+            "A subscriber flag with no badges array did not fall back to a Sub badge with no image.");
+
+        // No username anywhere and no colour - must still map rather than
+        // reject, with sensible empty defaults for the renderer to handle.
+        var minimal = MapTwitchChatMessage("""{"text":"just text"}""");
+        Assert(
+            minimal is { User: "", Colour: "", Badge: "", BadgeImageUrl: "", Text: "just text" },
+            "A minimal payload with only text was not mapped with safe defaults.");
+
+        Assert(
+            !TwitchChatMessageMapper.TryMap(
+                JsonDocument.Parse("{}").RootElement,
+                out _,
+                out var rejection)
+            && rejection.Length > 0,
+            "A Twitch chat message with no usable text anywhere was accepted.");
+        Assert(
+            !TwitchChatMessageMapper.TryMap(
+                JsonDocument.Parse("[1,2,3]").RootElement,
+                out _,
+                out _),
+            "A Twitch chat message that was not a JSON object was accepted.");
+    }
+
+    /// <summary>
+    /// Uses the exact response shape confirmed live against a running
+    /// Streamer.bot instance's <c>TwitchGetEmotes</c> request - see
+    /// <see cref="TwitchEmoteCatalog"/>'s own remarks.
+    /// </summary>
+    private static void TestTwitchEmoteCatalog()
+    {
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "id": "req-1",
+              "emotes": {
+                "userEmotes": [
+                  { "name": "Kappa", "type": "twitch_globals", "imageUrl": "https://a.test/kappa.png" },
+                  { "name": "AngelThump", "type": "BTTVGlobal", "imageUrl": "https://b.test/angel.png" },
+                  { "name": "missingUrl", "type": "twitch_globals" },
+                  { "name": "", "imageUrl": "https://c.test/blank.png" },
+                  42
+                ]
+              }
+            }
+            """);
+
+        var catalog = TwitchEmoteCatalog.Parse(document.RootElement);
+        Assert(
+            catalog.Count == 2,
+            "The Twitch emote catalog did not skip malformed entries and keep only the valid ones.");
+        Assert(
+            catalog.TryGetImageUrl("Kappa", out var kappaUrl) && kappaUrl == "https://a.test/kappa.png",
+            "The Twitch emote catalog lost an official Twitch emote's image URL.");
+        Assert(
+            catalog.TryGetImageUrl("AngelThump", out var bttvUrl) && bttvUrl == "https://b.test/angel.png",
+            "The Twitch emote catalog lost a third-party (BTTV/FFZ/7TV) emote's image URL.");
+        Assert(
+            !catalog.TryGetImageUrl("missingUrl", out _),
+            "An emote entry with no image URL was kept in the catalog.");
+
+        Assert(
+            TwitchEmoteCatalog.Parse(JsonDocument.Parse("{}").RootElement).Count == 0,
+            "A response with no emotes object did not produce an empty catalog.");
+    }
+
+    private static StreamerBotEventPayload MapTwitchChatMessage(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        Assert(
+            TwitchChatMessageMapper.TryMap(document.RootElement, out var payload, out var rejection),
+            $"A Twitch chat message expected to map was rejected: {rejection}.");
+        return payload!;
     }
 
     /// <summary>
@@ -591,6 +776,26 @@ internal static class SelfTests
         Assert(
             stream.PendingRequestCount == 0,
             "A completed request was left in the pending table.");
+
+        // The raw platform route added per §B6, exercised over the real
+        // socket rather than only through TwitchChatMessageMapper directly -
+        // proves Dispatch/PublishEvent actually route Twitch.ChatMessage
+        // through the mapper rather than through StreamerBotEventPayload.TryParse.
+        await SendTwitchChatMessageEventAsync(
+            socket,
+            new
+            {
+                user = new { name = "TwitchViewer", color = "#123456" },
+                text = "raw twitch chat message"
+            },
+            timeout.Token);
+        var third = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            third.Payload.Target == StreamerBotEventTarget.Chat
+            && third.Payload.User == "TwitchViewer"
+            && third.Payload.Colour == "#123456"
+            && third.Payload.Text == "raw twitch chat message",
+            "A live Twitch.ChatMessage frame was not routed through the mapper to the event channel.");
         Assert(
             activity.Any(entry =>
                 entry.EventName == "streamerbot.event_dropped"
@@ -738,8 +943,8 @@ internal static class SelfTests
         Assert(
             subscribe.RootElement.GetProperty("request").GetString() == "Subscribe",
             "The event stream did not subscribe.");
-        var subscribed = subscribe.RootElement
-            .GetProperty("events")
+        var events = subscribe.RootElement.GetProperty("events");
+        var subscribed = events
             .GetProperty("General")
             .EnumerateArray()
             .Select(entry => entry.GetString())
@@ -747,6 +952,14 @@ internal static class SelfTests
         Assert(
             subscribed.Length == 1 && subscribed[0] == "Custom",
             "The event stream subscribed to something other than General.Custom.");
+        var subscribedTwitch = events
+            .GetProperty("Twitch")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        Assert(
+            subscribedTwitch.Length == 1 && subscribedTwitch[0] == "ChatMessage",
+            "The event stream did not subscribe to Twitch.ChatMessage alongside General.Custom.");
         await SendJsonAsync(
             socket,
             new { status = "ok", id = subscribe.RootElement.GetProperty("id").GetString() },
@@ -765,6 +978,20 @@ internal static class SelfTests
             {
                 timeStamp = DateTimeOffset.Now.ToString("O"),
                 @event = new { source = "General", type = "Custom" },
+                data
+            },
+            cancellationToken);
+
+    private static Task SendTwitchChatMessageEventAsync(
+        WebSocket socket,
+        object data,
+        CancellationToken cancellationToken) =>
+        SendJsonAsync(
+            socket,
+            new
+            {
+                timeStamp = DateTimeOffset.Now.ToString("O"),
+                @event = new { source = "Twitch", type = "ChatMessage" },
                 data
             },
             cancellationToken);

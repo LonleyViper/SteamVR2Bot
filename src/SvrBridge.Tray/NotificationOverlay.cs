@@ -40,7 +40,7 @@ internal sealed class NotificationOverlay : IDisposable
         VrOverlayTransform.Translation(0f, -0.12f, -0.6f);
 
     private readonly VrOverlaySurface _surface;
-    private readonly IVrPanelRenderer _renderer;
+    private readonly IVrPanelRenderer<NotificationContent> _renderer;
     private readonly NotificationPlayer _player;
     private readonly Action<string> _log;
     private bool _shown;
@@ -48,7 +48,7 @@ internal sealed class NotificationOverlay : IDisposable
 
     private NotificationOverlay(
         VrOverlaySurface surface,
-        IVrPanelRenderer renderer,
+        IVrPanelRenderer<NotificationContent> renderer,
         NotificationPlayer player,
         Action<string> log)
     {
@@ -72,7 +72,7 @@ internal sealed class NotificationOverlay : IDisposable
         }
 
         var surface = openVr.CreateOverlaySurface(OverlayKey, "SteamVR2Bot notifications");
-        IVrPanelRenderer? renderer = null;
+        IVrPanelRenderer<NotificationContent>? renderer = null;
         try
         {
             surface.SetWidthInMeters(WidthInMeters);

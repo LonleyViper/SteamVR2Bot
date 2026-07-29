@@ -1,179 +1,147 @@
-# Hand-off — 2026-07-29
+# Handoff — 2026-07-29, end of Phase 3 session
 
-Branch `main`, ahead of `origin/main` by 6 commits, nothing stashed. The working
-tree holds the in-progress Chat/Notifications work plus today's grip fix — all
-real work, none of it to be discarded.
+Supersedes the previous hand-off note (grip-fix / early Phase 2), which is
+now committed history — see `LIVE_TEST_RESULTS.md` for that record. This
+file is the current-state snapshot; read it before touching chat,
+notifications, emotes, or badges. For full technical detail, read the
+`develop-svr-bridge` skill's `references/chat-and-emotes.md` first — this
+file is the summary, that one is the reference material.
 
-**Read this before touching input priority or reopening the grip bug.**
+## State: implemented, self-tested, live-confirmed working, committed
 
----
+Phase 3 is functionally complete and confirmed working live in the headset:
+chat text, colour, real Twitch/BetterTTV/FrankerFaceZ/7TV emote images, and
+real multi-badge images all render correctly on real chat messages. The full
+manual matrix in `LIVE_TEST_RESULTS.md` is user-confirmed `PASS` except rows
+10 and 17b (see below) — including row 15, the shortcut-fires-exactly-once
+product contract, which was specifically re-verified after a discrepancy
+report (also below). Notifications (Phase 2) and the dashboard/shortcut path
+were not knowingly broken by any of this.
 
-## 1. Grip regression — RESOLVED, do not re-investigate
+This session's work is committed as of this handoff. (The grip fix and
+Phase 2 from the previous hand-off were already committed before this
+session started — `297ea64` and earlier.)
 
-The bug: while SteamVR2Bot ran, **Grip stopped working inside other VR games**
-(confirmed in Contractors VR and Showdown). Closing the app restored it
-instantly, every time. The user has no shortcut mapped to Grip.
+**Untracked planning docs** (`CHAT_AND_NOTIFICATIONS_PLAN.md`,
+`PHASE0_PROMPT.md` through `PHASE3_PROMPT.md`, `VR UI Screenshots/`) were
+left untracked, matching the pattern already established before this session
+(Phase 1/2 plan docs were never committed either). Ask the user whether that
+should change before assuming either way.
 
-### Root cause
+## What changed this session, roughly in order
 
-`OpenVrInput` activated its action set at `k_nActionSetOverlayGlobalPriorityMin`
-(`0x01000000`). openvr.h defines that as the threshold at which an action set
-**takes input away from the scene application**.
+1. Phase 2 (notifications) manual test rows recorded and committed
+   (`297ea64`) — this one commit landed, everything after it did not.
+2. Phase 3 chat window built per the original plan: gaze-scale visibility,
+   ring buffer, throttled repaint, WPF text wrapping.
+3. Plan revised mid-session (§5c/B6 of `CHAT_AND_NOTIFICATIONS_PLAN.md`):
+   direct `Twitch.ChatMessage` subscription added so chat needs no
+   hand-written relay action for text/colour/badges — only `General.Custom`
+   remains for notifications and custom SB-side alerts.
+4. Emote handling: text styling first, then real images once a live
+   diagnostic confirmed Streamer.bot's `TwitchGetEmotes` request aggregates
+   Twitch + BTTV + FFZ + 7TV in one response.
+5. Badge images added the same way, then generalised from "one guessed
+   badge" to "every badge on the message" after live testing showed Prime
+   and a channel-specific badge being silently dropped.
+6. A `badges` array added to the hand-authored `General.Custom` contract, and
+   a `!svrtest` C# test-harness action written to exercise burst handling,
+   the ring buffer cap, long-message wrapping, multi-badge rendering, an
+   unknown emote, and chat/notification coexistence without needing real
+   chat activity.
 
-Two facts make that fatal:
+Several real bugs were caught and fixed along the way (integer overflow in
+the repaint throttle, an emote-catalog delivery race against SteamVR worker
+startup, a badge double-counting interaction) — full detail in
+`chat-and-emotes.md`, not repeated here.
 
-- Priority is **per-action-set, not per-action**. There is one set,
-  `/actions/svrbridge`, holding everything.
-- `bindings_vive_controller.json` claims grip, trigger, trackpad and menu on
-  **both hands unconditionally** — independently of what the user has mapped.
+## Known platform limitation (not a bug, documented, not fixable here)
 
-So the app was not observing those controls, it was taking all eight from every
-running game.
+Streamer.bot only forwards `Twitch.ChatMessage` over its WebSocket API while
+at least one local trigger of that type exists and is enabled in its own
+Action system — confirmed live (chat went completely silent for 32 minutes
+after the last such trigger was deleted, resumed the moment one existed
+again), and confirmed that Streamer.bot's WebSocket API has no request to
+create a trigger remotely. Documented in `README.md` under "Known
+limitations" and in `LIVE_TEST_RESULTS.md`. A `!svrtest` command trigger
+(see below) incidentally satisfies this requirement for anyone who sets it
+up.
 
-It only bites on this machine because SteamVR's experimental override is on:
-`C:\Program Files (x86)\Steam\config\steamvr.vrsettings` carries
-`"globalActionSetPriority" : true`, set during the 2026-07-27 input
-investigation and never turned off. Any future priority work is meaningless
-without accounting for that setting.
+## Open problem: the `!svrtest` test action does not appear to fire
 
-This was the loose end of the 2026-07-27 "Priority elevation ruled out" work in
-`LIVE_TEST_RESULTS.md`. That change scoped the *elevation* to the recorder and
-stated the intent correctly — "a running VR game is never outranked outside
-recording" — but the **base** priority was left at the bottom of the global
-band. The elevation was reverted; the base was not.
+Written and handed to the user as a way to exercise burst/cap/badge/emote-
+fallback/notification scenarios on demand. Live log evidence afterward showed
+only sparse, minutes-apart chat arrivals matching manual typing — no 12-
+message burst, no 45-message cap run, no `notification payload` line at all.
+The action does not appear to have executed for any scenario tried.
 
-### Fix
+**Not yet root-caused.** SVR Bridge's own log can only show what actually
+arrives over the WebSocket, not why a Streamer.bot action produced nothing.
+Next step is checking Streamer.bot's own action execution log/history for
+`SVR Bridge Test Harness` (or whatever it was named) for a compile error, a
+trigger that never fired, or a silent exception — none of which SVR Bridge
+can see from its own side. The action's source is in this session's
+transcript; it was not committed to any repo file. If it needs rewriting,
+the earlier lesson about `CPH.WebsocketBroadcastJson` requiring a
+pre-serialized JSON string (not a raw object) on this Streamer.bot version
+still applies.
 
-`OpenVrInput.ActionSetPriority = 0` (ordinary band), with the full reasoning
-recorded at the constant so it does not get re-raised casually.
+## Outstanding manual matrix rows
 
-Verified in-headset by the user, both directions:
+The full matrix is now clear except two rows — everything else in
+`LIVE_TEST_RESULTS.md`'s Phase 3 table is user-confirmed `PASS`, including
+row 15 (shortcut fires exactly once — the product contract). Still "not
+run":
 
-| Check | Result |
-|---|---|
-| Grip inside a running VR game with the app active | **PASS** |
-| Mapped shortcuts still fire from inside a running game | **PASS** |
+- **Row 10** — more than 40 messages in one session (ring buffer cap and
+  eviction). Needs sustained volume; the `!svrtest cap` command was meant to
+  cover this but the action isn't confirmed working yet (see below).
+- **Row 17b** — an emote sent within the first second or two of connecting,
+  before the catalog fetch/first image download can have finished, to prove
+  the styled-text→real-image upgrade path specifically (not just the
+  steady-state case, which is confirmed). Timing-sensitive; also a natural
+  fit for the test harness once it works.
 
-Nothing was traded away. The elevated priority was never delivering an edge this
-app needs — the 2026-07-27 runs had already shown that from the other side, when
-SteamVR accepted `0x01FFFFFF` and deactivated the set under dashboard focus
-anyway.
+### Row 15 — a real discrepancy investigated and resolved
 
-### The bisect was a dead end — do not restart it
+The user triggered a shortcut twice; Streamer.bot reported 22 executions of
+the target action. SVR Bridge's own log showed exactly two
+`streamerbot.action_confirmed` lines, one per physical press, each within
+milliseconds of its `controller.input` press event — no duplicate or extra
+`DoAction` request on this app's side, which is architecturally consistent
+with the one-request/one-acknowledgement design (there is no code path that
+sends a request without logging a matching confirmation). The other 20
+executions were attributed to the target action having other triggers
+configured in Streamer.bot, unrelated to this shortcut - not independently
+verified via Streamer.bot's own execution history, but the SVR Bridge side
+of the evidence is unambiguous. If this surfaces again, check Streamer.bot's
+per-execution trigger source before suspecting this app.
 
-A previous session spent a long stretch bisecting `9ae5204` vs `1b6daa3`. That
-could never have converged: the steal dates to **2026-07-27** and is present in
-every build since, so no commit boundary isolates it.
+## Recommended next steps, in order
 
-Neither suspect commit was ever involved:
+1. Diagnose the `!svrtest` action via Streamer.bot's own execution log — it
+   never appeared to fire for any scenario tried. Fixing it closes rows 10
+   and 17b (and the untracked planning docs / commit-scope question below is
+   already resolved, see above).
+2. Close rows 10 and 17b once the harness works.
+3. Decide whether the untracked planning docs (`CHAT_AND_NOTIFICATIONS_PLAN.md`,
+   `PHASE0_PROMPT.md`–`PHASE3_PROMPT.md`, `VR UI Screenshots/`) should be
+   committed too, or stay out of the repo as before.
+4. Only after that: decide whether Phase 4 (desktop appearance/placement
+   settings, the importable Streamer.bot action-set for setup) is still the
+   right next phase, or whether the `!svrtest`-style harness suggests
+   something else is more valuable first.
 
-- `9ae5204` (event stream) touches **no OpenVR code at all**. `ControllerSetup.cs`
-  sounds input-related but the diff only adds a `Debug` enum value and a
-  `ContainsUserContent` record field.
-- `1b6daa3` (overlay substrate) binds 11 extra `IVROverlay` delegates but never
-  calls them with the dev toggle off — `testOverlay` stays `null`. The self-test
-  that does exercise those indices only runs under `--self-test`.
+## Environment notes carried forward
 
-Four signals actively pointed the wrong way. Recognise them if something similar
-recurs:
-
-| Signal | Why it misled |
-|---|---|
-| The app's own log showed Grip edges arriving normally | It is this app receiving them that **is** the bug. |
-| SteamVR's Controller Binding UI showed correct bindings | Config was fine; **live routing** broke, which that UI does not show. |
-| Every per-commit build reproduced it | Pre-dates all of them. |
-| `artifacts\publish` was believed pre-regression and "worked" | Its exe is stamped 2026-07-29 **12:43** — after every feature commit that day — and ships the identical grip-claiming `actions.json`. Treat that "known-good" result as unexplained; it did not survive contact with the timestamps. |
-
-**Rule of thumb going forward:** if a control stops working inside other VR games
-while this app runs, check action-set priority and what the binding file claims
-*before* bisecting anything.
-
----
-
-## 2. Repo state
-
-Verified clean: both suites pass, three projects build with **0 warnings,
-0 errors**, no stray processes.
-
-```
-dotnet build src\SvrBridge.Tray\SvrBridge.Tray.csproj     -> 0W 0E
-dotnet build src\SvrBridge\SvrBridge.csproj               -> 0W 0E
-SteamVR2Bot.exe --self-test                               -> exit 0
-SteamVR2Bot.Diagnostics.exe --self-test                   -> exit 0 (SELF-TEST PASS)
-```
-
-Uncommitted, all intentional:
-
-- **Grip fix** — `src/SvrBridge.Core/OpenVrInput.cs`, plus the root-cause section
-  appended to `LIVE_TEST_RESULTS.md`.
-- **Chat/Notifications WIP** — `BridgeEngine.cs`, `OpenVrSession.cs`,
-  `MainForm.cs`, `OpenVrWorker.cs`, `SvrBridge.Tray.csproj`,
-  `TrayApplicationContext.cs`, `TraySelfTests.cs`, `UserSettings.cs`,
-  `VrTestOverlay.cs`; new `NotificationPlayer.cs`, `OverlayPixelFormat.cs`,
-  `IVrPanelRenderer.cs`, `NotificationOverlay.cs`, `WpfNotificationRenderer.cs`,
-  `WpfOverlayPixelPipeline.cs`, `WpfRenderThread.cs`.
-- Planning docs: `CHAT_AND_NOTIFICATIONS_PLAN.md`, `PHASE0`–`PHASE3_PROMPT.md`.
-
-The grip fix is logically independent of the notification work and can be
-committed on its own. **Nothing has been committed yet** — the user has not asked
-for it.
-
-### Environment
-
-- `dotnet` is **not** on `PATH` — use `$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe`.
+- `dotnet` is not reliably on `PATH` in every session — locate it under
+  `%USERPROFILE%\.dotnet\dotnet.exe` (this session installed the SDK there)
+  or `C:\Program Files\dotnet` (runtime-only muxer, no SDK) if a fresh
+  environment needs it again.
 - Debug build: `src\SvrBridge.Tray\bin\Debug\net10.0-windows\SteamVR2Bot.exe`.
+  Published: `artifacts\publish\SteamVR2Bot.exe` — this is the one SteamVR
+  auto-launches, and the one every live test in this session actually ran.
 - Logs: `%LOCALAPPDATA%\SteamVR2Bot\Logs\svr-bridge-YYYYMMDD.jsonl`.
-- Settings: `%LOCALAPPDATA%\SteamVR2Bot\settings.json` — currently has
-  `EventStreamEnabled: true` and `NotificationsEnabled: true`. Do not hand-edit
-  without telling the user.
-- Before any comparative test, confirm zero instances are running. A previous
-  session's results were contaminated by leftover processes:
-
-```powershell
-Get-CimInstance Win32_Process -Filter "Name LIKE 'SteamVR2Bot%'" |
-  Select-Object ProcessId, ExecutablePath
-```
-
----
-
-## 3. Open work
-
-**Known-good next steps, in rough priority order:**
-
-1. **Binding file claims all eight controls regardless of what is mapped.**
-   Harmless at priority 0, but trigger/trackpad/menu are claimed for no reason.
-   Generating `bindings_vive_controller.json` from the actual shortcut list is
-   the principled fix, and it is a **prerequisite** before anyone raises the
-   action-set priority again for any reason.
-2. **`SaveAndApplySettingsAsync` → `RestartRuntimeAsync`** in
-   `TrayApplicationContext.cs` tears down and rebuilds the entire OpenVR worker
-   on *every* desktop settings change, including the two new checkboxes. The
-   in-VR dashboard save/delete path already does a real hot update via
-   `BridgeEngine.UpdateShortcuts` and never restarts the worker; the desktop
-   settings page should do the same for settings that need no OpenVR re-init.
-   Pre-dates today; unrelated to the grip bug.
-3. **Chat/Notifications Phases 2–3** per `CHAT_AND_NOTIFICATIONS_PLAN.md`.
-4. **Phase 4 (user-requested):** configurable notification colours, size,
-   position and fade.
-
-**Live-test gaps** — `LIVE_TEST_RESULTS.md` marks these not run: notification
-head-relative positioning (step 4), idle persistence (7), dashboard navigation
-(11), notification-while-dashboard-open (13), and delivery confirmation after
-closing the dashboard (12). Frame-timing impact of an active notification is
-**unmeasured** — recorded as unverified, not as "no impact".
-
----
-
-## 4. Identifiers that must never change
-
-| Identifier | Where | Why |
-|---|---|---|
-| `ie.lonelyviper.svrbridge.poc` | `src/SvrBridge/assets/app.vrmanifest` | SteamVR treats a new app key as a new application; the user's controller binding is registered against this key. |
-| `/actions/svrbridge/...` | `actions.json`, `OpenVrInput.cs` | The packaged binding file maps these exact paths. |
-| `"SVR Bridge settings v1"` | `UserSettings.cs` | DPAPI entropy for the protected Streamer.bot password. Changing it makes stored passwords unreadable. |
-
-Keep the route direct: SteamVR input → detector → Streamer.bot WebSocket
-`DoAction`. Preserve `BridgeEngine.UpdateShortcuts` hot updates, the child
-OpenVR worker boundary, release latching, one request/one acknowledgement,
-`ChordMode` numeric ordering (`Simultaneous=0, Modifier=1, LongPress=2,
-DoublePress=3, SinglePress=4`), credential protection, and log redaction.
+- Before any comparative test, confirm zero stray instances are running
+  (`taskkill /F /IM SteamVR2Bot.exe` or the PowerShell equivalent) — a
+  locked DLL from a leftover process will fail the next build.

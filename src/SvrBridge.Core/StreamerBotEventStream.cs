@@ -260,7 +260,16 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
                 {
                     ["events"] = new Dictionary<string, string[]>
                     {
-                        ["General"] = ["Custom"]
+                        // General.Custom stays the escape hatch for
+                        // SB-side-filtered alerts and notifications - see
+                        // NotificationOverlay - and Twitch.ChatMessage is the
+                        // direct route added per §B6 so chat works with no
+                        // relay action required. Streamer.bot still owns the
+                        // entire platform integration either way: this event
+                        // is the parsed output of its own Twitch connection,
+                        // not anything raw from Twitch itself.
+                        ["General"] = ["Custom"],
+                        ["Twitch"] = ["ChatMessage"]
                     }
                 },
                 connection.Token)).Dispose();
@@ -535,19 +544,6 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
             ? typeName.GetString() ?? ""
             : "";
 
-        // Only General.Custom is subscribed to, so anything else here means
-        // Streamer.bot sent something this app never asked for.
-        if (!eventSource.Equals("General", StringComparison.OrdinalIgnoreCase)
-            || !eventType.Equals("Custom", StringComparison.OrdinalIgnoreCase))
-        {
-            _log(
-                new BridgeActivity(
-                    "streamerbot.event_ignored",
-                    $"Ignored an unsubscribed Streamer.bot event: {eventSource}.{eventType}",
-                    BridgeLogLevel.Debug));
-            return;
-        }
-
         if (!root.TryGetProperty("data", out var data))
         {
             _log(
@@ -558,7 +554,34 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
             return;
         }
 
-        if (!StreamerBotEventPayload.TryParse(data, out var payload, out var rejection))
+        // General.Custom carries a hand-authored payload already in this
+        // app's own shape; Twitch.ChatMessage carries Streamer.bot's parsed
+        // Twitch event and needs the platform-specific mapper. Anything else
+        // means Streamer.bot sent something this app never subscribed to.
+        bool mapped;
+        StreamerBotEventPayload? payload;
+        string rejection;
+        if (eventSource.Equals("General", StringComparison.OrdinalIgnoreCase)
+            && eventType.Equals("Custom", StringComparison.OrdinalIgnoreCase))
+        {
+            mapped = StreamerBotEventPayload.TryParse(data, out payload, out rejection);
+        }
+        else if (eventSource.Equals("Twitch", StringComparison.OrdinalIgnoreCase)
+            && eventType.Equals("ChatMessage", StringComparison.OrdinalIgnoreCase))
+        {
+            mapped = TwitchChatMessageMapper.TryMap(data, out payload, out rejection);
+        }
+        else
+        {
+            _log(
+                new BridgeActivity(
+                    "streamerbot.event_ignored",
+                    $"Ignored an unsubscribed Streamer.bot event: {eventSource}.{eventType}",
+                    BridgeLogLevel.Debug));
+            return;
+        }
+
+        if (!mapped)
         {
             _log(
                 new BridgeActivity(
@@ -568,7 +591,7 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
             return;
         }
 
-        _events.Writer.TryWrite(new StreamerBotEvent(DateTimeOffset.Now, payload));
+        _events.Writer.TryWrite(new StreamerBotEvent(DateTimeOffset.Now, payload!));
     }
 
     private void FailPendingRequests(Exception reason)

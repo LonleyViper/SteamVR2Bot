@@ -250,6 +250,27 @@ them without retaining them.
   resent. The status says that confirmation was lost; avoiding a possible
   duplicate takes priority.
 
+## Known limitations
+
+- **Some games hide every SteamVR overlay, including chat and
+  notifications.** Games that bypass the SteamVR compositor and draw directly
+  to the headset make every overlay invisible in those games - the dashboard,
+  chat, and notifications alike. This is a property of the platform, not a
+  bug in SteamVR2Bot. If overlays appear in the SteamVR display mirror but not
+  in the headset, that is what is happening.
+- **Chat requires at least one enabled trigger in Streamer.bot bound to
+  `Twitch > Chat Message`, even though SteamVR2Bot subscribes to that event
+  directly and needs no relay action of its own.** Streamer.bot's own chat
+  pipeline only appears to forward `Twitch.ChatMessage` over its WebSocket API
+  while a local trigger of that type exists somewhere in its Action system -
+  confirmed by watching SteamVR2Bot's own logs stop receiving anything the
+  moment the last such trigger was removed, and resume the moment one was
+  added back, with no change on SteamVR2Bot's side either time. Streamer.bot's
+  WebSocket API has no request that lets an external app create a trigger
+  remotely, so this cannot be worked around here - the trigger does not need
+  to do anything (no sub-actions, no code), it just needs to exist and be
+  enabled.
+
 ## Diagnostics
 
 The console diagnostic remains available at:

@@ -316,6 +316,50 @@ public sealed class BridgeEngine
         }
     }
 
+    /// <summary>
+    /// Appends one message to the running worker's chat window.
+    /// <para>
+    /// Like <see cref="ShowNotification"/> this never falls back to a
+    /// temporary session: a chat message means nothing once the session
+    /// showing it is immediately disposed, and only the worker actually
+    /// driving the headset owns the chat overlay's ring buffer.
+    /// </para>
+    /// </summary>
+    /// <returns>False when no SteamVR session is running to show it on.</returns>
+    public bool ShowChatMessage(StreamerBotEventPayload payload)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.ShowChatMessage(payload);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Hands the worker a fresh Twitch/BetterTTV/FrankerFaceZ/7TV emote name
+    /// → image URL lookup, fetched once by the tray process from
+    /// Streamer.bot's own <c>TwitchGetEmotes</c> request.
+    /// </summary>
+    /// <returns>False when no SteamVR session is running to use it.</returns>
+    public bool SetEmoteCatalog(IReadOnlyDictionary<string, string> catalog)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.SetEmoteCatalog(catalog);
+            return true;
+        }
+    }
+
     public async Task ShowDashboardAsync(
         AppConfig config,
         string imagePath,

@@ -16,6 +16,18 @@ internal static class TraySelfTests
         TestNotificationAlphaCurve();
         TestWpfRenderThreadStartsAndShutsDownCleanly();
         TestNotificationPixelFormatConversion();
+        TestChatRingBufferEviction();
+        TestChatRepaintThrottleCoalescesBurst();
+        TestChatGazeHysteresisNoOscillationAtBoundary();
+        TestChatRenderWrapsLongUnbrokenString();
+        TestChatRenderHandlesEmptyUsernameAndColour();
+        TestChatRenderStylesEmoteTokensDistinctly();
+        TestChatImageCacheFetchesDecodesAndCaches();
+        TestChatImageCacheRetriesAfterAFailedFetch();
+        TestChatRenderEmbedsCachedEmoteImage();
+        TestChatRenderEmbedsCachedBadgeImage();
+        TestChatRenderEmbedsMultipleBadges();
+        TestChatRingBufferThreadSafeConcurrentAccess();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -757,6 +769,541 @@ internal static class TraySelfTests
             + $"colour. Got R={pixels[index]} G={pixels[index + 1]} B={pixels[index + 2]} "
             + $"A={pixels[index + 3]}.");
     }
+
+    /// <summary>
+    /// A burst arriving out of order would be as wrong as losing messages, so
+    /// this checks eviction and order together: the oldest messages must be
+    /// the ones dropped, and the survivors must stay in arrival order.
+    /// </summary>
+    private static void TestChatRingBufferEviction()
+    {
+        var buffer = new SvrBridge.Core.ChatRingBuffer(capacity: 3);
+        buffer.Append(ChatMessageFor("a"));
+        buffer.Append(ChatMessageFor("b"));
+        buffer.Append(ChatMessageFor("c"));
+        buffer.Append(ChatMessageFor("d"));
+        buffer.Append(ChatMessageFor("e"));
+
+        var snapshot = buffer.Snapshot();
+        Assert(
+            snapshot.Select(message => message.Text).SequenceEqual(["c", "d", "e"]),
+            "The chat ring buffer did not evict the oldest messages and keep the "
+            + "rest in arrival order.");
+        Assert(
+            buffer.Version == 5,
+            "The chat ring buffer version did not count every append, including evicted ones.");
+    }
+
+    /// <summary>
+    /// Simulates the exact flow <c>ChatOverlay.Tick</c> uses: check the
+    /// throttle once per append, as a caller polling once per 10 ms tick
+    /// would. A burst of ten appends inside the throttle window must produce
+    /// exactly one repaint, per §B2 of the chat plan.
+    /// </summary>
+    private static void TestChatRepaintThrottleCoalescesBurst()
+    {
+        var buffer = new SvrBridge.Core.ChatRingBuffer();
+        var throttle = new SvrBridge.Core.ChatRepaintThrottle(minimumIntervalMs: 100);
+
+        var repaints = 0;
+        for (var index = 0; index < 10; index++)
+        {
+            buffer.Append(ChatMessageFor($"m{index}"));
+            if (throttle.ShouldRepaint(buffer.Version, nowMs: 0))
+            {
+                repaints++;
+                throttle.MarkPainted(buffer.Version, nowMs: 0);
+            }
+        }
+
+        Assert(
+            repaints == 1,
+            $"A burst of 10 messages produced {repaints} repaints instead of coalescing into one.");
+
+        buffer.Append(ChatMessageFor("late"));
+        Assert(
+            throttle.ShouldRepaint(buffer.Version, nowMs: 150),
+            "The chat repaint throttle did not allow a repaint once its interval had elapsed.");
+    }
+
+    /// <summary>
+    /// Proves a sample sitting exactly on either threshold resolves to one
+    /// definite state and holds it under repeated identical samples, rather
+    /// than toggling - the failure mode a single-threshold design has right
+    /// at the boundary.
+    /// </summary>
+    private static void TestChatGazeHysteresisNoOscillationAtBoundary()
+    {
+        const float enterAngleDegrees = 20f;
+        const float exitAngleDegrees = 35f;
+        var hysteresis = new SvrBridge.Core.ChatGazeHysteresis(enterAngleDegrees, exitAngleDegrees);
+        var enterCosine = MathF.Cos(enterAngleDegrees * MathF.PI / 180f);
+        var exitCosine = MathF.Cos(exitAngleDegrees * MathF.PI / 180f);
+
+        Assert(!hysteresis.IsGazing, "Gaze hysteresis started already gazing.");
+        Assert(
+            hysteresis.Update(enterCosine),
+            "Gaze hysteresis did not enter exactly at its own enter boundary.");
+
+        for (var index = 0; index < 5; index++)
+        {
+            Assert(
+                hysteresis.Update(exitCosine),
+                "Gaze hysteresis exited exactly at its own exit boundary instead of holding "
+                + "steady, which would read as flicker in the headset.");
+        }
+
+        Assert(
+            !hysteresis.Update(exitCosine - 0.01f),
+            "Gaze hysteresis never exited once the gaze moved clearly past the exit boundary.");
+    }
+
+    /// <summary>
+    /// A long unbroken run - a URL with no spaces - must be force-broken onto
+    /// multiple lines rather than silently overflowing the panel width, per
+    /// §B3. Compares its wrapped height against a one-line baseline built the
+    /// same way, so the assertion holds regardless of the exact font metrics.
+    /// </summary>
+    private static void TestChatRenderWrapsLongUnbrokenString()
+    {
+        using var thread = new WpfRenderThread("self-test chat wrap");
+        var longToken = new string('x', 400);
+
+        var (oneLineHeight, wrappedHeight) = thread.Invoke(() =>
+        {
+            var oneLine = WpfChatRenderer.BuildTextBlock([ChatMessageFor("short")]);
+            oneLine.Measure(new System.Windows.Size(
+                WpfChatRenderer.PanelWidth,
+                double.PositiveInfinity));
+
+            var wrapped = WpfChatRenderer.BuildTextBlock([ChatMessageFor(longToken)]);
+            wrapped.Measure(new System.Windows.Size(
+                WpfChatRenderer.PanelWidth,
+                double.PositiveInfinity));
+
+            return (oneLine.DesiredSize.Height, wrapped.DesiredSize.Height);
+        });
+
+        Assert(
+            wrappedHeight > oneLineHeight * 1.5,
+            "A long unbroken chat message did not grow past one line's height, meaning it "
+            + "overflowed the panel width instead of wrapping onto multiple lines.");
+    }
+
+    /// <summary>
+    /// An empty username and an unparsable colour must fall back to sensible
+    /// defaults rather than throwing mid-repaint - a malformed Streamer.bot
+    /// action must cost one odd-looking line, not the whole chat window.
+    /// </summary>
+    private static void TestChatRenderHandlesEmptyUsernameAndColour()
+    {
+        using var thread = new WpfRenderThread("self-test chat empty fields");
+        var messages = new[] { ChatMessageFor("hello", user: "", colour: "not-a-colour") };
+
+        var rendered = thread.Invoke(() =>
+        {
+            var panel = WpfChatRenderer.BuildPanel(new ChatContent(messages));
+            return WpfOverlayPixelPipeline.RenderToRgba(
+                panel,
+                WpfChatRenderer.PanelWidth,
+                WpfChatRenderer.PanelHeight);
+        });
+
+        Assert(
+            rendered.Length == WpfChatRenderer.PanelWidth * WpfChatRenderer.PanelHeight * 4,
+            "Rendering a chat message with an empty username and an invalid colour produced a "
+            + "wrongly sized texture instead of falling back to defaults.");
+    }
+
+    /// <summary>
+    /// A token that exactly matches one of the message's own
+    /// <c>EmoteNames</c> must render distinctly from ordinary text - still
+    /// plain text, no image, per §B3's deferral of emote images - while an
+    /// ordinary word must not be mistaken for one.
+    /// </summary>
+    private static void TestChatRenderStylesEmoteTokensDistinctly()
+    {
+        using var thread = new WpfRenderThread("self-test chat emote styling");
+        var message = ChatMessageFor("hey Kappa there", emoteNames: ["Kappa"]);
+
+        var (emoteStyle, normalStyle) = thread.Invoke(() =>
+        {
+            var block = WpfChatRenderer.BuildTextBlock([message]);
+            var runs = block.Inlines.OfType<System.Windows.Documents.Run>().ToList();
+            var emoteRun = runs.FirstOrDefault(run => run.Text.Trim() == "Kappa");
+            var normalRun = runs.FirstOrDefault(run => run.Text.Trim() == "hey");
+            return (emoteRun?.FontStyle, normalRun?.FontStyle);
+        });
+
+        Assert(
+            emoteStyle == System.Windows.FontStyles.Italic,
+            "A recognised emote token was not styled distinctly from ordinary text.");
+        Assert(
+            normalStyle == System.Windows.FontStyles.Normal,
+            "An ordinary word was styled as if it were a recognised emote.");
+    }
+
+    /// <summary>
+    /// The ring buffer is written by the event stream's consumption loop and
+    /// read by the render thread - different threads, per §B6 - so this
+    /// hammers it from several writer threads while a reader thread
+    /// continuously snapshots, the same shape <c>ChatOverlay.Tick</c> and the
+    /// channel consumer actually use.
+    /// </summary>
+    private static void TestChatRingBufferThreadSafeConcurrentAccess()
+    {
+        var buffer = new SvrBridge.Core.ChatRingBuffer(capacity: 40);
+        const int writerCount = 4;
+        const int messagesPerWriter = 200;
+        Exception? readException = null;
+        var readerStop = false;
+
+        var reader = new System.Threading.Thread(() =>
+        {
+            try
+            {
+                while (!System.Threading.Volatile.Read(ref readerStop))
+                {
+                    var (snapshot, _) = buffer.SnapshotWithVersion();
+                    if (snapshot.Count > 40)
+                    {
+                        throw new InvalidOperationException(
+                            "A chat ring buffer snapshot exceeded its capacity.");
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                readException = exception;
+            }
+        });
+        reader.Start();
+
+        var writers = Enumerable.Range(0, writerCount)
+            .Select(writer => new System.Threading.Thread(() =>
+            {
+                for (var index = 0; index < messagesPerWriter; index++)
+                {
+                    buffer.Append(ChatMessageFor($"w{writer}-{index}"));
+                }
+            }))
+            .ToArray();
+
+        foreach (var writer in writers)
+        {
+            writer.Start();
+        }
+
+        foreach (var writer in writers)
+        {
+            writer.Join();
+        }
+
+        System.Threading.Volatile.Write(ref readerStop, true);
+        reader.Join();
+
+        Assert(readException is null, $"Concurrent chat buffer access threw: {readException}");
+        Assert(
+            buffer.Version == writerCount * messagesPerWriter,
+            "The chat ring buffer lost or double-counted appends made concurrently from "
+            + "several threads.");
+        Assert(
+            buffer.Snapshot().Count == 40,
+            "The chat ring buffer did not settle at its capacity after concurrent writes.");
+    }
+
+    /// <summary>A minimal, valid 1x1 PNG - enough for a real WPF decode to succeed.</summary>
+    private static readonly byte[] OnePixelPngBytes = Convert.FromBase64String(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+
+    /// <summary>
+    /// A cache miss must never block: it starts a background fetch and
+    /// returns immediately, and only a later call sees the decoded, frozen
+    /// image. Also proves a completed fetch is served from cache rather than
+    /// re-downloaded, and that <c>Version</c> tracks successful decodes.
+    /// </summary>
+    private static void TestChatImageCacheFetchesDecodesAndCaches()
+    {
+        var attempts = 0;
+        using var httpClient = new HttpClient(
+            new StubHttpMessageHandler((_, _) =>
+            {
+                System.Threading.Interlocked.Increment(ref attempts);
+                return Task.FromResult(
+                    new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(OnePixelPngBytes)
+                    });
+            }));
+        using var cache = new ChatImageCache(httpClient);
+        cache.SetEmoteCatalog(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Kappa"] = "https://example.invalid/kappa.png"
+            });
+
+        Assert(
+            !cache.TryGet("Kappa", out var immediate) && immediate is null,
+            "The emote cache returned an image before any fetch could have completed.");
+
+        Assert(
+            WaitForCondition(() => cache.TryGet("Kappa", out _), TimeSpan.FromSeconds(5)),
+            "The emote cache never finished fetching and decoding a known emote.");
+        Assert(
+            cache.TryGet("Kappa", out var cached) && cached is not null,
+            "A completed emote fetch was not served from cache on a later call.");
+        Assert(cache.Version > 0, "The emote cache version was not bumped after a successful fetch.");
+        Assert(
+            attempts == 1,
+            "The emote cache fetched an already-cached emote again instead of reusing it.");
+
+        Assert(
+            !cache.TryGet("UnknownEmote", out var missing) && missing is null,
+            "An emote name absent from the catalog unexpectedly returned an image.");
+    }
+
+    /// <summary>
+    /// A failed fetch must not be cached as a permanent miss - see
+    /// <see cref="ChatImageCache"/>'s own remarks on why - so this proves a
+    /// later call for the same name retries rather than staying stuck.
+    /// </summary>
+    private static void TestChatImageCacheRetriesAfterAFailedFetch()
+    {
+        var attempts = 0;
+        using var httpClient = new HttpClient(
+            new StubHttpMessageHandler((_, _) =>
+            {
+                var attempt = System.Threading.Interlocked.Increment(ref attempts);
+                return Task.FromResult(
+                    attempt == 1
+                        ? new HttpResponseMessage(System.Net.HttpStatusCode.InternalServerError)
+                        : new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                        {
+                            Content = new ByteArrayContent(OnePixelPngBytes)
+                        });
+            }));
+        using var cache = new ChatImageCache(httpClient);
+        cache.SetEmoteCatalog(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["FlakyEmote"] = "https://example.invalid/flaky.png"
+            });
+
+        cache.TryGet("FlakyEmote", out _);
+        Assert(
+            WaitForCondition(
+                () => System.Threading.Volatile.Read(ref attempts) >= 1,
+                TimeSpan.FromSeconds(5)),
+            "The emote cache never attempted its first fetch.");
+        // Give the failing attempt a moment to finish clearing its in-flight
+        // marker before checking that failure was not cached.
+        System.Threading.Thread.Sleep(200);
+        Assert(
+            !cache.TryGet("FlakyEmote", out var afterFailure) && afterFailure is null,
+            "A failed emote fetch was cached as if it had succeeded.");
+
+        Assert(
+            WaitForCondition(() => cache.TryGet("FlakyEmote", out _), TimeSpan.FromSeconds(5)),
+            "The emote cache did not retry a previously failed fetch on a later request.");
+        Assert(
+            attempts >= 2,
+            "The emote cache did not actually make a second network request after the first failed.");
+    }
+
+    /// <summary>
+    /// A recognised emote token with an already-cached image must render as
+    /// that image (an <c>InlineUIContainer</c>), not as styled text - proving
+    /// <see cref="WpfChatRenderer"/> actually prefers the real image over its
+    /// text fallback once one is available, rather than always falling back.
+    /// </summary>
+    private static void TestChatRenderEmbedsCachedEmoteImage()
+    {
+        using var httpClient = new HttpClient(
+            new StubHttpMessageHandler((_, _) =>
+                Task.FromResult(
+                    new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(OnePixelPngBytes)
+                    })));
+        using var cache = new ChatImageCache(httpClient);
+        cache.SetEmoteCatalog(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Kappa"] = "https://example.invalid/kappa.png"
+            });
+        cache.TryGet("Kappa", out _);
+        Assert(
+            WaitForCondition(() => cache.TryGet("Kappa", out _), TimeSpan.FromSeconds(5)),
+            "The emote cache never finished preparing the image this test depends on.");
+
+        using var thread = new WpfRenderThread("self-test chat emote image");
+        var message = ChatMessageFor("hey Kappa there", emoteNames: ["Kappa"]);
+
+        var containerCount = thread.Invoke(() =>
+        {
+            var block = WpfChatRenderer.BuildTextBlock([message], cache);
+            return block.Inlines.OfType<System.Windows.Documents.InlineUIContainer>().Count();
+        });
+
+        Assert(
+            containerCount == 1,
+            "A recognised emote token with an already-cached image was not embedded as an image.");
+    }
+
+    /// <summary>
+    /// A badge with an already-cached image must render as that image, not
+    /// the bracketed text label - and a badge with no image URL at all (or
+    /// one not yet cached) must still fall back to the label, never to
+    /// nothing. Uses <see cref="ChatImageCache.TryGetByUrl"/> directly - the
+    /// badge path has no catalog indirection, unlike emotes.
+    /// </summary>
+    private static void TestChatRenderEmbedsCachedBadgeImage()
+    {
+        using var httpClient = new HttpClient(
+            new StubHttpMessageHandler((_, _) =>
+                Task.FromResult(
+                    new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(OnePixelPngBytes)
+                    })));
+        using var cache = new ChatImageCache(httpClient);
+        cache.TryGetByUrl("https://example.invalid/mod.png", out _);
+        Assert(
+            WaitForCondition(
+                () => cache.TryGetByUrl("https://example.invalid/mod.png", out _),
+                TimeSpan.FromSeconds(5)),
+            "The badge image cache never finished preparing the image this test depends on.");
+
+        using var thread = new WpfRenderThread("self-test chat badge image");
+        var withImage = ChatMessageFor(
+            "hi",
+            badge: "Mod",
+            badgeImageUrl: "https://example.invalid/mod.png");
+        var withoutImage = ChatMessageFor("hi", badge: "VIP", badgeImageUrl: "");
+
+        var (imageContainers, fallbackText) = thread.Invoke(() =>
+        {
+            var withImageBlock = WpfChatRenderer.BuildTextBlock([withImage], cache);
+            var withoutImageBlock = WpfChatRenderer.BuildTextBlock([withoutImage], cache);
+            var containers = withImageBlock.Inlines
+                .OfType<System.Windows.Documents.InlineUIContainer>()
+                .Count();
+            var fallback = withoutImageBlock.Inlines
+                .OfType<System.Windows.Documents.Run>()
+                .Any(run => run.Text.Contains("[VIP]"));
+            return (containers, fallback);
+        });
+
+        Assert(
+            imageContainers == 1,
+            "A badge with an already-cached image was not embedded as an image.");
+        Assert(
+            fallbackText,
+            "A badge with no image URL did not fall back to its bracketed text label.");
+    }
+
+    /// <summary>
+    /// A message carrying several badges (broadcaster, Prime, an
+    /// unrecognised channel-specific one) must render all of them, not just
+    /// the first - the exact bug a live headset session caught: an earlier
+    /// version picked one badge from a small hardcoded priority list and
+    /// silently discarded the rest.
+    /// </summary>
+    private static void TestChatRenderEmbedsMultipleBadges()
+    {
+        using var httpClient = new HttpClient(
+            new StubHttpMessageHandler((_, _) =>
+                Task.FromResult(
+                    new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(OnePixelPngBytes)
+                    })));
+        using var cache = new ChatImageCache(httpClient);
+        var urls = new[]
+        {
+            "https://example.invalid/broadcaster.png",
+            "https://example.invalid/prime.png",
+            "https://example.invalid/glhf.png"
+        };
+        foreach (var url in urls)
+        {
+            cache.TryGetByUrl(url, out _);
+        }
+
+        Assert(
+            WaitForCondition(
+                () => urls.All(url => cache.TryGetByUrl(url, out _)),
+                TimeSpan.FromSeconds(5)),
+            "The image cache never finished preparing all three badge images this test depends on.");
+
+        using var thread = new WpfRenderThread("self-test chat multiple badges");
+        var message = new SvrBridge.Core.StreamerBotEventPayload
+        {
+            Target = SvrBridge.Core.StreamerBotEventTarget.Chat,
+            User = "user",
+            Text = "hi",
+            Badges =
+            [
+                new SvrBridge.Core.ChatBadge("Broadcaster", urls[0]),
+                new SvrBridge.Core.ChatBadge("Prime", urls[1]),
+                new SvrBridge.Core.ChatBadge("glhf-pledge", urls[2])
+            ]
+        };
+
+        var containerCount = thread.Invoke(() =>
+        {
+            var block = WpfChatRenderer.BuildTextBlock([message], cache);
+            return block.Inlines.OfType<System.Windows.Documents.InlineUIContainer>().Count();
+        });
+
+        Assert(
+            containerCount == 3,
+            $"Expected all 3 badges on the message to render as images, but only {containerCount} did.");
+    }
+
+    private static bool WaitForCondition(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return true;
+            }
+
+            System.Threading.Thread.Sleep(20);
+        }
+
+        return condition();
+    }
+
+    private sealed class StubHttpMessageHandler(
+        Func<HttpRequestMessage, System.Threading.CancellationToken, Task<HttpResponseMessage>> responder)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            System.Threading.CancellationToken cancellationToken) =>
+            responder(request, cancellationToken);
+    }
+
+    private static SvrBridge.Core.StreamerBotEventPayload ChatMessageFor(
+        string text,
+        string user = "user",
+        string colour = "",
+        string badge = "",
+        string badgeImageUrl = "",
+        IReadOnlyList<string>? emoteNames = null) =>
+        new()
+        {
+            Target = SvrBridge.Core.StreamerBotEventTarget.Chat,
+            User = user,
+            Colour = colour,
+            Badge = badge,
+            BadgeImageUrl = badgeImageUrl,
+            Text = text,
+            EmoteNames = emoteNames ?? []
+        };
 
     private static void Assert(bool condition, string message)
     {

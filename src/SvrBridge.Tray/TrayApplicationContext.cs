@@ -21,6 +21,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private StreamerBotEventStream? _eventStream;
     private Task? _eventPump;
     private EventStreamSettings? _appliedEventStream;
+    private readonly object _emoteCatalogGate = new();
+    private StreamerBotEventStream? _emoteCatalogFetchedFor;
     private UserSettings _settings;
     private bool _dashboardAvailable;
     private bool _isExiting;
@@ -211,6 +213,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // for a user who has configured a connection but no shortcuts yet,
             // and an unreachable feed never stops one being delivered.
             await RestartEventStreamLockedAsync();
+            _ = EnsureEmoteCatalogAsync();
 
             try
             {
@@ -326,11 +329,100 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var stream = new StreamerBotEventStream(
             _settings.ToAppConfig().StreamerBot,
             OnActivity);
-        stream.StateChanged += state => _mainForm.UpdateEventStreamState(state);
+        stream.StateChanged += state =>
+        {
+            _mainForm.UpdateEventStreamState(state);
+            if (state == StreamerBotStreamState.Connected)
+            {
+                _ = EnsureEmoteCatalogAsync();
+            }
+        };
         _eventStream = stream;
         _eventPump = ConsumeEventStreamAsync(stream);
         _mainForm.UpdateEventStreamState(stream.State);
         stream.Start();
+    }
+
+    /// <summary>Bounded retry window for delivering a fetched catalog to a worker that is not up yet.</summary>
+    private const int EmoteCatalogDeliveryAttempts = 15;
+
+    private static readonly TimeSpan EmoteCatalogRetryDelay = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Loads the Twitch/BetterTTV/FrankerFaceZ/7TV emote catalog once per
+    /// connected event stream, via Streamer.bot's own <c>TwitchGetEmotes</c>
+    /// request - confirmed live to aggregate all four sources with ready
+    /// image URLs, so nothing platform-specific needs to live here beyond
+    /// asking for it. Called both when a stream freshly connects and when
+    /// settings change without the stream needing to restart (chat can be
+    /// turned on while an already-connected stream keeps running), so it
+    /// guards its own idempotency rather than relying on either caller to.
+    /// <para>
+    /// Fetching from Streamer.bot and delivering to the worker are guarded
+    /// separately. The event stream routinely connects before the SteamVR
+    /// worker has finished starting, so a single delivery attempt that loses
+    /// that race would otherwise fetch a perfectly good catalog and then
+    /// silently drop it forever - confirmed live: the very first run logged
+    /// exactly that. Only the fetch is marked done-once; delivery retries on
+    /// a bounded delay until a worker exists to receive it.
+    /// </para>
+    /// </summary>
+    private async Task EnsureEmoteCatalogAsync()
+    {
+        var stream = _eventStream;
+        if (stream is null || !_settings.ChatEnabled || stream.State != StreamerBotStreamState.Connected)
+        {
+            return;
+        }
+
+        lock (_emoteCatalogGate)
+        {
+            if (ReferenceEquals(_emoteCatalogFetchedFor, stream))
+            {
+                return;
+            }
+
+            _emoteCatalogFetchedFor = stream;
+        }
+
+        try
+        {
+            using var response = await stream.SendRequestAsync("TwitchGetEmotes", CancellationToken.None);
+            var catalog = TwitchEmoteCatalog.Parse(response.RootElement);
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.emote_catalog",
+                    $"Loaded {catalog.Count} Twitch/BTTV/FFZ/7TV emotes from Streamer.bot."));
+
+            for (var attempt = 0; attempt < EmoteCatalogDeliveryAttempts; attempt++)
+            {
+                if (_engine.SetEmoteCatalog(catalog.ImageUrlsByName))
+                {
+                    return;
+                }
+
+                await Task.Delay(EmoteCatalogRetryDelay);
+            }
+
+            OnActivity(
+                new BridgeActivity(
+                    "openvr.emote_catalog_unavailable",
+                    "The Twitch emote catalog could not be delivered - no SteamVR session became "
+                    + "available in time.",
+                    BridgeLogLevel.Debug));
+        }
+        catch (Exception exception)
+        {
+            // Emote images sit on top of chat, which already works without
+            // them - a failure here must not affect chat itself. The guard
+            // above means this will not retry until the stream reconnects,
+            // an acceptable cadence for something this infrequently needed.
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.emote_catalog_failed",
+                    $"Could not load the Twitch emote catalog: {exception.Message}",
+                    BridgeLogLevel.Warning));
+        }
     }
 
     private async Task StopEventStreamLockedAsync()
@@ -396,6 +488,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         new BridgeActivity(
                             "openvr.notification_unavailable",
                             "A notification arrived with no SteamVR session to show it on.",
+                            BridgeLogLevel.Debug));
+                }
+
+                if (received.Payload.Target == StreamerBotEventTarget.Chat
+                    && _settings.ChatEnabled
+                    && !_engine.ShowChatMessage(received.Payload))
+                {
+                    // Routine, for the same reason as the notification branch
+                    // above.
+                    OnActivity(
+                        new BridgeActivity(
+                            "openvr.chat_unavailable",
+                            "A chat message arrived with no SteamVR session to show it on.",
                             BridgeLogLevel.Debug));
                 }
             }
