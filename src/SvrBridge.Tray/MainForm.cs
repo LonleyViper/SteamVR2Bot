@@ -13,6 +13,8 @@ internal sealed class MainForm : Form
     private readonly TextBox _address = new();
     private readonly TextBox _password = new();
     private readonly CheckBox _showPassword = new();
+    private readonly CheckBox _eventStream = new();
+    private readonly Label _eventStreamState = new();
     private readonly Button _add = new();
     private readonly Button _edit = new();
     private readonly Button _remove = new();
@@ -71,7 +73,8 @@ internal sealed class MainForm : Form
             ActionId = first?.ActionId ?? "",
             GestureMode = first?.Gesture.Mode ?? ChordMode.Modifier,
             Shortcuts = _shortcutItems.ToArray(),
-            StartBridgeWhenAppOpens = true
+            StartBridgeWhenAppOpens = true,
+            EventStreamEnabled = _eventStream.Checked
         };
     }
 
@@ -82,6 +85,7 @@ internal sealed class MainForm : Form
         {
             _address.Text = settings.StreamerBotAddress;
             _password.Text = settings.Password;
+            _eventStream.Checked = settings.EventStreamEnabled;
             _shortcutItems.Clear();
             _shortcutItems.AddRange(settings.GetShortcuts());
             RefreshShortcutGrid();
@@ -129,6 +133,29 @@ internal sealed class MainForm : Form
             + $"{DateTime.Now:HH:mm:ss}  {message}");
         _activity.SelectionStart = _activity.TextLength;
         _activity.ScrollToCaret();
+    }
+
+    /// <summary>
+    /// Shows what the Streamer.bot event feed is doing. A null state means the
+    /// feature is switched off, which is not the same as a feed that is trying
+    /// and failing to connect.
+    /// </summary>
+    public void UpdateEventStreamState(StreamerBotStreamState? state)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => UpdateEventStreamState(state));
+            return;
+        }
+
+        _eventStreamState.Text = state switch
+        {
+            StreamerBotStreamState.Connecting => "Connecting to Streamer.bot…",
+            StreamerBotStreamState.Connected => "Listening for Streamer.bot broadcasts.",
+            StreamerBotStreamState.Reconnecting =>
+                "Streamer.bot is not answering; retrying in the background.",
+            _ => "Not listening."
+        };
     }
 
     public void SetRunning(bool running)
@@ -349,6 +376,27 @@ internal sealed class MainForm : Form
         _showPassword.CheckedChanged += (_, _) =>
             _password.UseSystemPasswordChar = !_showPassword.Checked;
         panel.Controls.Add(_showPassword);
+
+        _eventStream.Text = "Listen for Streamer.bot chat and events (preview)";
+        _eventStream.AutoSize = true;
+        _eventStream.Margin = new Padding(0, 14, 0, 0);
+        _eventStream.CheckedChanged += (_, _) => NotifySettingsChanged();
+        panel.Controls.Add(_eventStream);
+        panel.Controls.Add(new Label
+        {
+            Text = "Streamer.bot actions can broadcast messages to this app with the "
+                   + "“WebsocketBroadcastJson” sub-action. Turn this on to see them arrive "
+                   + "on the Activity tab.",
+            AutoSize = true,
+            MaximumSize = new Size(650, 0),
+            ForeColor = Color.FromArgb(92, 101, 112),
+            Margin = new Padding(20, 0, 0, 2)
+        });
+        _eventStreamState.AutoSize = true;
+        _eventStreamState.ForeColor = Color.FromArgb(92, 101, 112);
+        _eventStreamState.Margin = new Padding(20, 0, 0, 6);
+        _eventStreamState.Text = "Not listening.";
+        panel.Controls.Add(_eventStreamState);
 
         ConfigureButton(_findActions, "Refresh Streamer.bot actions", false);
         _findActions.Click += (_, _) => FindActionsRequested?.Invoke();

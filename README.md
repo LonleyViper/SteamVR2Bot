@@ -215,8 +215,28 @@ The same events are written as structured JSON lines under:
 %LOCALAPPDATA%\SteamVR2Bot\Logs
 ```
 
-Use **Open logs** in the app or tray menu. Logs are kept for 14 days and never
-contain the Streamer.bot password.
+Use **Open logs** in the app or tray menu. Logs are kept for 14 days.
+
+### What the logs do and do not keep
+
+Kept for 14 days:
+
+- What SteamVR2Bot did — controller input edges, gesture detection, dashboard
+  state, worker restarts, and Streamer.bot delivery and acknowledgement.
+- For the Streamer.bot event feed, only that a payload arrived, what kind it was
+  (chat, notification, or control), and how many have arrived this session.
+
+Never written to disk:
+
+- The Streamer.bot password, which Windows protects for your user account.
+- **Chat message text, viewer names, and anything else a viewer wrote.** Those
+  are held in memory only, for as long as it takes to draw them in VR. Chat is
+  other people's words, and SteamVR2Bot does not archive them on your machine.
+
+So the logs can tell you the event feed is alive, connected, and delivering — but
+they cannot tell you what anyone said. If you need to see message contents while
+setting up the Streamer.bot side, run the console diagnostic host, which prints
+them without retaining them.
 
 ## Restart and network recovery
 

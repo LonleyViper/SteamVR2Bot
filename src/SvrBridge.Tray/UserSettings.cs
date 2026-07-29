@@ -15,6 +15,14 @@ internal sealed record UserSettings
     public IReadOnlyList<ShortcutConfig> Shortcuts { get; init; } = [];
     public bool StartBridgeWhenAppOpens { get; init; }
 
+    /// <summary>
+    /// Whether to hold a second, permanently connected socket that listens for
+    /// Streamer.bot broadcasts. Off by default: it is useless until the user
+    /// has written an action that broadcasts, and it is the only part of the
+    /// app that keeps a connection open when no shortcut is being delivered.
+    /// </summary>
+    public bool EventStreamEnabled { get; init; }
+
     public IReadOnlyList<ShortcutConfig> GetShortcuts()
     {
         if (Shortcuts.Count > 0)
@@ -133,7 +141,8 @@ internal sealed class UserSettingsStore
             ProtectedPassword = Protect(settings.Password),
             GestureMode = settings.GestureMode,
             Shortcuts = settings.GetShortcuts(),
-            StartBridgeWhenAppOpens = settings.StartBridgeWhenAppOpens
+            StartBridgeWhenAppOpens = settings.StartBridgeWhenAppOpens,
+            EventStreamEnabled = settings.EventStreamEnabled
         };
 
         var json = JsonSerializer.Serialize(
@@ -188,7 +197,10 @@ internal sealed class UserSettingsStore
                 Password = Unprotect(saved.ProtectedPassword),
                 GestureMode = saved.GestureMode,
                 Shortcuts = saved.Shortcuts ?? [],
-                StartBridgeWhenAppOpens = saved.StartBridgeWhenAppOpens
+                StartBridgeWhenAppOpens = saved.StartBridgeWhenAppOpens,
+                // Absent from every settings file written before this feature
+                // existed, which is exactly the "off" the default describes.
+                EventStreamEnabled = saved.EventStreamEnabled
             };
         }
         catch (JsonException exception)
@@ -268,5 +280,6 @@ internal sealed class UserSettingsStore
         public ChordMode GestureMode { get; init; } = ChordMode.Modifier;
         public IReadOnlyList<ShortcutConfig>? Shortcuts { get; init; }
         public bool StartBridgeWhenAppOpens { get; init; }
+        public bool EventStreamEnabled { get; init; }
     }
 }

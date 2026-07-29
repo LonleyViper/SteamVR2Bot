@@ -18,6 +18,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly SemaphoreSlim _dashboardGate = new(1, 1);
     private CancellationTokenSource? _bridgeCancellation;
     private Task? _bridgeTask;
+    private StreamerBotEventStream? _eventStream;
+    private Task? _eventPump;
+    private EventStreamSettings? _appliedEventStream;
     private UserSettings _settings;
     private bool _dashboardAvailable;
     private bool _isExiting;
@@ -193,6 +196,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _dashboardAvailable = false;
             await StopRuntimeLockedAsync();
+
+            // Deliberately ahead of the shortcut validation below: the event
+            // feed is a display surface, not a delivery path, so it comes up
+            // for a user who has configured a connection but no shortcuts yet,
+            // and an unreachable feed never stops one being delivered.
+            await RestartEventStreamLockedAsync();
+
             try
             {
                 UserSettingsStore.Validate(_settings);
@@ -274,6 +284,133 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             cancellation.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Rebuilds the Streamer.bot event feed to match the saved settings.
+    /// Called under the runtime gate so it cannot race a settings save.
+    /// </summary>
+    private async Task RestartEventStreamLockedAsync()
+    {
+        // Every settings save restarts the runtime, including saves that only
+        // renamed a shortcut. Dropping a healthy long-lived connection for one
+        // of those would reconnect, re-subscribe and log a line each time, so
+        // only the settings the feed is actually made of are compared.
+        var wanted = new EventStreamSettings(
+            _settings.EventStreamEnabled,
+            _settings.StreamerBotAddress.Trim(),
+            _settings.Password);
+        if (wanted == _appliedEventStream)
+        {
+            return;
+        }
+
+        await StopEventStreamLockedAsync();
+        _appliedEventStream = wanted;
+
+        if (!_settings.EventStreamEnabled)
+        {
+            _mainForm.UpdateEventStreamState(null);
+            return;
+        }
+
+        var stream = new StreamerBotEventStream(
+            _settings.ToAppConfig().StreamerBot,
+            OnActivity);
+        stream.StateChanged += state => _mainForm.UpdateEventStreamState(state);
+        _eventStream = stream;
+        _eventPump = ConsumeEventStreamAsync(stream);
+        _mainForm.UpdateEventStreamState(stream.State);
+        stream.Start();
+    }
+
+    private async Task StopEventStreamLockedAsync()
+    {
+        var stream = _eventStream;
+        var pump = _eventPump;
+        _eventStream = null;
+        _eventPump = null;
+        _appliedEventStream = null;
+
+        if (stream is not null)
+        {
+            await stream.DisposeAsync();
+        }
+
+        if (pump is not null)
+        {
+            // Disposal completes the channel, so the pump is already ending;
+            // waiting keeps two feeds from writing to the log at once when
+            // settings are saved twice in quick succession.
+            await pump;
+        }
+    }
+
+    private async Task ConsumeEventStreamAsync(StreamerBotEventStream stream)
+    {
+        var count = 0L;
+
+        try
+        {
+            await foreach (var received in stream.Events.ReadAllAsync())
+            {
+                count++;
+
+                // What the feed is doing, with nothing in it that identifies a
+                // viewer or repeats what they said. This is the line that is
+                // kept, and it is enough to tell a dead feed from a quiet one.
+                OnActivity(
+                    new BridgeActivity(
+                        "streamerbot.event",
+                        $"Streamer.bot sent a {Describe(received.Payload.Target)} payload "
+                        + $"({count} this session)."));
+
+                // The payload itself, for watching chat arrive while setting the
+                // Streamer.bot side up. Debug keeps it out of the window and
+                // ContainsUserContent keeps it off disk, so it reaches only a
+                // developer reading the console host.
+                OnActivity(
+                    new BridgeActivity(
+                        "streamerbot.event_payload",
+                        $"Streamer.bot {Summarise(received)}",
+                        BridgeLogLevel.Debug,
+                        ContainsUserContent: true));
+            }
+        }
+        catch (Exception exception)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.event_pump_stopped",
+                    $"Stopped reading Streamer.bot events: {exception.Message}",
+                    BridgeLogLevel.Warning));
+        }
+    }
+
+    /// <summary>
+    /// The payload kind, which is this app's own routing decision rather than
+    /// anything the viewer supplied, so it is safe to retain.
+    /// </summary>
+    private static string Describe(StreamerBotEventTarget target) => target switch
+    {
+        StreamerBotEventTarget.Chat => "chat",
+        StreamerBotEventTarget.Notification => "notification",
+        StreamerBotEventTarget.Control => "control",
+        _ => "unrecognised"
+    };
+
+    /// <summary>
+    /// One activity line per payload. Long messages are cut here rather than in
+    /// the parser: the full text belongs to the VR window that Phase 1 onwards
+    /// builds, and only this log line has a width to respect.
+    /// </summary>
+    private static string Summarise(StreamerBotEvent received)
+    {
+        const int maximumLength = 240;
+        var description = received.Payload.Describe().ReplaceLineEndings(" ");
+        return description.Length <= maximumLength
+            ? description
+            : description[..maximumLength] + "…";
     }
 
     private async void TestStreamerBot(ShortcutConfig shortcut)
@@ -626,6 +763,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             await StopRuntimeLockedAsync();
+            await StopEventStreamLockedAsync();
         }
         finally
         {
@@ -685,7 +823,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnActivity(BridgeActivity activity)
     {
-        _mainForm.AddActivity(activity.Message);
+        // Debug lines are the dropped-frame diagnostics from the event feed.
+        // A badly written Streamer.bot action can produce one per message, so
+        // they go to the log file for support and stay out of the window.
+        if (activity.Level != BridgeLogLevel.Debug)
+        {
+            _mainForm.AddActivity(activity.Message);
+        }
+
         _structuredLog.Write(activity);
     }
 
@@ -728,6 +873,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _mainForm.Activate();
         _mainForm.BringToFront();
     }
+
+    /// <summary>The only settings the event feed is built from.</summary>
+    private sealed record EventStreamSettings(
+        bool Enabled,
+        string Address,
+        string Password);
 
     private const int ShowWindowNormal = 1;
 

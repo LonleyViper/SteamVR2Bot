@@ -18,8 +18,19 @@ internal sealed partial class StructuredActivityLog
 
     public string LogDirectory => _logDirectory;
 
-    public void Write(BridgeActivity activity) =>
+    public void Write(BridgeActivity activity)
+    {
+        // The one thing this log will not keep. Redaction can only remove what
+        // it recognises, and a chat message has no pattern to match on - the
+        // whole line is somebody else's words. Dropping it here rather than at
+        // each call site means a future caller cannot forget to.
+        if (activity.ContainsUserContent)
+        {
+            return;
+        }
+
         Write(activity.EventName, activity.Message, activity.Level);
+    }
 
     public void Write(
         string eventName,

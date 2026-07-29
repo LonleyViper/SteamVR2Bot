@@ -1,7 +1,9 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Numerics;
 using System.Net.WebSockets;
+using System.Text;
 using System.Text.Json;
 using SvrBridge.Core;
 
@@ -23,15 +25,18 @@ internal static class SelfTests
         TestInputProbe();
         TestBodyFrame();
         TestAuthenticationHash();
+        TestStreamerBotEventPayload();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
         await TestStreamerBotRestartRecoveryAsync();
         await TestUnconfirmedDeliveryIsNotRetriedAsync();
+        await TestStreamerBotEventStreamAsync();
+        await TestStreamerBotEventStreamPendingRequestsAsync();
         await TestSteamVrSessionRestartAsync();
         Console.WriteLine(
             "SELF-TEST PASS: chord detection, physical controller mapping, authentication, SteamVR worker " +
             "recovery, Streamer.bot restart recovery, no-duplicate delivery, " +
-            "and DoAction round trip.");
+            "event payload parsing, event/response routing, and DoAction round trip.");
     }
 
     private static void TestPhysicalControllerInputs()
@@ -430,6 +435,339 @@ internal static class SelfTests
         var actual = StreamerBotClient.BuildAuthentication("password", "salt", "challenge");
         Assert(actual == expected, "Authentication hash changed unexpectedly.");
     }
+
+    private static void TestStreamerBotEventPayload()
+    {
+        var chat = ParsePayload(
+            """
+            {"v":1,"target":"Chat","user":"Nightbot","colour":"#aabbcc",
+             "badge":"mod","text":"hello there","futureField":{"ignored":true}}
+            """);
+        Assert(
+            chat.Version == 1
+            && chat.Target == StreamerBotEventTarget.Chat
+            && chat.User == "Nightbot"
+            && chat.Colour == "#AABBCC"
+            && chat.Badge == "mod"
+            && chat.Text == "hello there",
+            "A General.Custom chat payload did not parse.");
+
+        // The Streamer.bot side will evolve faster than the app, so an
+        // unversioned payload has to keep working rather than be rejected.
+        var unversioned = ParsePayload("""{"target":"chat","text":"no version"}""");
+        Assert(
+            unversioned.Version == StreamerBotEventPayload.CurrentVersion
+            && unversioned.Colour == "",
+            "A payload with no version was not treated as version 1.");
+
+        var notification = ParsePayload(
+            """{"target":"notification","title":"Raid","text":"20 viewers","duration":2500}""");
+        Assert(
+            notification.Target == StreamerBotEventTarget.Notification
+            && notification.DurationMs == 2500,
+            "A notification payload lost its duration.");
+        Assert(
+            ParsePayload("""{"target":"notification"}""").DurationMs
+                == StreamerBotEventPayload.DefaultDurationMs
+            && ParsePayload("""{"target":"notification","duration":0}""").DurationMs > 0
+            && ParsePayload("""{"target":"notification","duration":9999999}""").DurationMs
+                <= 60_000,
+            "A missing or absurd notification duration was not made safe.");
+
+        Assert(
+            ParsePayload("""{"target":"control","command":" show "}""").Command == "show",
+            "A control payload lost its command.");
+
+        // An unusable colour must become "no colour given" here; the renderer
+        // this feeds is several phases downstream and cannot recover from it.
+        Assert(
+            ParsePayload("""{"target":"chat","colour":"rebeccapurple","accent":"#12345"}""")
+                is { Colour: "", Accent: "" },
+            "An unparsable colour was passed through instead of dropped.");
+
+        AssertDropped("{ this is not json", "Malformed JSON was accepted.");
+        AssertDropped("", "An empty payload was accepted.");
+        AssertDropped("{}", "A payload with no target was accepted.");
+        AssertDropped("""{"target":"hologram","text":"x"}""", "An unknown target was accepted.");
+        AssertDropped("""{"target":7}""", "A non-string target was accepted.");
+        AssertDropped("[1,2,3]", "A payload that was not an object was accepted.");
+    }
+
+    /// <summary>
+    /// Proves the receive pump keeps its two destinations apart, and survives
+    /// the payloads a hand-written Streamer.bot action really produces.
+    /// </summary>
+    private static async Task TestStreamerBotEventStreamAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        var activity = new ConcurrentQueue<BridgeActivity>();
+        await using var stream = new StreamerBotEventStream(
+            new StreamerBotConfig
+            {
+                WebSocketUrl = $"ws://127.0.0.1:{port}/",
+                Password = "password",
+                DryRun = false
+            },
+            activity.Enqueue);
+        stream.Start();
+
+        using var socket = await AcceptEventSubscriberAsync(
+            listener,
+            requireAuthentication: true,
+            timeout.Token);
+
+        // Everything a bad action can send, ahead of the one good message: if
+        // any of these ends the pump, the valid payload below never arrives.
+        await socket.SendAsync(
+            Encoding.UTF8.GetBytes("{ not json at all"),
+            WebSocketMessageType.Text,
+            true,
+            timeout.Token);
+        await SendCustomEventAsync(socket, new { }, timeout.Token);
+        await SendCustomEventAsync(
+            socket,
+            new { target = "hologram", text = "unknown target" },
+            timeout.Token);
+        await SendJsonAsync(
+            socket,
+            new { request = "Hello", info = new { name = "A late hello" } },
+            timeout.Token);
+        await SendCustomEventAsync(
+            socket,
+            new
+            {
+                v = 1,
+                target = "chat",
+                user = "Nightbot",
+                colour = "#00FF00",
+                text = "first message"
+            },
+            timeout.Token);
+
+        var first = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            first.Payload.Target == StreamerBotEventTarget.Chat
+            && first.Payload.User == "Nightbot"
+            && first.Payload.Text == "first message",
+            "The event pump did not survive malformed frames ahead of a good one.");
+
+        // A response and an event now interleave on the same socket, which is
+        // the case that made a second connection necessary in the first place.
+        var request = stream.SendRequestAsync("GetActions", timeout.Token);
+        using var requested = await ReceiveJsonAsync(socket, timeout.Token);
+        Assert(
+            requested.RootElement.GetProperty("request").GetString() == "GetActions",
+            "The event stream did not send the requested operation.");
+        var requestId = requested.RootElement.GetProperty("id").GetString();
+
+        await SendCustomEventAsync(
+            socket,
+            new { target = "notification", title = "Raid", text = "20 viewers" },
+            timeout.Token);
+        await SendJsonAsync(
+            socket,
+            new { status = "ok", id = requestId, actions = Array.Empty<string>() },
+            timeout.Token);
+
+        using var response = await request.WaitAsync(timeout.Token);
+        Assert(
+            response.RootElement.GetProperty("id").GetString() == requestId,
+            "A response frame was not routed back to its request.");
+
+        var second = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            second.Payload.Target == StreamerBotEventTarget.Notification
+            && second.Payload.Title == "Raid",
+            "An event frame sent mid-request was not routed to the event channel.");
+        Assert(
+            stream.PendingRequestCount == 0,
+            "A completed request was left in the pending table.");
+        Assert(
+            activity.Any(entry =>
+                entry.EventName == "streamerbot.event_dropped"
+                && entry.Level == BridgeLogLevel.Debug),
+            "Dropped frames were not reported at debug level.");
+    }
+
+    /// <summary>
+    /// The pending table is the one place in the event stream that can leak, so
+    /// both non-success exits from a request are checked explicitly.
+    /// </summary>
+    private static async Task TestStreamerBotEventStreamPendingRequestsAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        await using var stream = new StreamerBotEventStream(
+            new StreamerBotConfig
+            {
+                WebSocketUrl = $"ws://127.0.0.1:{port}/",
+                DryRun = false
+            });
+        stream.Start();
+
+        // No password configured and no authentication offered: the other half
+        // of the handshake the action client performs.
+        var socket = await AcceptEventSubscriberAsync(
+            listener,
+            requireAuthentication: false,
+            timeout.Token);
+
+        using (var giveUp = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token))
+        {
+            giveUp.CancelAfter(TimeSpan.FromMilliseconds(250));
+            try
+            {
+                using var abandoned = await stream.SendRequestAsync("GetActions", giveUp.Token);
+                throw new InvalidOperationException(
+                    "SELF-TEST FAIL: an unanswered request completed.");
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected: the mock never answers this one.
+            }
+        }
+
+        Assert(
+            stream.PendingRequestCount == 0,
+            "A cancelled request was left in the pending table.");
+
+        var pending = stream.SendRequestAsync("GetActions", timeout.Token);
+        using var sent = await ReceiveJsonAsync(socket, timeout.Token);
+        socket.Abort();
+        socket.Dispose();
+
+        try
+        {
+            using var lost = await pending.WaitAsync(timeout.Token);
+            throw new InvalidOperationException(
+                "SELF-TEST FAIL: a request survived the socket it was sent on.");
+        }
+        catch (Exception exception) when (exception is not InvalidOperationException)
+        {
+            // Expected: the connection failed underneath the request.
+        }
+
+        Assert(
+            stream.PendingRequestCount == 0,
+            "A request left behind by a dropped socket was not removed.");
+    }
+
+    private static StreamerBotEventPayload ParsePayload(string json)
+    {
+        Assert(
+            StreamerBotEventPayload.TryParse(json, out var payload, out var rejection),
+            $"A valid payload was rejected: {rejection}");
+        return payload!;
+    }
+
+    private static void AssertDropped(string json, string message)
+    {
+        Assert(
+            !StreamerBotEventPayload.TryParse(json, out _, out var rejection),
+            message);
+        Assert(rejection.Length > 0, $"{message} (no reason was reported)");
+    }
+
+    /// <summary>
+    /// Plays the Streamer.bot side of a subscriber connection and hands back
+    /// the socket so a test can push frames down it.
+    /// </summary>
+    private static async Task<WebSocket> AcceptEventSubscriberAsync(
+        HttpListener listener,
+        bool requireAuthentication,
+        CancellationToken cancellationToken)
+    {
+        var context = await listener.GetContextAsync().WaitAsync(cancellationToken);
+        var webSocketContext = await context.AcceptWebSocketAsync(subProtocol: null);
+        var socket = webSocketContext.WebSocket;
+
+        await SendJsonAsync(
+            socket,
+            requireAuthentication
+                ? new
+                {
+                    request = "Hello",
+                    info = new { instanceId = "self-test", name = "Mock Streamer.bot" },
+                    authentication = new { salt = "salt", challenge = "challenge" }
+                }
+                : (object)new
+                {
+                    request = "Hello",
+                    info = new { instanceId = "self-test", name = "Mock Streamer.bot" }
+                },
+            cancellationToken);
+
+        if (requireAuthentication)
+        {
+            using var authentication = await ReceiveJsonAsync(socket, cancellationToken);
+            Assert(
+                authentication.RootElement.GetProperty("request").GetString() == "Authenticate",
+                "The event stream did not authenticate.");
+            Assert(
+                authentication.RootElement.GetProperty("authentication").GetString()
+                == "zTM5ki6L2vVvBQiTG9ckH1Lh64AbnCf6XZ226UmnkIA=",
+                "The event stream sent an incorrect authentication value.");
+            await SendJsonAsync(
+                socket,
+                new
+                {
+                    status = "ok",
+                    id = authentication.RootElement.GetProperty("id").GetString()
+                },
+                cancellationToken);
+        }
+
+        using var subscribe = await ReceiveJsonAsync(socket, cancellationToken);
+        Assert(
+            subscribe.RootElement.GetProperty("request").GetString() == "Subscribe",
+            "The event stream did not subscribe.");
+        var subscribed = subscribe.RootElement
+            .GetProperty("events")
+            .GetProperty("General")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        Assert(
+            subscribed.Length == 1 && subscribed[0] == "Custom",
+            "The event stream subscribed to something other than General.Custom.");
+        await SendJsonAsync(
+            socket,
+            new { status = "ok", id = subscribe.RootElement.GetProperty("id").GetString() },
+            cancellationToken);
+
+        return socket;
+    }
+
+    private static Task SendCustomEventAsync(
+        WebSocket socket,
+        object data,
+        CancellationToken cancellationToken) =>
+        SendJsonAsync(
+            socket,
+            new
+            {
+                timeStamp = DateTimeOffset.Now.ToString("O"),
+                @event = new { source = "General", type = "Custom" },
+                data
+            },
+            cancellationToken);
 
     private static async Task TestStreamerBotRoundTripAsync()
     {

@@ -4,13 +4,27 @@ public enum BridgeLogLevel
 {
     Info,
     Warning,
-    Error
+    Error,
+
+    // Appended rather than ordered by severity so that Info stays the zero
+    // value: anything that forgets to say what level it is should read as an
+    // ordinary activity line, not as diagnostics.
+    Debug
 }
 
+/// <param name="ContainsUserContent">
+/// Set when the message quotes something a viewer wrote, rather than describing
+/// what this app did. Everything else in this app is its own telemetry and is
+/// safe to keep on disk for support; viewer chat is other people's words, and
+/// retaining it for 14 days is a category of data collection this app has never
+/// made and should not start making silently. The structured log refuses these
+/// entries, so the flag is the retention decision rather than a hint about one.
+/// </param>
 public sealed record BridgeActivity(
     string EventName,
     string Message,
-    BridgeLogLevel Level = BridgeLogLevel.Info);
+    BridgeLogLevel Level = BridgeLogLevel.Info,
+    bool ContainsUserContent = false);
 
 public enum BindingAvailability
 {

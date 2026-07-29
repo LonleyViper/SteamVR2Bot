@@ -45,7 +45,8 @@ internal static class TraySelfTests
                         ActionId = "a0ff6f91-a51e-4b7d-948b-5e03ff4a82f0"
                     }
                 ],
-                StartBridgeWhenAppOpens = true
+                StartBridgeWhenAppOpens = true,
+                EventStreamEnabled = true
             };
 
             store.Save(expected);
@@ -62,6 +63,7 @@ internal static class TraySelfTests
                 actual.StreamerBotAddress == expected.StreamerBotAddress
                 && actual.Password == expected.Password
                 && actual.StartBridgeWhenAppOpens
+                && actual.EventStreamEnabled
                 && actualShortcut.Id == expectedShortcut.Id
                 && actualShortcut.Name == expectedShortcut.Name
                 && actualShortcut.SafetyInput == expectedShortcut.SafetyInput
@@ -114,6 +116,25 @@ internal static class TraySelfTests
             Assert(
                 logText.Contains("\"event\":\"self_test\"", StringComparison.Ordinal),
                 "The structured log omitted its event name.");
+
+            // A settings file written before the event feed existed has no such
+            // field, and must still load — with the feed off, which is what
+            // its absence means.
+            File.WriteAllText(
+                Path.Combine(testDirectory, "settings.json"),
+                """
+                {
+                  "StreamerBotAddress": "ws://127.0.0.1:8080/1",
+                  "ActionName": "Legacy action",
+                  "ActionId": "legacy-id",
+                  "ProtectedPassword": "",
+                  "GestureMode": 1,
+                  "StartBridgeWhenAppOpens": true
+                }
+                """);
+            Assert(
+                !store.Load().EventStreamEnabled,
+                "An upgraded settings file turned the event feed on by itself.");
 
             AssertThrows(
                 () => UserSettingsStore.Validate(
