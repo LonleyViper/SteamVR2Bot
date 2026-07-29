@@ -853,3 +853,32 @@ complete.** What remains is teardown hygiene, not whether the substrate works.
 No miss/duplicate count was taken for step 11. The delivery-count discipline
 used for the original 20/20 and 21/21 runs was not repeated here, because this
 was a regression check on an unchanged delivery path rather than a change to it.
+
+### Packaging — 2026-07-29
+
+`scripts\Publish-Poc.ps1` republished both self-contained single-file binaries
+over the previous 28/07 package. The tagged
+`artifacts\release\SteamVR2Bot-v0.1.1-windows-x64` copy was left untouched, so
+the last released build is still recoverable.
+
+| Artifact | Built | Packaged self-test |
+|---|---|---|
+| `artifacts\publish\SteamVR2Bot.exe` | 2026-07-29 12:43 | PASS (exit 0) |
+| `artifacts\publish\diagnostics\SteamVR2Bot.Diagnostics.exe` | 2026-07-29 12:43 | PASS |
+
+SteamVR was running during the packaged tray self-test, so
+`TestOverlayHandleRoundTrip` executed rather than skipped. The
+create → find → destroy → find-again round trip therefore holds in the
+**published single-file binary**, not only in the Debug build — which matters,
+because that is the binary a user installs and the one whose overlay indices
+would fail silently if trimming or single-file packaging had disturbed the
+interop layer.
+
+`artifacts/` remains gitignored; no binary entered the repository.
+
+### Version note
+
+The published package is Phase 1 code still carrying the v0.1.1 version from
+the previous release. It has not been tagged or renamed as a new release, and
+steps 12–14 (overlay teardown) are still unrun, so this package is a
+development build rather than a shippable one.
