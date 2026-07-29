@@ -292,6 +292,30 @@ public sealed class BridgeEngine
         }
     }
 
+    /// <summary>
+    /// Queues a notification on the running worker's overlay.
+    /// <para>
+    /// Like <see cref="SetTestOverlayEnabled"/> this never falls back to a
+    /// temporary session: a notification means nothing once the session
+    /// showing it is immediately disposed, and only the worker actually
+    /// driving the headset can display one.
+    /// </para>
+    /// </summary>
+    /// <returns>False when no SteamVR session is running to show it on.</returns>
+    public bool ShowNotification(StreamerBotEventPayload payload)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.ShowNotification(payload);
+            return true;
+        }
+    }
+
     public async Task ShowDashboardAsync(
         AppConfig config,
         string imagePath,

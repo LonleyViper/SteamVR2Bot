@@ -197,7 +197,8 @@ internal sealed class VrTestOverlay : IDisposable
     /// GDI+ <c>Format32bppArgb</c> is BGRA in memory on little-endian Windows;
     /// <c>SetOverlayRaw</c> wants RGBA. Without the swap the overlay renders
     /// with red and blue exchanged, which looks like a plausible colour choice
-    /// rather than a bug - so it is worth stating why this loop exists.
+    /// rather than a bug - so it is worth stating why this calls
+    /// <see cref="OverlayPixelFormat.SwapRedAndBlue"/> below.
     /// </summary>
     private static byte[] ToRgba(Bitmap bitmap)
     {
@@ -218,11 +219,7 @@ internal sealed class VrTestOverlay : IDisposable
                     bitmap.Width * 4);
             }
 
-            for (var index = 0; index < pixels.Length; index += 4)
-            {
-                (pixels[index], pixels[index + 2]) = (pixels[index + 2], pixels[index]);
-            }
-
+            OverlayPixelFormat.SwapRedAndBlue(pixels);
             return pixels;
         }
         finally

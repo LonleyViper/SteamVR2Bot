@@ -3,6 +3,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -14,6 +15,19 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SvrBridge.Core\SvrBridge.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Combining UseWindowsForms with UseWPF changes which namespaces the SDK
+      adds implicitly - it drops System.IO and System.Net.Http rather than
+      merging them in, which would otherwise silently break every existing
+      file that used File/Directory/Path/InvalidDataException unqualified.
+      Restored explicitly so the WinForms-only implicit surface this codebase
+      was written against does not change underneath it.
+    -->
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
   </ItemGroup>
 
   <ItemGroup>

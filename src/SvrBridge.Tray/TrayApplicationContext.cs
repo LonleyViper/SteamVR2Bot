@@ -384,6 +384,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         $"Streamer.bot {Summarise(received)}",
                         BridgeLogLevel.Debug,
                         ContainsUserContent: true));
+
+                if (received.Payload.Target == StreamerBotEventTarget.Notification
+                    && _settings.NotificationsEnabled
+                    && !_engine.ShowNotification(received.Payload))
+                {
+                    // Routine rather than a warning: this only means no worker
+                    // is currently running to draw on, which happens between
+                    // launch and Ready like any other display surface.
+                    OnActivity(
+                        new BridgeActivity(
+                            "openvr.notification_unavailable",
+                            "A notification arrived with no SteamVR session to show it on.",
+                            BridgeLogLevel.Debug));
+                }
             }
         }
         catch (Exception exception)

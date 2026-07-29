@@ -23,6 +23,16 @@ internal sealed record UserSettings
     /// </summary>
     public bool EventStreamEnabled { get; init; }
 
+    /// <summary>
+    /// Whether a Streamer.bot payload with <c>target: "notification"</c> draws
+    /// a head-anchored panel in the headset. Off by default, and meaningless
+    /// while <see cref="EventStreamEnabled"/> is off - there is no feed to draw
+    /// a notification from - so the two are independent switches rather than
+    /// one implying the other, the same way the feed itself does not imply a
+    /// shortcut is configured.
+    /// </summary>
+    public bool NotificationsEnabled { get; init; }
+
     public IReadOnlyList<ShortcutConfig> GetShortcuts()
     {
         if (Shortcuts.Count > 0)
@@ -142,7 +152,8 @@ internal sealed class UserSettingsStore
             GestureMode = settings.GestureMode,
             Shortcuts = settings.GetShortcuts(),
             StartBridgeWhenAppOpens = settings.StartBridgeWhenAppOpens,
-            EventStreamEnabled = settings.EventStreamEnabled
+            EventStreamEnabled = settings.EventStreamEnabled,
+            NotificationsEnabled = settings.NotificationsEnabled
         };
 
         var json = JsonSerializer.Serialize(
@@ -200,7 +211,8 @@ internal sealed class UserSettingsStore
                 StartBridgeWhenAppOpens = saved.StartBridgeWhenAppOpens,
                 // Absent from every settings file written before this feature
                 // existed, which is exactly the "off" the default describes.
-                EventStreamEnabled = saved.EventStreamEnabled
+                EventStreamEnabled = saved.EventStreamEnabled,
+                NotificationsEnabled = saved.NotificationsEnabled
             };
         }
         catch (JsonException exception)
@@ -281,5 +293,6 @@ internal sealed class UserSettingsStore
         public IReadOnlyList<ShortcutConfig>? Shortcuts { get; init; }
         public bool StartBridgeWhenAppOpens { get; init; }
         public bool EventStreamEnabled { get; init; }
+        public bool NotificationsEnabled { get; init; }
     }
 }

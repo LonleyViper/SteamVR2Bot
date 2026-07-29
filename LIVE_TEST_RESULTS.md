@@ -924,25 +924,27 @@ calling `CPH.WebsocketBroadcastJson` with a body such as
 | 1 | Turn on both settings above, save, trigger one notification | A panel fades in a comfortable distance in front of and slightly below eye level, wherever the wearer is looking, with the title and text legible and facing the wearer (not blank or mirrored — the head-anchor transform is translation-only, unlike the wrist test overlay's tipped one, and has not been headset-confirmed) | **PASS** — user-reported legible and correctly oriented |
 | 2 | Check colours on the panel and its accent border | Background reads dark navy, the border reads the requested accent colour (`#60C8FF` → blue) — **not** orange/brown, which would mean the BGRA↔RGBA swap is inverted | **PASS** — user-confirmed |
 | 3 | Watch the fade in and the fade out | Both are smooth ramps with no pop to full opacity and no visible step; the panel is not stuck part-way transparent at any point | **PASS** — user-confirmed |
-| 4 | Turn the head while the panel is showing | The panel stays in the same relative spot in front of the eyes rather than staying fixed in the room | not run |
+| 4 | Turn the head while the panel is showing | The panel stays in the same relative spot in front of the eyes rather than staying fixed in the room | **PASS** — user-confirmed |
 | 5 | Trigger two notifications back to back (within a second of each other) | They play one after another, not overlapping and not silently dropping the second | **PASS** — subsumed by step 6's burst run |
 | 6 | Trigger four or five notifications in a rapid burst | All queue and play in the order sent; none are skipped and the app does not fall behind indefinitely | **PASS** — activity log shows 5 payloads received within 1 s at 13:32:23–24, then "A notification is showing" four more times at 13:32:23/26/29/31, matching the queued 2.5 s duration with no overlap or drop |
-| 7 | Let a notification finish and leave the feed idle for a minute | The panel is gone and stays gone; no flicker, no stray reappearance | not run |
+| 7 | Let a notification finish and leave the feed idle for a minute | The panel is gone and stays gone; no flicker, no stray reappearance | **PASS** — user-confirmed |
 | 8 | Send a broadcast with `target` other than `notification` (e.g. `chat`) | No panel appears; the activity log still shows the payload arriving | **PASS** — activity log shows 8 chat payloads received (13:33:19 ×4, 13:33:53–54 ×4) with **no** "A notification is showing" line after any of them |
 | 9 | Turn off **Show notification broadcasts in the headset**, trigger one | No panel appears | **PASS** — activity log shows payload 15 received at 13:34:53 after the setting was unchecked, with no "A notification is showing" line; user confirmed the panel did not appear |
 | 10 | Open the SteamVR dashboard → SteamVR2Bot | Dashboard still opens and renders exactly as before | **PASS** — "SteamVR dashboard image loaded" and repeated activate/deactivate cycles appear throughout the same session with no error |
-| 11 | Click through the shortcut list and action picker on the dashboard | Pages render and respond as before; unaffected by the notification surface | not run — session log only shows the default List page, no navigation into other pages |
-| 12 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | not run — asked but not yet confirmed; see note below |
-| 13 | Trigger a notification while the SteamVR dashboard is open | Panel still appears — per §8 of the plan, notifications are not suppressed while the dashboard is open | not run |
+| 11 | Click through the shortcut list and action picker on the dashboard | Pages render and respond as before; unaffected by the notification surface | **PASS** — user-confirmed |
+| 12 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | **PASS** — user-confirmed; no detailed miss/duplicate count captured for this row, consistent with how Phase 1 step 11 above is recorded |
+| 13 | Trigger a notification while the SteamVR dashboard is open | Panel still appears — per §8 of the plan, notifications are not suppressed while the dashboard is open | **PASS** — user-confirmed |
 
 Steps 1–3, 5, 6, 8, 9 and 10 were confirmed from the 2026-07-29 13:28–13:35
 session (tray log pasted by the user) plus direct user confirmation of the
 purely visual checks (legibility/orientation, colour, fade smoothness) that
-the log cannot show. Steps 4, 7, 11 and 13 were not exercised in that session.
-Step 12 is still open: the session log shows dashboard activate/deactivate
-cycles and raw input activity (e.g. "physical inputs: Right Trigger" at
-13:30:36) but no delivery-confirmation line, so it is recorded as not run
-rather than assumed from the input registering.
+the log cannot show. Steps 4, 7, 11, 12 and 13 were not exercised in that
+same logged session, but were confirmed separately by the user on 2026-07-29
+as passing, without a raw log excerpt — the same user-reported convention
+used for Phase 1 steps 12–14 above. Step 12 (shortcut delivery with the
+dashboard closed) is the product contract; the user separately reported and
+fixed an unrelated grip-input regression the same day (see "Grip stolen from
+running games" below), which did not affect shortcut delivery itself.
 
 ### Frame-timing impact
 

@@ -36,6 +36,15 @@ public interface IOpenVrSession : IDisposable
     void SetTestOverlayEnabled(bool enabled)
     {
     }
+
+    /// <summary>
+    /// Queues a head-anchored notification on the session's overlay. A no-op
+    /// by default: only the hosted worker can draw one, and a session that
+    /// cannot should drop the request rather than fail the caller.
+    /// </summary>
+    void ShowNotification(StreamerBotEventPayload payload)
+    {
+    }
 }
 
 /// <summary>

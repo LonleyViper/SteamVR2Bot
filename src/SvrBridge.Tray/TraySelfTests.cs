@@ -11,6 +11,11 @@ internal static class TraySelfTests
         TestRenamedDataDirectoryMigration();
         TestOverlayTransformComposition();
         TestOverlayHandleRoundTrip();
+        TestNotificationPlayerQueueing();
+        TestNotificationDurationClampingEndToEnd();
+        TestNotificationAlphaCurve();
+        TestWpfRenderThreadStartsAndShutsDownCleanly();
+        TestNotificationPixelFormatConversion();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -567,6 +572,190 @@ internal static class TraySelfTests
         Assert(
             MathF.Abs(rotated.M13) < 1e-5f && MathF.Abs(rotated.M23 - 1f) < 1e-5f,
             "Rotating a translated overlay transform did not move the translation with it.");
+    }
+
+    /// <summary>
+    /// Covers both queue behaviours in one pass: a burst that overflows the
+    /// bound drops the oldest items rather than the newest, and whatever
+    /// survives plays back in the order it arrived.
+    /// </summary>
+    private static void TestNotificationPlayerQueueing()
+    {
+        var player = new SvrBridge.Core.NotificationPlayer();
+
+        // Enqueue capacity + 2 before ever ticking, so every one of them is
+        // still queued behind whatever plays first - the shape of a burst
+        // "arriving together" per §B3, and the only way to exercise the
+        // bound rather than just the FIFO order.
+        var titles = Enumerable.Range(0, SvrBridge.Core.NotificationPlayer.QueueCapacity + 2)
+            .Select(index => $"n{index}")
+            .ToArray();
+        foreach (var title in titles)
+        {
+            player.Enqueue(NotificationFor(title, 500));
+        }
+
+        Assert(
+            player.QueuedCount == SvrBridge.Core.NotificationPlayer.QueueCapacity,
+            "The notification queue did not bound itself to its capacity.");
+
+        var played = new List<string>();
+        var now = 0L;
+        while (played.Count < SvrBridge.Core.NotificationPlayer.QueueCapacity)
+        {
+            var frame = player.Tick(now);
+            if (frame.IsNewItem && frame.Current is { } current)
+            {
+                played.Add(current.Title);
+            }
+
+            now += 100;
+        }
+
+        Assert(
+            played.SequenceEqual(titles.Skip(2)),
+            "The notification queue did not drop the two oldest items and play the rest in order.");
+    }
+
+    /// <summary>
+    /// Proves the 500-60000 ms clamp in <c>StreamerBotEventPayload.TryParse</c>
+    /// is the duration actually played back, by going through JSON parsing
+    /// rather than constructing the payload directly - which is the "end to
+    /// end" the verification plan asks for.
+    /// </summary>
+    private static void TestNotificationDurationClampingEndToEnd()
+    {
+        Assert(
+            SvrBridge.Core.StreamerBotEventPayload.TryParse(
+                """{"target":"notification","title":"Too short","text":"x","duration":1}""",
+                out var tooShort,
+                out _)
+            && tooShort.DurationMs == 500,
+            "A too-short notification duration was not clamped to the 500 ms minimum.");
+
+        Assert(
+            SvrBridge.Core.StreamerBotEventPayload.TryParse(
+                """{"target":"notification","title":"Too long","text":"x","duration":999999}""",
+                out var tooLong,
+                out _)
+            && tooLong.DurationMs == 60_000,
+            "A too-long notification duration was not clamped to the 60 s maximum.");
+
+        var player = new SvrBridge.Core.NotificationPlayer();
+        player.Enqueue(tooShort!);
+        player.Tick(0);
+        Assert(
+            player.Tick(499).Phase != SvrBridge.Core.NotificationPhase.Idle,
+            "A notification clamped to 500 ms ended before 500 ms had elapsed.");
+        Assert(
+            player.Tick(500).Phase == SvrBridge.Core.NotificationPhase.Idle,
+            "A notification clamped to 500 ms did not end at 500 ms.");
+    }
+
+    /// <summary>
+    /// The fade curve must reach exactly 0 the instant a notification starts
+    /// and again as it finishes, and exactly 1 while it holds - anything else
+    /// is either a flash of full opacity with no fade, or a fade that never
+    /// finishes closing.
+    /// </summary>
+    private static void TestNotificationAlphaCurve()
+    {
+        var player = new SvrBridge.Core.NotificationPlayer();
+        player.Enqueue(NotificationFor("alpha", 5000));
+
+        var start = player.Tick(0);
+        Assert(
+            start.Phase == SvrBridge.Core.NotificationPhase.FadingIn && start.Alpha == 0f,
+            "A notification did not start at alpha 0.");
+
+        var middle = player.Tick(2500);
+        Assert(
+            middle.Phase == SvrBridge.Core.NotificationPhase.Holding && middle.Alpha == 1f,
+            "A notification was not fully opaque during its hold.");
+
+        var nearEnd = player.Tick(4999);
+        Assert(
+            nearEnd.Phase == SvrBridge.Core.NotificationPhase.FadingOut && nearEnd.Alpha < 0.02f,
+            "A notification had not faded back down towards 0 by the end of its duration.");
+
+        Assert(
+            player.Tick(5000).Phase == SvrBridge.Core.NotificationPhase.Idle,
+            "A notification did not end exactly at its duration.");
+    }
+
+    private static SvrBridge.Core.StreamerBotEventPayload NotificationFor(string title, int durationMs) =>
+        new()
+        {
+            Target = SvrBridge.Core.StreamerBotEventTarget.Notification,
+            Title = title,
+            Text = "self-test body",
+            DurationMs = durationMs
+        };
+
+    /// <summary>
+    /// Proves the render thread actually runs dispatched work and that
+    /// <see cref="WpfRenderThread.Dispose"/> joins the OS thread rather than
+    /// merely asking it to stop - a hung dispatcher shutdown would otherwise
+    /// leave a thread behind silently.
+    /// </summary>
+    private static void TestWpfRenderThreadStartsAndShutsDownCleanly()
+    {
+        var thread = new WpfRenderThread("self-test render thread");
+        try
+        {
+            Assert(thread.IsRunning, "The WPF render thread did not start.");
+            Assert(
+                thread.Invoke(() => 21 + 21) == 42,
+                "The WPF render thread did not run dispatched work.");
+        }
+        finally
+        {
+            thread.Dispose();
+        }
+
+        Assert(!thread.IsRunning, "The WPF render thread did not shut down cleanly.");
+    }
+
+    /// <summary>
+    /// Renders a known semi-transparent colour through the exact production
+    /// path - <see cref="WpfOverlayPixelPipeline.RenderToRgba"/> - and checks
+    /// the resulting bytes. This is the one bug class that looks plausible on
+    /// screen and is invisible in a log: a colour left premultiplied comes out
+    /// darkened towards black by roughly its own alpha, which reads as "a
+    /// slightly dim swatch" rather than "the conversion is wrong".
+    /// </summary>
+    private static void TestNotificationPixelFormatConversion()
+    {
+        using var thread = new WpfRenderThread("self-test pixel pipeline");
+        const int size = 32;
+        var pixels = thread.Invoke(() =>
+        {
+            var swatch = new System.Windows.Controls.Border
+            {
+                Width = size,
+                Height = size,
+                Background = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromArgb(128, 200, 50, 10))
+            };
+            return WpfOverlayPixelPipeline.RenderToRgba(swatch, size, size);
+        });
+
+        Assert(
+            pixels.Length == size * size * 4,
+            "The rendered texture was the wrong size for its declared dimensions.");
+
+        // Sampled well inside the swatch, away from any edge antialiasing.
+        var index = (((size / 2) * size) + (size / 2)) * 4;
+        Assert(
+            pixels[index + 3] == 128,
+            "The alpha channel changed during un-premultiplication, which must leave it alone.");
+        Assert(
+            Math.Abs(pixels[index] - 200) <= 3
+            && Math.Abs(pixels[index + 1] - 50) <= 3
+            && Math.Abs(pixels[index + 2] - 10) <= 3,
+            "The WPF render -> un-premultiply -> channel-swap path did not reproduce the source "
+            + $"colour. Got R={pixels[index]} G={pixels[index + 1]} B={pixels[index + 2]} "
+            + $"A={pixels[index + 3]}.");
     }
 
     private static void Assert(bool condition, string message)

@@ -152,6 +152,15 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         }
     }
 
+    /// <summary>
+    /// Fire-and-forget, unlike the other commands: the caller is the event
+    /// feed's consumption loop, and waiting here for a SteamVR round trip per
+    /// notification would stall it against a backlog the worker's own bounded
+    /// queue already exists to absorb.
+    /// </summary>
+    public void ShowNotification(StreamerBotEventPayload payload) =>
+        SendCommand(new OpenVrWorkerCommand("notify", Notification: payload));
+
     public void ShowDashboard(string imagePath)
         => ShowDashboard(imagePath, [], []);
 
@@ -542,6 +551,10 @@ internal static class OpenVrWorker
             // Off unless the user turns it on from the tray menu, and off again
             // on every worker restart. It is a development aid.
             VrTestOverlay? testOverlay = null;
+            // Created lazily by the first "notify" command rather than here,
+            // so a worker that never receives one never reserves the overlay
+            // key or stands up a render thread for nothing.
+            NotificationOverlay? notificationOverlay = null;
             _ = Task.Run(() => ReadCommandsAsync(commands.Writer));
 
             var snapshot = openVr.Poll();
@@ -577,6 +590,28 @@ internal static class OpenVrWorker
                                 "commandResult",
                                 RequestId: command.RequestId,
                                 Error: error));
+                    }
+
+                    if (command.Kind == "notify" && command.Notification is { } notification)
+                    {
+                        try
+                        {
+                            notificationOverlay ??= NotificationOverlay.TryCreate(
+                                openVr,
+                                message => Emit(
+                                    new OpenVrWorkerMessage("log", Message: message)));
+                            notificationOverlay?.Enqueue(notification);
+                        }
+                        catch (Exception exception)
+                        {
+                            // Fire-and-forget: there is no requester waiting on
+                            // a commandResult, so the only way to report this
+                            // is the log, and it must not take the worker down.
+                            Emit(
+                                new OpenVrWorkerMessage(
+                                    "log",
+                                    Message: $"A notification could not be shown: {exception.Message}"));
+                        }
                     }
 
                     if (command.Kind == "testOverlay")
@@ -653,9 +688,10 @@ internal static class OpenVrWorker
                 {
                     // Report before exiting: the parent must tell this apart
                     // from a worker crash, which it would otherwise retry.
-                    // Destroying the overlay first keeps its key from
-                    // outliving the process that owns it.
+                    // Destroying the overlays first keeps their keys from
+                    // outliving the process that owns them.
                     testOverlay?.Dispose();
+                    notificationOverlay?.Dispose();
                     Emit(new OpenVrWorkerMessage("quit"));
                     return 0;
                 }
@@ -688,6 +724,23 @@ internal static class OpenVrWorker
                         new OpenVrWorkerMessage(
                             "log",
                             Message: $"The VR test overlay was turned off after an error: {exception.Message}"));
+                }
+
+                try
+                {
+                    // A true no-op whenever nothing is queued or showing - see
+                    // NotificationOverlay.Tick - so this costs nothing on the
+                    // 10 ms poll loop between notifications.
+                    notificationOverlay?.Tick(Environment.TickCount64);
+                }
+                catch (Exception exception)
+                {
+                    notificationOverlay?.Dispose();
+                    notificationOverlay = null;
+                    Emit(
+                        new OpenVrWorkerMessage(
+                            "log",
+                            Message: $"Notifications were turned off after an error: {exception.Message}"));
                 }
 
                 if (current != snapshot)
@@ -785,7 +838,8 @@ internal sealed record OpenVrWorkerCommand(
     IReadOnlyList<ShortcutConfig>? Shortcuts = null,
     IReadOnlyList<StreamerBotAction>? Actions = null,
     bool Activate = true,
-    bool Enabled = false);
+    bool Enabled = false,
+    StreamerBotEventPayload? Notification = null);
 
 internal sealed record OpenVrWorkerMessage(
     string Kind,

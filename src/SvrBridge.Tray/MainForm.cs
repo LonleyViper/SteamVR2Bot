@@ -15,6 +15,7 @@ internal sealed class MainForm : Form
     private readonly CheckBox _showPassword = new();
     private readonly CheckBox _eventStream = new();
     private readonly Label _eventStreamState = new();
+    private readonly CheckBox _notifications = new();
     private readonly Button _add = new();
     private readonly Button _edit = new();
     private readonly Button _remove = new();
@@ -74,7 +75,8 @@ internal sealed class MainForm : Form
             GestureMode = first?.Gesture.Mode ?? ChordMode.Modifier,
             Shortcuts = _shortcutItems.ToArray(),
             StartBridgeWhenAppOpens = true,
-            EventStreamEnabled = _eventStream.Checked
+            EventStreamEnabled = _eventStream.Checked,
+            NotificationsEnabled = _notifications.Checked
         };
     }
 
@@ -86,6 +88,7 @@ internal sealed class MainForm : Form
             _address.Text = settings.StreamerBotAddress;
             _password.Text = settings.Password;
             _eventStream.Checked = settings.EventStreamEnabled;
+            _notifications.Checked = settings.NotificationsEnabled;
             _shortcutItems.Clear();
             _shortcutItems.AddRange(settings.GetShortcuts());
             RefreshShortcutGrid();
@@ -397,6 +400,21 @@ internal sealed class MainForm : Form
         _eventStreamState.Margin = new Padding(20, 0, 0, 6);
         _eventStreamState.Text = "Not listening.";
         panel.Controls.Add(_eventStreamState);
+
+        _notifications.Text = "Show notification broadcasts in the headset (preview)";
+        _notifications.AutoSize = true;
+        _notifications.Margin = new Padding(20, 6, 0, 0);
+        _notifications.CheckedChanged += (_, _) => NotifySettingsChanged();
+        panel.Controls.Add(_notifications);
+        panel.Controls.Add(new Label
+        {
+            Text = "Payloads with “target”: “notification” draw a head-anchored panel "
+                   + "in VR for a few seconds. Requires the event feed above to be turned on.",
+            AutoSize = true,
+            MaximumSize = new Size(650, 0),
+            ForeColor = Color.FromArgb(92, 101, 112),
+            Margin = new Padding(40, 0, 0, 6)
+        });
 
         ConfigureButton(_findActions, "Refresh Streamer.bot actions", false);
         _findActions.Click += (_, _) => FindActionsRequested?.Invoke();
