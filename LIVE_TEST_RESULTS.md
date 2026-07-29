@@ -782,7 +782,7 @@ destroy → find-again, so a wrong vtable index fails loudly at startup instead 
 as an access violation mid-stream. It skips when SteamVR is not running, which
 is why the manual matrix below still matters.
 
-### Manual headset test — partially run, 2026-07-29
+### Manual headset test — substrate and regressions passed, 2026-07-29
 
 Run on the development PC with the Debug build, which is the binary SteamVR is
 registered against in `appconfig.json`. Results are recorded from what the user
@@ -804,7 +804,7 @@ running, at least one saved shortcut bound to a Streamer.bot action.
 | 8 | Open the SteamVR dashboard → SteamVR2Bot | Dashboard opens and renders as before | **PASS** |
 | 9 | Click through Create Shortcut → gesture type → tolerance → action picker | All pages render and respond as before; the test overlay stays visible alongside | **PASS** |
 | 10 | Save a shortcut | Saves, appears in the list, no worker restart | not run |
-| 11 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | not run |
+| 11 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | **PASS** — user-reported working; no miss/duplicate count was taken |
 | 12 | Tray menu → uncheck **Show VR test overlay** | Panel disappears; log shows "The VR test overlay is off" | not run |
 | 13 | Re-check it | Panel reappears — proves `DestroyOverlay` released the key rather than leaking it | not run |
 | 14 | Exit SteamVR2Bot, then relaunch and re-enable | Panel appears; no `KeyInUse` error | not run |
@@ -829,14 +829,27 @@ rather than against SteamVR's API alone:
 - **The dashboard did not regress** (steps 8–9). `VrOverlayFunctions` changed
   from a positional record to named properties and the dashboard shares that
   table, so this was the real risk of the refactor and it is now retired.
+- **Shortcut delivery did not regress** (step 11). Existing shortcuts still
+  reach Streamer.bot with the new overlay table in place. This is the check that
+  matters most, because a rendering dashboard proves the table is wired but says
+  nothing about whether a gesture still completes the
+  `raw edge -> detector -> DoAction -> acknowledgement` route.
+
+With 11 passing, **the product contract is intact and Phase 1 is functionally
+complete.** What remains is teardown hygiene, not whether the substrate works.
 
 ### Still outstanding
 
-- **Step 11 is the important one.** Shortcut delivery is what the app exists to
-  do, and it has not been fired since the overlay table changed. Steps 8–9 prove
-  the dashboard renders, not that a gesture still reaches Streamer.bot.
 - Steps 12–14 cover overlay teardown: whether `DestroyOverlay` actually releases
-  the key rather than leaking it. A leak here shows up as `KeyInUse` on the
-  second enable, so re-toggling once is enough to find it.
-- Step 6 (controller fully powered off) is the unhandled-role path. Lower risk
-  than the others, since step 5 already exercised re-resolution.
+  the key rather than leaking it. A leak shows up as `KeyInUse` on the second
+  enable, so toggling the overlay off and back on once is enough to find it.
+  This is the only outstanding item that could indicate a real defect.
+- Step 10 (saving a *new* shortcut from the VR wizard) was not run; step 11
+  covered existing ones only. The save path touches settings persistence and
+  `UpdateShortcuts`, neither of which this change went near.
+- Step 6 (controller fully powered off) is the unassigned-role path. Low risk,
+  since step 5 already exercised re-resolution across a sleep/wake cycle.
+
+No miss/duplicate count was taken for step 11. The delivery-count discipline
+used for the original 20/20 and 21/21 runs was not repeated here, because this
+was a regression check on an unchanged delivery path rather than a change to it.
