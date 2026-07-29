@@ -27,6 +27,15 @@ public interface IOpenVrSession : IDisposable
     /// dropping for a reason worth reconnecting after.
     /// </summary>
     bool IsQuitRequested() => false;
+
+    /// <summary>
+    /// Turns the development test overlay on or off. A no-op by default: it is
+    /// a diagnostic for the hosted worker, and a session that cannot draw one
+    /// should ignore the request rather than fail.
+    /// </summary>
+    void SetTestOverlayEnabled(bool enabled)
+    {
+    }
 }
 
 /// <summary>

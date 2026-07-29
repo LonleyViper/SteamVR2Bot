@@ -9,6 +9,8 @@ internal static class TraySelfTests
         TestPackagedViveBinding();
         TestDashboardBottomBarLayout();
         TestRenamedDataDirectoryMigration();
+        TestOverlayTransformComposition();
+        TestOverlayHandleRoundTrip();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -463,6 +465,108 @@ internal static class TraySelfTests
             expected.All(action => actionNames.Contains(action))
             && expected.All(action => outputs.Contains(action, StringComparer.Ordinal)),
             "The packaged Vive binding does not expose every selectable Vive input.");
+    }
+
+    /// <summary>
+    /// Proves the <c>IVROverlay</c> vtable indices address the functions they
+    /// claim to, by round-tripping one throwaway overlay:
+    /// <c>CreateOverlay</c> returns a handle, <c>FindOverlay</c> maps the key
+    /// back to the same handle, <c>DestroyOverlay</c> removes it, and
+    /// <c>FindOverlay</c> then reports it gone.
+    /// <para>
+    /// <b>This is the whole point of the test.</b> A wrong vtable index does not
+    /// throw - it calls a different function with mismatched arguments, which is
+    /// an access violation inside SteamVR at best and silent memory corruption
+    /// at worst, discovered mid-stream in front of an audience. Four calls that
+    /// agree with each other cannot all be pointing at the wrong entries, so
+    /// this converts that failure mode into a loud one at startup.
+    /// </para>
+    /// <para>
+    /// Skipped when SteamVR is not running, because it is real hardware
+    /// interaction rather than a pure unit test and the suite has to pass on a
+    /// desktop with no headset. A skip is not a pass - the manual live test in
+    /// <c>LIVE_TEST_RESULTS.md</c> is what covers the case where it never ran.
+    /// </para>
+    /// </summary>
+    private static void TestOverlayHandleRoundTrip()
+    {
+        var actionManifest = Path.Combine(AppContext.BaseDirectory, "actions.json");
+        if (!File.Exists(actionManifest))
+        {
+            return;
+        }
+
+        SvrBridge.Core.OpenVrInput openVr;
+        try
+        {
+            openVr = new SvrBridge.Core.OpenVrInput(
+                configuredDllPath: null,
+                actionManifest,
+                _ => { });
+        }
+        catch (Exception)
+        {
+            // No SteamVR, no openvr_api.dll, or no runtime to talk to. The
+            // indices cannot be checked here; the live test covers it.
+            return;
+        }
+
+        using (openVr)
+        {
+            if (!openVr.SupportsOverlaySurfaces)
+            {
+                return;
+            }
+
+            // Unique per run so a previous crashed run cannot make this pass or
+            // fail for the wrong reason.
+            var key = $"ie.lonelyviper.svrbridge.selftest.{Guid.NewGuid():N}";
+
+            Assert(
+                !openVr.TryFindOverlayHandle(key, out _),
+                "FindOverlay reported an overlay that had never been created.");
+
+            ulong created;
+            using (var surface = openVr.CreateOverlaySurface(key, "SteamVR2Bot self-test"))
+            {
+                created = surface.Handle;
+                Assert(
+                    created != 0,
+                    "CreateOverlay returned a zero overlay handle.");
+                Assert(
+                    openVr.TryFindOverlayHandle(key, out var found) && found == created,
+                    "FindOverlay did not round-trip the key back to the created handle. "
+                    + "The IVROverlay vtable indices are wrong for this SteamVR version.");
+            }
+
+            Assert(
+                !openVr.TryFindOverlayHandle(key, out _),
+                "DestroyOverlay left the overlay registered with SteamVR.");
+        }
+    }
+
+    /// <summary>
+    /// Composition has to be right before an overlay can be placed correctly,
+    /// and a wrong transform looks like a badly chosen offset rather than a bug.
+    /// This runs everywhere, with or without SteamVR.
+    /// </summary>
+    private static void TestOverlayTransformComposition()
+    {
+        var identity = SvrBridge.Core.VrOverlayTransform.Identity;
+        var translation = SvrBridge.Core.VrOverlayTransform.Translation(1f, 2f, 3f);
+
+        Assert(
+            translation * identity == translation && identity * translation == translation,
+            "Composing an overlay transform with the identity changed it.");
+
+        // A quarter turn about X maps +Y onto +Z, so a point one metre up ends
+        // up one metre back. Translation lives in the fourth column, which is
+        // the half most easily got backwards.
+        var quarterTurn = SvrBridge.Core.VrOverlayTransform.RotationX(MathF.PI / 2f);
+        var rotated = quarterTurn * SvrBridge.Core.VrOverlayTransform.Translation(0f, 1f, 0f);
+        Assert(
+            MathF.Abs(rotated.M13) < 1e-5f && MathF.Abs(rotated.M23 - 1f) < 1e-5f,
+            "Rotating a translated overlay transform did not move the translation with it.");
     }
 
     private static void Assert(bool condition, string message)

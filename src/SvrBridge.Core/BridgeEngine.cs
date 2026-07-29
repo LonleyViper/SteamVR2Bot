@@ -269,6 +269,29 @@ public sealed class BridgeEngine
         temporaryInput.OpenBindingUi();
     }
 
+    /// <summary>
+    /// Turns the development test overlay on or off on the running worker.
+    /// <para>
+    /// Unlike the binding UI this does not fall back to a temporary session.
+    /// The overlay only means anything while it is on screen, and a session
+    /// created here would be disposed immediately - taking the overlay with it.
+    /// </para>
+    /// </summary>
+    /// <returns>False when no SteamVR session is running to show it on.</returns>
+    public bool SetTestOverlayEnabled(bool enabled)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.SetTestOverlayEnabled(enabled);
+            return true;
+        }
+    }
+
     public async Task ShowDashboardAsync(
         AppConfig config,
         string imagePath,

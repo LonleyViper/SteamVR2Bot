@@ -125,6 +125,33 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         }
     }
 
+    public void SetTestOverlayEnabled(bool enabled)
+    {
+        var requestId = Guid.NewGuid().ToString("N");
+        var result = new TaskCompletionSource<string?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_commandResults.TryAdd(requestId, result))
+        {
+            throw new InvalidOperationException("Could not prepare the VR test overlay command.");
+        }
+
+        try
+        {
+            SendCommand(new OpenVrWorkerCommand("testOverlay", requestId, Enabled: enabled));
+            var error = result.Task.WaitAsync(TimeSpan.FromSeconds(10))
+                .GetAwaiter()
+                .GetResult();
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                throw new InvalidOperationException(error);
+            }
+        }
+        finally
+        {
+            _commandResults.TryRemove(requestId, out _);
+        }
+    }
+
     public void ShowDashboard(string imagePath)
         => ShowDashboard(imagePath, [], []);
 
@@ -512,6 +539,9 @@ internal static class OpenVrWorker
                 message => Emit(new OpenVrWorkerMessage("log", Message: message)));
             var commands = Channel.CreateUnbounded<OpenVrWorkerCommand>();
             VrDashboardController? dashboard = null;
+            // Off unless the user turns it on from the tray menu, and off again
+            // on every worker restart. It is a development aid.
+            VrTestOverlay? testOverlay = null;
             _ = Task.Run(() => ReadCommandsAsync(commands.Writer));
 
             var snapshot = openVr.Poll();
@@ -536,6 +566,40 @@ internal static class OpenVrWorker
                         try
                         {
                             openVr.OpenBindingUi();
+                        }
+                        catch (Exception exception)
+                        {
+                            error = exception.Message;
+                        }
+
+                        Emit(
+                            new OpenVrWorkerMessage(
+                                "commandResult",
+                                RequestId: command.RequestId,
+                                Error: error));
+                    }
+
+                    if (command.Kind == "testOverlay")
+                    {
+                        string? error = null;
+                        try
+                        {
+                            testOverlay?.Dispose();
+                            testOverlay = null;
+                            if (command.Enabled)
+                            {
+                                testOverlay = VrTestOverlay.TryCreate(
+                                    openVr,
+                                    message => Emit(
+                                        new OpenVrWorkerMessage("log", Message: message)));
+                            }
+                            else
+                            {
+                                Emit(
+                                    new OpenVrWorkerMessage(
+                                        "log",
+                                        Message: "The VR test overlay is off."));
+                            }
                         }
                         catch (Exception exception)
                         {
@@ -589,6 +653,9 @@ internal static class OpenVrWorker
                 {
                     // Report before exiting: the parent must tell this apart
                     // from a worker crash, which it would otherwise retry.
+                    // Destroying the overlay first keeps its key from
+                    // outliving the process that owns it.
+                    testOverlay?.Dispose();
                     Emit(new OpenVrWorkerMessage("quit"));
                     return 0;
                 }
@@ -605,6 +672,22 @@ internal static class OpenVrWorker
                             "log",
                             Message:
                             $"SteamVR dashboard interaction was ignored after an error: {exception.Message}"));
+                }
+
+                try
+                {
+                    testOverlay?.Tick(openVr);
+                }
+                catch (Exception exception)
+                {
+                    // A development aid must never be able to take the input
+                    // worker down, so it is dropped rather than retried.
+                    testOverlay?.Dispose();
+                    testOverlay = null;
+                    Emit(
+                        new OpenVrWorkerMessage(
+                            "log",
+                            Message: $"The VR test overlay was turned off after an error: {exception.Message}"));
                 }
 
                 if (current != snapshot)
@@ -701,7 +784,8 @@ internal sealed record OpenVrWorkerCommand(
     string? ImagePath = null,
     IReadOnlyList<ShortcutConfig>? Shortcuts = null,
     IReadOnlyList<StreamerBotAction>? Actions = null,
-    bool Activate = true);
+    bool Activate = true,
+    bool Enabled = false);
 
 internal sealed record OpenVrWorkerMessage(
     string Kind,

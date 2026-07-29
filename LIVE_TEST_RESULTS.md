@@ -684,3 +684,129 @@ across three saved shortcuts, the Streamer.bot address, the log history, and the
 cached dashboard images; the old folder was not recreated afterwards.
 `TestRenamedDataDirectoryMigration` covers the move, the repeat-resolve no-op,
 a fresh install, and a leftover old folder losing to the current one.
+
+## Phase 1 — overlay substrate — 2026-07-29
+
+### Scope
+
+New `IVROverlay` vtable indices, a multi-instance `VrOverlaySurface`, and a
+hard-coded test overlay pinned to the left controller. No chat window, no
+notifications, no gaze detection, no WPF — those are Phases 2–5.
+
+### Index derivation and cross-check
+
+Indices were derived in one pass over the `IVROverlay` declaration order in
+ValveSoftware/openvr `headers/openvr.h`, at the revision whose
+`IVROverlay_Version` is literally `"IVROverlay_028"` — the same string
+`TryGetOverlayTable` requests. SHA-256 of the header used:
+
+```text
+1E6ED57199896CC1F7C5484E50FA18955E97BE15BE690BEB28D998C877EAD7FD
+```
+
+That revision also carries `IVRSystem_026` and `IVRInput_011`, the two other
+versions this codebase requests, so all three agree on one header. The installed
+SteamVR was independently confirmed to implement `IVROverlay_028` by reading the
+interface strings out of `bin\vrclient_x64.dll`.
+
+All ten previously hardware-validated anchors landed exactly where the
+enumeration predicted:
+
+| Method | Expected | Enumerated |
+|---|---:|---:|
+| `SetOverlayFlag` | 11 | 11 |
+| `SetOverlayWidthInMeters` | 22 | 22 |
+| `PollNextOverlayEvent` | 48 | 48 |
+| `SetOverlayInputMethod` | 50 | 50 |
+| `SetOverlayMouseScale` | 52 | 52 |
+| `SetOverlayFromFile` | 63 | 63 |
+| `CreateDashboardOverlay` | 67 | 67 |
+| `IsDashboardVisible` | 68 | 68 |
+| `IsActiveDashboardOverlay` | 69 | 69 |
+| `ShowDashboard` | 72 | 72 |
+
+10/10. The eleven indices added from the same pass are therefore trustworthy:
+
+| Method | Index |
+|---|---:|
+| `FindOverlay` | 0 |
+| `CreateOverlay` | 1 |
+| `DestroyOverlay` | 3 |
+| `SetOverlayAlpha` | 16 |
+| `SetOverlaySortOrder` | 20 |
+| `SetOverlayCurvature` | 24 |
+| `SetOverlayTransformTrackedDeviceRelative` | 35 |
+| `ShowOverlay` | 43 |
+| `HideOverlay` | 44 |
+| `IsOverlayVisible` | 45 |
+| `SetOverlayRaw` | 62 |
+
+### Live index verification — passed
+
+Every new index was exercised against running SteamVR before any headset test,
+through a throwaway probe built against `SvrBridge.Core`:
+
+```text
+SupportsOverlaySurfaces = True
+before create: found = False          (expect False)
+CreateOverlay handle = 236223201307   (expect non-zero)
+FindOverlay found = True, handle = 236223201307   (expect True + same)
+SetOverlayWidthInMeters ok
+SetOverlayAlpha ok
+SetOverlaySortOrder ok
+SetOverlayCurvature ok
+SetOverlayRaw ok
+left controller device index = 5
+SetOverlayTransformTrackedDeviceRelative ok
+ShowOverlay ok, IsOverlayVisible = True    (expect True)
+HideOverlay ok, IsOverlayVisible = False   (expect False)
+after destroy: found = False          (expect False)
+RESULT: PASS
+```
+
+`ShowOverlay`, `HideOverlay` and `IsOverlayVisible` are the strongest evidence
+in that run: all three take `ulong` and are indistinguishable by signature, so a
+swapped index would compile and run — and visibility tracked correctly in both
+directions.
+
+### Automated suites
+
+| Suite | Result |
+|---|---|
+| `SteamVR2Bot.Diagnostics.exe --self-test` | PASS |
+| `SteamVR2Bot.exe --self-test` | PASS (exit 0) |
+| Build, all three projects | 0 warnings, 0 errors |
+
+`TestOverlayHandleRoundTrip` was added to `TraySelfTests`: create → find →
+destroy → find-again, so a wrong vtable index fails loudly at startup instead of
+as an access violation mid-stream. It skips when SteamVR is not running, which
+is why the manual matrix below still matters.
+
+### Manual headset test — NOT YET RUN
+
+Nothing below has been verified in a headset. It requires a person wearing the
+HMD and cannot be automated.
+
+Preparation: SteamVR running, both Vive controllers on and tracked, SteamVR2Bot
+running, at least one saved shortcut bound to a Streamer.bot action.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Tray menu → **Show VR test overlay (developer)** | Menu item checks; activity log shows "The VR test overlay is on" and "following left controller device N" | |
+| 2 | Put the headset on and look at the left controller | A dark panel with a blue border reading "SteamVR2Bot / overlay test - left controller" sits just above the controller, tipped towards you | |
+| 3 | Check colours | Border is blue and background dark navy — **not** orange/brown. Wrong colours mean the BGRA→RGBA swap is inverted | |
+| 4 | Move the left controller around | Panel follows the hand with no lag or detachment | |
+| 5 | Put the left controller down until it sleeps, then wake it | Panel reattaches on its own. Log shows a new "following left controller device N" line, possibly with a different N | |
+| 6 | Turn the left controller off entirely | Log shows "waiting for a left controller"; app does not crash or spam | |
+| 7 | Turn it back on | Panel reattaches | |
+| 8 | Open the SteamVR dashboard → SteamVR2Bot | Dashboard opens and renders as before | |
+| 9 | Click through Create Shortcut → gesture type → tolerance → action picker | All pages render and respond as before; the test overlay stays visible alongside | |
+| 10 | Save a shortcut | Saves, appears in the list, no worker restart | |
+| 11 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | |
+| 12 | Tray menu → uncheck **Show VR test overlay** | Panel disappears; log shows "The VR test overlay is off" | |
+| 13 | Re-check it | Panel reappears — proves `DestroyOverlay` released the key rather than leaking it | |
+| 14 | Exit SteamVR2Bot, then relaunch and re-enable | Panel appears; no `KeyInUse` error | |
+
+Steps 8–11 are the regression half: `VrOverlayFunctions` changed shape and the
+dashboard shares that table, so the dashboard and shortcut delivery must be
+re-proven, not assumed.

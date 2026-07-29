@@ -74,6 +74,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var test = new ToolStripMenuItem("Test selected action");
         var bindings = new ToolStripMenuItem("SteamVR input bindings");
         var logs = new ToolStripMenuItem("Open logs");
+        // A development aid, not a feature: unchecked at every launch, never
+        // persisted, and only meaningful while SteamVR is running.
+        var testOverlay = new ToolStripMenuItem("Show VR test overlay (developer)")
+        {
+            CheckOnClick = true,
+            Checked = false
+        };
         var exit = new ToolStripMenuItem("Exit");
 
         open.Click += (_, _) => ShowMainWindow();
@@ -91,6 +98,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         bindings.Click += (_, _) => OpenControllerBindings();
         logs.Click += (_, _) => OpenLogs();
+        testOverlay.Click += (_, _) => ToggleTestOverlay(testOverlay);
         exit.Click += (_, _) => ExitApplication();
 
         menu.Items.AddRange(
@@ -101,6 +109,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             test,
             bindings,
             logs,
+            testOverlay,
             new ToolStripSeparator(),
             exit
         ]);
@@ -818,6 +827,38 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (status.State == BridgeState.Ready)
         {
             _ = EnsureDashboardAvailableAsync(false);
+        }
+    }
+
+    /// <summary>
+    /// Turns the Phase 1 test overlay on or off. The menu item's own check
+    /// state is corrected from the result rather than trusted, so a failed
+    /// request does not leave the menu claiming an overlay is on screen.
+    /// </summary>
+    private void ToggleTestOverlay(ToolStripMenuItem item)
+    {
+        try
+        {
+            if (_engine.SetTestOverlayEnabled(item.Checked))
+            {
+                return;
+            }
+
+            item.Checked = false;
+            OnActivity(
+                new BridgeActivity(
+                    "openvr.test_overlay_unavailable",
+                    "Start SteamVR before showing the VR test overlay.",
+                    BridgeLogLevel.Warning));
+        }
+        catch (Exception exception)
+        {
+            item.Checked = false;
+            OnActivity(
+                new BridgeActivity(
+                    "openvr.test_overlay_failed",
+                    $"The VR test overlay could not be shown: {exception.Message}",
+                    BridgeLogLevel.Warning));
         }
     }
 
