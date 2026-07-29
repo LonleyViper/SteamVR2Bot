@@ -782,31 +782,61 @@ destroy → find-again, so a wrong vtable index fails loudly at startup instead 
 as an access violation mid-stream. It skips when SteamVR is not running, which
 is why the manual matrix below still matters.
 
-### Manual headset test — NOT YET RUN
+### Manual headset test — partially run, 2026-07-29
 
-Nothing below has been verified in a headset. It requires a person wearing the
-HMD and cannot be automated.
+Run on the development PC with the Debug build, which is the binary SteamVR is
+registered against in `appconfig.json`. Results are recorded from what the user
+reported observing; unticked rows were not checked and are **not** assumed to
+have passed.
 
 Preparation: SteamVR running, both Vive controllers on and tracked, SteamVR2Bot
 running, at least one saved shortcut bound to a Streamer.bot action.
 
 | # | Step | Expected | Result |
 |---|---|---|---|
-| 1 | Tray menu → **Show VR test overlay (developer)** | Menu item checks; activity log shows "The VR test overlay is on" and "following left controller device N" | |
-| 2 | Put the headset on and look at the left controller | A dark panel with a blue border reading "SteamVR2Bot / overlay test - left controller" sits just above the controller, tipped towards you | |
-| 3 | Check colours | Border is blue and background dark navy — **not** orange/brown. Wrong colours mean the BGRA→RGBA swap is inverted | |
-| 4 | Move the left controller around | Panel follows the hand with no lag or detachment | |
-| 5 | Put the left controller down until it sleeps, then wake it | Panel reattaches on its own. Log shows a new "following left controller device N" line, possibly with a different N | |
-| 6 | Turn the left controller off entirely | Log shows "waiting for a left controller"; app does not crash or spam | |
-| 7 | Turn it back on | Panel reattaches | |
-| 8 | Open the SteamVR dashboard → SteamVR2Bot | Dashboard opens and renders as before | |
-| 9 | Click through Create Shortcut → gesture type → tolerance → action picker | All pages render and respond as before; the test overlay stays visible alongside | |
-| 10 | Save a shortcut | Saves, appears in the list, no worker restart | |
-| 11 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | |
-| 12 | Tray menu → uncheck **Show VR test overlay** | Panel disappears; log shows "The VR test overlay is off" | |
-| 13 | Re-check it | Panel reappears — proves `DestroyOverlay` released the key rather than leaking it | |
-| 14 | Exit SteamVR2Bot, then relaunch and re-enable | Panel appears; no `KeyInUse` error | |
+| 1 | Tray menu → **Show VR test overlay (developer)** | Menu item checks; activity log shows "The VR test overlay is on" and "following left controller device N" | **PASS** |
+| 2 | Put the headset on and look at the left controller | A dark panel with a blue border reading "SteamVR2Bot / overlay test - left controller" sits just above the controller, tipped towards you | **PASS** |
+| 3 | Check colours | Border is blue and background dark navy — **not** orange/brown. Wrong colours mean the BGRA→RGBA swap is inverted | **PASS** |
+| 4 | Move the left controller around | Panel follows the hand with no lag or detachment | **PASS** |
+| 5 | Put the left controller down until it sleeps, then wake it | Panel reattaches on its own. Log shows a new "following left controller device N" line, possibly with a different N | **PASS** |
+| 6 | Turn the left controller off entirely | Log shows "waiting for a left controller"; app does not crash or spam | not run |
+| 7 | Turn it back on | Panel reattaches | covered by 5 |
+| 8 | Open the SteamVR dashboard → SteamVR2Bot | Dashboard opens and renders as before | **PASS** |
+| 9 | Click through Create Shortcut → gesture type → tolerance → action picker | All pages render and respond as before; the test overlay stays visible alongside | **PASS** |
+| 10 | Save a shortcut | Saves, appears in the list, no worker restart | not run |
+| 11 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | not run |
+| 12 | Tray menu → uncheck **Show VR test overlay** | Panel disappears; log shows "The VR test overlay is off" | not run |
+| 13 | Re-check it | Panel reappears — proves `DestroyOverlay` released the key rather than leaking it | not run |
+| 14 | Exit SteamVR2Bot, then relaunch and re-enable | Panel appears; no `KeyInUse` error | not run |
 
-Steps 8–11 are the regression half: `VrOverlayFunctions` changed shape and the
-dashboard shares that table, so the dashboard and shortcut delivery must be
-re-proven, not assumed.
+### What steps 1–9 establish
+
+This is the first time the Phase 1 substrate has been proven against a headset
+rather than against SteamVR's API alone:
+
+- **The eleven new vtable indices are correct in practice.** A panel appeared,
+  in the right place, with the right pixels. That exercises `CreateOverlay`,
+  `SetOverlayRaw`, `SetOverlayWidthInMeters`, `ShowOverlay`,
+  `SetOverlayTransformTrackedDeviceRelative`, `SetOverlayAlpha`,
+  `SetOverlaySortOrder` and `SetOverlayCurvature` end to end.
+- **`SetOverlayRaw` renders correctly**, including the BGRA→RGBA channel swap.
+  Step 3 is the only check that catches an inverted swap, because wrong colours
+  otherwise read as a deliberate palette rather than a bug.
+- **Device-index re-resolution survives a real sleep/wake cycle** (step 5). This
+  is the hazard §4 of the plan flagged from OpenVRTwitchChat, and it is the one
+  that fails silently — a cached index would have detached the panel with no
+  error anywhere.
+- **The dashboard did not regress** (steps 8–9). `VrOverlayFunctions` changed
+  from a positional record to named properties and the dashboard shares that
+  table, so this was the real risk of the refactor and it is now retired.
+
+### Still outstanding
+
+- **Step 11 is the important one.** Shortcut delivery is what the app exists to
+  do, and it has not been fired since the overlay table changed. Steps 8–9 prove
+  the dashboard renders, not that a gesture still reaches Streamer.bot.
+- Steps 12–14 cover overlay teardown: whether `DestroyOverlay` actually releases
+  the key rather than leaking it. A leak here shows up as `KeyInUse` on the
+  second enable, so re-toggling once is enough to find it.
+- Step 6 (controller fully powered off) is the unhandled-role path. Lower risk
+  than the others, since step 5 already exercised re-resolution.
