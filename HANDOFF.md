@@ -151,27 +151,33 @@ Buttons, `SetOverlayInputMethod` on chat, and the reposition handle were
 deliberately excluded from this work so they would land on a converted, stable
 substrate. That substrate now exists for the regular overlays.
 
-The probe that answers the design question is **built and ready but not yet
-run**: does an overlay that accepts laser input swallow the trigger from a
-running VR game?
+**The design question is answered: an overlay that accepts laser input does not
+swallow the trigger from a running VR game.** Live-confirmed 2026-07-30 —
+"trigger still functions" with the probe active.
 
-Tray → **Chat test harness (developer)** → **Probe chat laser input for 60s**.
-It is a one-shot action, not a checkbox, and `ChatOverlay` turns it off again by
-itself after 60 seconds. That is deliberate: if the answer is "yes, it eats the
-trigger", the wearer is inside a game with broken input and the tray menu is on
-a monitor they cannot see, so a plain toggle would mean taking the headset off
-to undo. The expiry runs before the hidden/shown branches in `Tick`, so a
+That confound (this app's global-priority action set already takes
+grip/trigger/trackpad/menu from running games) can only manufacture a false
+*negative*; it removes trigger input, it cannot add it. So the positive result
+stands on its own.
+
+**Buttons on the chat window are therefore viable**, without gating them behind
+a summon gesture or a dashboard-only mode — which was the fallback design if
+this had gone the other way.
+
+Two things the result deliberately does **not** cover:
+
+- Whether the overlay *also* receives the click. The probe shows the game keeps
+  the trigger; whether a laser click lands on the panel is a separate question,
+  cheap to answer as soon as there is a button to click.
+- Grip, trackpad and menu. Only the trigger was exercised.
+
+The probe stays in the build for re-running after a SteamVR update: tray →
+**Chat test harness (developer)** → **Probe chat laser input for 60s**. It is a
+one-shot action, not a checkbox — `ChatOverlay` turns it off again after 60
+seconds. That was deliberate for the case where the answer had been "yes": the
+wearer would be inside a game with broken input and the tray menu on a monitor
+they cannot see. The expiry runs before the hidden/shown branches in `Tick` so a
 `hide` control command cannot strand it on, and `Dispose` turns it off too.
-
-The five-row matrix is in `LIVE_TEST_RESULTS.md`. **Run row 1 first** — it is
-the control that separates this question from the already-known action-set
-priority behaviour, which independently takes grip/trigger/trackpad/menu from
-running games. Without it, a negative result is unattributable.
-
-What turns on the answer: if the game still gets the trigger, buttons can live
-on a persistent overlay. If not, interactive controls have to be gated behind
-something explicit — a summon gesture, or only while the dashboard is open —
-which is a materially different design.
 
 ## Untracked, deliberately
 

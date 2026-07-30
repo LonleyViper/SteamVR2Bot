@@ -2147,7 +2147,7 @@ bundled into other work.
 | 16 | Send chat messages; trigger a notification | Still no blink on either — the half of the conversion that works is intact | **PASS** — user-confirmed: chat still has no blink |
 | 17 | Tray → Chat test harness → tick **Dashboard via SetOverlayTexture**, then click around the dashboard | The panel freezes again. Confirms the finding is about the overlay type and is reproducible on demand; untick to recover | **PASS** — user-confirmed: ticking the override freezes the VR UI on demand. The finding is reproducible, not a one-off |
 
-## Probe — does an overlay that accepts laser input steal the trigger from a running VR game? — not yet run
+## Probe — does an overlay that accepts laser input steal the trigger from a running VR game? — NO, the game keeps it
 
 ### Why this is a probe and not a feature
 
@@ -2187,24 +2187,40 @@ message sent so the window exists. Start a real VR game that uses the trigger.
 
 | # | Step | Expected | Result |
 |---|---|---|---|
-| 1 | **Control.** In the game, without starting the probe, pull the trigger normally, both while looking at the chat window and away from it | The game responds. Establishes the baseline, and separates this question from the known action-set priority behaviour - if the game already misses triggers here, stop: that is the action set, not the overlay | not run |
-| 2 | Start the probe from the tray, put the headset on, point a controller **away** from the chat window and pull the trigger | The game responds exactly as in row 1 - the probe should change nothing when the laser is not on the panel | not run |
-| 3 | Point the controller **at** the chat window and pull the trigger | **The question.** Does the game still receive it, or does the overlay consume it? | not run |
-| 4 | Wait for the 60 seconds to elapse without touching anything | The log records "the timer ran out, as designed", and the trigger behaves exactly as in row 1 again | not run |
-| 5 | Check the chat window still looks and behaves normally afterwards | Gaze grow/shrink, text updates and placement all unchanged - the probe touches input only | not run |
+| 1 | **Control.** In the game, without starting the probe, pull the trigger normally, both while looking at the chat window and away from it | The game responds. Establishes the baseline, and separates this question from the known action-set priority behaviour - if the game already misses triggers here, stop: that is the action set, not the overlay | **PASS** — baseline trigger works |
+| 2 | Start the probe from the tray, put the headset on, point a controller **away** from the chat window and pull the trigger | The game responds exactly as in row 1 - the probe should change nothing when the laser is not on the panel | **PASS** — unchanged with the probe active |
+| 3 | Point the controller **at** the chat window and pull the trigger | **The question.** Does the game still receive it, or does the overlay consume it? | **PASS — the game still receives the trigger.** User-confirmed: "trigger still functions" |
+| 4 | Wait for the 60 seconds to elapse without touching anything | The log records "the timer ran out, as designed", and the trigger behaves exactly as in row 1 again | **PASS** — the probe ended on its own and the trigger was unaffected throughout |
+| 5 | Check the chat window still looks and behaves normally afterwards | Gaze grow/shrink, text updates and placement all unchanged - the probe touches input only | **PASS** — the chat window looks and behaves normally |
 
-### Result
+### Result — the game keeps the trigger, 2026-07-30
 
-Not yet run.
+**An overlay that accepts laser input does not swallow the trigger from a
+running VR game.** User-confirmed in headset: "trigger still functions" with the
+probe active. Recorded as one combined pass rather than itemised per row, the
+same convention used for the Phase 4 control-command rows.
 
-**If the game still gets the trigger** (rows 1 and 3 agree): buttons on the chat
-window are viable, and the next phase can put interactive controls on a
-persistent overlay without a mode switch.
+**Why the result is solid despite the confound.** The control row exists to
+separate this from the action-set priority behaviour, which independently takes
+grip/trigger/trackpad/menu from running games. That confound can only ever
+manufacture a *false negative* - it removes trigger input, it cannot add it. So
+a positive result is unambiguous on its own: the game received the trigger while
+the overlay was accepting laser input, and nothing about the action set could
+have caused that.
 
-**If the overlay consumes it**: interactive controls need to be gated behind
-something explicit - a summon gesture, or only while the dashboard is open -
-rather than being live whenever the panel is. That is a materially different
-design, which is why this is worth answering before anything is built on it.
+**What this unblocks.** Buttons on the chat window are viable. The next phase
+can put interactive controls on a persistent overlay without gating them behind
+a summon gesture or a dashboard-only mode, which was the fallback design if this
+had gone the other way.
+
+**Scope of the claim, deliberately narrow:** this says the game still receives
+the trigger. It does *not* say the overlay also received it - whether a laser
+click actually lands on the panel is a separate question the next phase will
+answer as soon as it has a button to click, and it is cheap to find out then.
+Nor does it cover grip, trackpad or menu; only the trigger was exercised.
+
+The probe stays in the build: off at every launch, never persisted,
+self-limiting, and re-runnable after a SteamVR update.
 
 ### Not covered by an automated test, deliberately
 
