@@ -48,6 +48,7 @@ public sealed class BridgeEngine
     public event Action<ControllerSetup>? ControllerSetupChanged;
     public event Action<ShortcutConfig>? ShortcutCreated;
     public event Action<string>? ShortcutDeleted;
+    public event Action<VrSettingsSnapshot>? VrSettingsChanged;
     public event Action? VrShutdownRequested;
 
     public async Task RunAsync(AppConfig config, CancellationToken cancellationToken)
@@ -360,6 +361,49 @@ public sealed class BridgeEngine
         }
     }
 
+    /// <summary>
+    /// Applies a Streamer.bot control payload (show/hide/clear/anchor/reset)
+    /// to the running worker's overlay surfaces. Like
+    /// <see cref="ShowNotification"/> this never falls back to a temporary
+    /// session: a control command means nothing once the session applying it
+    /// is immediately disposed.
+    /// </summary>
+    /// <returns>False when no SteamVR session is running to apply it to.</returns>
+    public bool ApplyControlCommand(StreamerBotEventPayload payload)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.ApplyControlCommand(payload);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Pushes a desktop-made appearance/anchor/enable change to the running
+    /// worker live, without a restart - the opposite direction of a VR
+    /// settings-page edit. Like <see cref="ApplyControlCommand"/> this never
+    /// falls back to a temporary session.
+    /// </summary>
+    /// <returns>False when no SteamVR session is running to apply it to.</returns>
+    public bool ApplySettingsChange(VrSettingsSnapshot settings)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.ApplySettingsChange(settings);
+            return true;
+        }
+    }
+
     public async Task ShowDashboardAsync(
         AppConfig config,
         string imagePath,
@@ -609,6 +653,11 @@ public sealed class BridgeEngine
         foreach (var shortcutId in input.DrainDeletedShortcutIds())
         {
             ShortcutDeleted?.Invoke(shortcutId);
+        }
+
+        foreach (var settings in input.DrainVrSettingsChanges())
+        {
+            VrSettingsChanged?.Invoke(settings);
         }
     }
 

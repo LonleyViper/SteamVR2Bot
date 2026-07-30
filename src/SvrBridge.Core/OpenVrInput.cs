@@ -688,9 +688,18 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
         // silently if either ever gained a member.
         var native = new HmdMatrix34
         {
-            M00 = transform.M00, M01 = transform.M01, M02 = transform.M02, M03 = transform.M03,
-            M10 = transform.M10, M11 = transform.M11, M12 = transform.M12, M13 = transform.M13,
-            M20 = transform.M20, M21 = transform.M21, M22 = transform.M22, M23 = transform.M23
+            M00 = transform.M00,
+            M01 = transform.M01,
+            M02 = transform.M02,
+            M03 = transform.M03,
+            M10 = transform.M10,
+            M11 = transform.M11,
+            M12 = transform.M12,
+            M13 = transform.M13,
+            M20 = transform.M20,
+            M21 = transform.M21,
+            M22 = transform.M22,
+            M23 = transform.M23
         };
         EnsureOverlaySuccess(
             _overlay!.Value.SetOverlayTransformTrackedDeviceRelative(
@@ -1776,7 +1785,8 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
         public required SetOverlaySortOrderDelegate SetOverlaySortOrder { get; init; }
         public required SetOverlayCurvatureDelegate SetOverlayCurvature { get; init; }
         public required SetOverlayTransformTrackedDeviceRelativeDelegate
-            SetOverlayTransformTrackedDeviceRelative { get; init; }
+            SetOverlayTransformTrackedDeviceRelative
+        { get; init; }
     }
 
     private readonly record struct PhysicalActionDefinition(

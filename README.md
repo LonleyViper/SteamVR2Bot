@@ -270,6 +270,16 @@ them without retaining them.
   remotely, so this cannot be worked around here - the trigger does not need
   to do anything (no sub-actions, no code), it just needs to exist and be
   enabled.
+- **A panel can briefly blink when its texture updates, most noticeably under
+  rapid interaction** - for example clicking quickly several times along a
+  slider. Confirmed pre-existing SteamVR behaviour, not specific to any one
+  feature: reproduced identically on the shortcut wizard's Tolerance slider
+  (unchanged since the very first release) under the same rapid-click stress
+  that first surfaced it elsewhere, and present on both of the app's texture-
+  update paths despite their different costs - each individual update
+  measured at 15-32 ms, well within a single frame, so this is not the app
+  running slowly. Ordinary, unhurried interaction rarely triggers it
+  noticeably.
 
 ## Diagnostics
 

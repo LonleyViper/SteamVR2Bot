@@ -7,6 +7,7 @@ internal sealed class VrDashboardController
     private readonly OpenVrInput _openVr;
     private readonly Action<ShortcutConfig> _shortcutSaved;
     private readonly Action<string> _shortcutDeleted;
+    private readonly Action<VrSettingsSnapshot> _settingsChanged;
     private readonly Action<string> _log;
     private readonly List<ShortcutConfig> _shortcuts;
     private readonly IReadOnlyList<StreamerBotAction> _actions;
@@ -24,21 +25,34 @@ internal sealed class VrDashboardController
     private bool _recordingArmed;
     private string? _editingShortcutId;
 
+    /// <summary>
+    /// The settings snapshot currently shown on the Settings page, updated
+    /// and re-reported on every applied change - see
+    /// <see cref="ApplySettingsChange"/>. Unrelated to <see cref="_page"/>:
+    /// tabs are peer navigation sitting above the wizard's page stack, not a
+    /// page in it - see §"Key design decision" of the Phase 4b plan.
+    /// </summary>
+    private VrSettingsSnapshot _settings;
+
     public VrDashboardController(
         OpenVrInput openVr,
         IReadOnlyList<ShortcutConfig> shortcuts,
         IReadOnlyList<StreamerBotAction> actions,
         bool activate,
+        VrSettingsSnapshot initialSettings,
         Action<ShortcutConfig> shortcutSaved,
         Action<string> shortcutDeleted,
+        Action<VrSettingsSnapshot> settingsChanged,
         Action<string> log)
     {
         _openVr = openVr;
         _shortcuts = shortcuts.ToList();
         _actions = actions;
         _actionBrowser = new VrActionBrowser(actions);
+        _settings = initialSettings;
         _shortcutSaved = shortcutSaved;
         _shortcutDeleted = shortcutDeleted;
+        _settingsChanged = settingsChanged;
         _log = log;
         ShowList(activate, throwOnError: true);
     }
@@ -71,6 +85,19 @@ internal sealed class VrDashboardController
             return;
         }
 
+        // Tabs are peer navigation between the two top-level pages
+        // (Shortcuts and Settings), drawn only on those two - the five
+        // wizard sub-pages never render a tab strip, and this band is
+        // already dead space for every one of them, so checking it
+        // unconditionally here cannot change their behaviour.
+        if ((_page is DashboardPage.List or DashboardPage.Settings)
+            && y >= VrDashboardLayout.TabStripY
+            && y < VrDashboardLayout.TabStripY + VrDashboardLayout.TabStripHeight)
+        {
+            HandleTabClick(x);
+            return;
+        }
+
         switch (_page)
         {
             case DashboardPage.List:
@@ -91,6 +118,22 @@ internal sealed class VrDashboardController
             case DashboardPage.Review:
                 HandleReviewClick(x, y);
                 break;
+            case DashboardPage.Settings:
+                HandleSettingsClick(x, y);
+                break;
+        }
+    }
+
+    private void HandleTabClick(float x)
+    {
+        switch (VrDashboardLayout.IndexAt(VrDashboardLayout.Tabs, x))
+        {
+            case 0:
+                ShowList();
+                break;
+            default:
+                ShowSettings();
+                break;
         }
     }
 
@@ -102,15 +145,15 @@ internal sealed class VrDashboardController
             return;
         }
 
-        if (y < 160)
+        if (y < VrDashboardLayout.ListRowsStartY)
         {
             return;
         }
 
-        var index = (int)((y - 160) / 105);
-        var rowY = 160 + (index * 105);
+        var index = (int)((y - VrDashboardLayout.ListRowsStartY) / VrDashboardLayout.ListRowHeight);
+        var rowY = VrDashboardLayout.ListRowsStartY + (index * VrDashboardLayout.ListRowHeight);
         if (index < 0
-            || index >= Math.Min(6, _shortcuts.Count)
+            || index >= Math.Min(VrDashboardLayout.ListVisibleRowCount, _shortcuts.Count)
             || y >= rowY + 92)
         {
             return;
@@ -611,6 +654,154 @@ internal sealed class VrDashboardController
             DashboardPage.ActionPicker,
             () => VrDashboardRenderer.RenderActionPicker(_actionBrowser));
 
+    private void ShowSettings() =>
+        ShowPage(
+            DashboardPage.Settings,
+            () => VrDashboardRenderer.RenderSettings(_settings));
+
+    private void HandleSettingsClick(float x, float y)
+    {
+        if (IsWithinRow(y, VrDashboardLayout.ChatControlsY, VrDashboardLayout.SettingsRowHeight))
+        {
+            HandleSurfaceControlsClick(x, isChat: true);
+            return;
+        }
+
+        if (IsWithinRow(y, VrDashboardLayout.ChatSlidersY, VrDashboardLayout.SettingsSliderRowHeight))
+        {
+            HandleSlidersClick(x, isChat: true);
+            return;
+        }
+
+        if (IsWithinRow(y, VrDashboardLayout.GazeSensitivityY, VrDashboardLayout.SettingsRowHeight))
+        {
+            HandleGazeSensitivityClick(x);
+            return;
+        }
+
+        if (IsWithinRow(y, VrDashboardLayout.NotificationControlsY, VrDashboardLayout.SettingsRowHeight))
+        {
+            HandleSurfaceControlsClick(x, isChat: false);
+            return;
+        }
+
+        if (IsWithinRow(y, VrDashboardLayout.NotificationSlidersY, VrDashboardLayout.SettingsSliderRowHeight))
+        {
+            HandleSlidersClick(x, isChat: false);
+        }
+    }
+
+    private static bool IsWithinRow(float y, int rowY, int rowHeight) => y >= rowY && y < rowY + rowHeight;
+
+    /// <summary>The on/off toggle and the anchor mode/hand segmented controls for one surface.</summary>
+    private void HandleSurfaceControlsClick(float x, bool isChat)
+    {
+        var toggle = isChat ? VrDashboardLayout.ChatToggle : VrDashboardLayout.NotificationToggle;
+        var anchorMode = isChat ? VrDashboardLayout.ChatAnchorMode : VrDashboardLayout.NotificationAnchorMode;
+        var anchorHand = isChat ? VrDashboardLayout.ChatAnchorHand : VrDashboardLayout.NotificationAnchorHand;
+        var currentAnchor = isChat ? _settings.ChatAnchor : _settings.NotificationAnchor;
+
+        if (x >= toggle.Left && x <= toggle.Right)
+        {
+            _settings = isChat
+                ? _settings with { ChatEnabled = !_settings.ChatEnabled }
+                : _settings with { NotificationsEnabled = !_settings.NotificationsEnabled };
+            ApplySettingsChange();
+            return;
+        }
+
+        // Hand only means anything in Controller mode - drawn disabled
+        // rather than hidden when Headset is selected, so it is also
+        // non-interactive then, matching what the renderer shows.
+        if (currentAnchor.Mode == OverlayAnchorMode.Controller
+            && x >= anchorHand[0].Left && x <= anchorHand[^1].Right)
+        {
+            var hand = VrDashboardLayout.IndexAt(anchorHand, x) == 1
+                ? OverlayAnchorHand.Right
+                : OverlayAnchorHand.Left;
+            SetAnchor(isChat, new OverlayAnchor(OverlayAnchorMode.Controller, hand));
+            return;
+        }
+
+        if (x >= anchorMode[0].Left && x <= anchorMode[^1].Right)
+        {
+            var mode = VrDashboardLayout.IndexAt(anchorMode, x) == 1
+                ? OverlayAnchorMode.Head
+                : OverlayAnchorMode.Controller;
+            SetAnchor(isChat, new OverlayAnchor(mode, currentAnchor.Hand));
+        }
+    }
+
+    private void SetAnchor(bool isChat, OverlayAnchor anchor)
+    {
+        _settings = isChat
+            ? _settings with { ChatAnchor = anchor }
+            : _settings with { NotificationAnchor = anchor };
+        ApplySettingsChange();
+    }
+
+    /// <summary>
+    /// Click-to-position, exactly like <see cref="HandleToleranceClick"/>:
+    /// the value comes from the click's x ratio across the track, snapped to
+    /// a coarse increment so laser jitter cannot produce a silly value.
+    /// </summary>
+    private void HandleSlidersClick(float x, bool isChat)
+    {
+        var opacityTrack = isChat ? VrDashboardLayout.ChatOpacityTrack : VrDashboardLayout.NotificationOpacityTrack;
+        var sizeTrack = isChat ? VrDashboardLayout.ChatSizeTrack : VrDashboardLayout.NotificationSizeTrack;
+
+        if (x >= opacityTrack.Left && x <= opacityTrack.Right)
+        {
+            var ratio = Math.Clamp((x - opacityTrack.Left) / (float)opacityTrack.Width, 0f, 1f);
+            var opacity = SnapToStep(0.2 + (ratio * 0.8));
+            _settings = isChat
+                ? _settings with { ChatOpacity = opacity }
+                : _settings with { NotificationOpacity = opacity };
+            ApplySettingsChange();
+            return;
+        }
+
+        if (x >= sizeTrack.Left && x <= sizeTrack.Right)
+        {
+            var ratio = Math.Clamp((x - sizeTrack.Left) / (float)sizeTrack.Width, 0f, 1f);
+            var size = SnapToStep(0.5 + (ratio * 1.5));
+            _settings = isChat
+                ? _settings with { ChatSizeScale = size }
+                : _settings with { NotificationSizeScale = size };
+            ApplySettingsChange();
+        }
+    }
+
+    /// <summary>Snaps to 5% steps of whichever slider's own range - the same principle <see cref="HandleToleranceClick"/> applies.</summary>
+    private static double SnapToStep(double value) => Math.Round(value / 0.05) * 0.05;
+
+    private void HandleGazeSensitivityClick(float x)
+    {
+        var rectangles = VrDashboardLayout.GazeSensitivity;
+        if (x < rectangles[0].Left || x > rectangles[^1].Right)
+        {
+            return;
+        }
+
+        _settings = _settings with
+        {
+            GazeSensitivity = (GazeSensitivity)VrDashboardLayout.IndexAt(rectangles, x)
+        };
+        ApplySettingsChange();
+    }
+
+    /// <summary>
+    /// Reports the change (so the OpenVR worker applies it live and the tray
+    /// persists it - see §"Live-apply architecture" of the Phase 4b plan)
+    /// and repaints immediately, so the wearer sees the effect without
+    /// leaving the settings page.
+    /// </summary>
+    private void ApplySettingsChange()
+    {
+        _settingsChanged(_settings);
+        ShowSettings();
+    }
+
     private void ShowPage(
         DashboardPage page,
         Func<string> render,
@@ -644,6 +835,14 @@ internal sealed class VrDashboardController
         Tolerance,
         ActionPicker,
         RecordInput,
-        Review
+        Review,
+
+        /// <summary>
+        /// The Settings tab's own page. Not part of the shortcut wizard's
+        /// page stack in any functional sense - it exists in this enum only
+        /// so the existing single-page-at-a-time dashboard model can
+        /// represent it, per §"Key design decision" of the Phase 4b plan.
+        /// </summary>
+        Settings
     }
 }

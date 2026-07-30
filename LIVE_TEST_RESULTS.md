@@ -1334,3 +1334,225 @@ throttles the actual repaint to ~10 Hz per §B2, but no capture of a running
 game's frame times with chat active and receiving a burst has been taken.
 Treat this as unverified rather than as "no impact confirmed" until a
 frame-timing capture is run during an active VR game session with chat live.
+
+## Phase 4 — anchors, control commands, and an in-app test harness — not yet run
+
+### Scope
+
+Three things, landed together per `PHASE4_PROMPT.md`:
+
+- **An in-app chat test harness.** Five new tray developer-menu items under
+  **Chat test harness (developer)** inject synthetic messages straight into
+  the running worker's `ChatRingBuffer` through the same
+  `BridgeEngine.ShowChatMessage` path a real Streamer.bot payload takes,
+  bypassing the WebSocket entirely: a 12-message burst, a 45-message
+  ring-buffer fill, a 300-character unbroken message, a three-badge message,
+  and an unknown-emote message. Replaces the abandoned Streamer.bot
+  `!svrtest` C# action, which never fired and could not be diagnosed from
+  this app's own logs.
+- **A unified overlay anchor model.** `OverlayAnchor` (`Core`) — Controller
+  (with a hand) or Head — replaces the wrist transform hardcoded into
+  `ChatOverlay` and the head transform hardcoded into `NotificationOverlay`.
+  Both offsets are bit-for-bit the values Phase 1/2/3 already proved in the
+  headset (guarded by `TestOverlayAnchorOffsetsMatchProvenTransforms`), so
+  this is a refactor of *which surface can use which anchor*, not a change to
+  either default placement. `OverlayAnchorTracker` folds the device-index
+  re-resolution logic that used to be duplicated between the two overlays.
+  Desktop **Settings** now has an anchor mode/hand combo under each of
+  **Chat** and **Notifications**. A saved anchor change is baked into the
+  OpenVR worker at its next spawn (the same way an address or password
+  change already applies), not pushed live to a running worker.
+- **Control commands from Streamer.bot.** A `target: "control"` payload with
+  `command: "show" | "hide" | "clear" | "anchor" | "reset"` (plus `surface:
+  "chat" | "notifications"`, defaulting to chat, and `mode`/`hand` for
+  `anchor`) now does something. Per §B3, these are **transient overrides
+  only** — `SurfaceOverrideState` holds them in memory over the saved
+  default and never touches `settings.json`; `reset` drops the override and
+  `show/hide` toggle a hide flag independent of it. World-lock (an anchor
+  with no tracked device, placed once in the room) remains a deliberate
+  deferral — see `CHAT_AND_NOTIFICATIONS_PLAN.md` §"World-lock is deferred".
+
+### What is already covered without a headset
+
+All automated, added this phase: `TestOverlayAnchorOffsetsMatchProvenTransforms`
+(the controller/head offsets are bit-for-bit the wrist/head transforms proven
+in Phases 1–3), `TestSurfaceOverrideStateAppliesAndResetsControlCommands`
+(each command applies the expected override, `reset` restores the saved
+default, and an unrecognised command or a malformed `anchor` command changes
+nothing), `TestChatDeveloperInjectorProducesExpectedMessages` (the burst,
+fill, long-message, multi-badge and unknown-emote injectors each produce the
+expected shape, and filling a real `ChatRingBuffer` past its cap evicts the
+oldest messages first), `TestChatCommandJsonRoundTripPreservesBadgesAndEmotes`
+(added after live testing raised, then ruled out, a suspected badge-dropping
+bug: proves a chat payload's badges and emote names survive the exact
+cross-process JSON options `OpenVrWorkerSession` and `OpenVrWorker` use on
+either side of the worker command channel - the one path that had only ever
+been exercised live, never by an automated test, because `ChatBadge` is a
+positional record and every other field on the payload is a plain
+init-only property), and payload-parsing coverage in
+`TestStreamerBotEventPayload` for the `surface`/`mode`/`hand` fields
+(including the chat default and malformed/unrecognised values). Both
+self-test suites pass and both projects build with zero warnings in Debug
+and Release. None of this proves a control command actually moves a panel in
+the headset, that a desktop anchor change survives a worker restart with the
+panel in the right place, or that the developer injector's messages are
+legible and correctly shaped once rendered — only the manual steps below do
+that.
+
+### Preparation
+
+SteamVR running, both Vive controllers on and tracked, SteamVR2Bot running
+with at least one saved shortcut. In **Settings**, turn on **Listen for
+Streamer.bot chat and events**, **Show chat messages on your wrist**, and
+**Show notification broadcasts in the headset**. A control command can be
+sent the same way a notification was in Phase 2 — a C# sub-action calling
+`CPH.WebsocketBroadcastJson` with a body such as
+`{"target":"control","command":"anchor","surface":"chat","mode":"head"}`.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Tray menu → **Chat test harness (developer)** → **Inject a chat burst** | 12 messages appear in the chat window in order; no stall or dropped frame | not run |
+| 2 | **Fill the ring buffer (45 messages)** | Only the most recent ~40 remain visible; the window does not grow without bound | not run |
+| 3 | **Inject a long unbroken message** | Wraps onto multiple lines rather than overflowing or clipping | not run |
+| 4 | **Inject a multi-badge message** | All three badges render side by side (as bracketed text, since none have a real image URL) | **PASS** — user-confirmed `[Moderator] [Prime] [glhf-pledge]` bracket text appeared next to the username |
+| 5 | **Inject an unknown-emote message** | Renders as styled text, not a broken image or a crash | **PASS** — user-confirmed italic styled text, no broken image or crash |
+| 6 | Desktop Settings → set **Chat** anchor to **Headset**, save, put the headset on | Chat window now sits in front of you rather than at the left controller, and grows/dims per gaze exactly as the wrist placement did | **PASS** — user-confirmed head-follow works |
+| 7 | Set **Chat** anchor back to **Controller / Right hand**, save | Chat window now follows the right controller instead of the left | **PASS** — user-confirmed controller-follow works after switching back; the specific right-hand case was not separately isolated |
+| 8 | Set **Notifications** anchor to **Controller / Left hand**, save, trigger a notification | Notification now appears at the left controller instead of in front of your face | not run |
+| 9 | Restore both anchors to their defaults (Chat: Controller/Left, Notifications: Head), save | Both surfaces return to exactly the Phase 1–3 proven placement — confirms the desktop setting round-trips through a worker restart, not just forward | not run |
+| 10 | Send `{"target":"control","command":"anchor","surface":"chat","mode":"head"}` while chat is on the controller | Chat window moves to the head anchor immediately, without a settings save or app restart | **PASS** — user-confirmed ("Payload tests all worked") |
+| 11 | Send `{"target":"control","command":"reset","surface":"chat"}` | Chat window returns to whatever the saved desktop setting currently is | **PASS** — user-confirmed |
+| 12 | Send `{"target":"control","command":"hide","surface":"chat"}` | Chat window disappears entirely, even when gazed at | **PASS** — user-confirmed |
+| 13 | Send `{"target":"control","command":"show","surface":"chat"}` | Chat window reappears and resumes normal gaze-scale behaviour | **PASS** — user-confirmed |
+| 14 | Send a few chat messages, then `{"target":"control","command":"clear","surface":"chat"}` | Chat window empties immediately | **PASS** — user-confirmed |
+| 15 | Send `{"target":"control","command":"hide","surface":"notifications"}`, then trigger a notification | No panel appears | **PASS** — user-confirmed |
+| 16 | Send `{"target":"control","command":"show","surface":"notifications"}`, then trigger a notification | Panel appears normally | **PASS** — user-confirmed |
+| 17 | Send `{"target":"control","command":"bogus"}` | Nothing visible changes; the activity/debug log shows it was ignored as unrecognised, not a crash | **PASS** — user-confirmed |
+| 18 | Send `{"target":"control","command":"anchor","surface":"chat"}` (no `mode`) | Nothing visible changes; the log shows it was ignored as malformed | **PASS** — user-confirmed |
+| 19 | Open the SteamVR dashboard → SteamVR2Bot, click through the shortcut list and action picker | Renders and responds exactly as before, unaffected by the anchor/control changes | not run |
+| 20 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates — the product contract, unaffected by this phase | not run |
+| 21 | Restart SteamVR2Bot entirely (not just the worker) | Any active control-command override from before the restart is gone; both surfaces come up at their saved desktop defaults | not run |
+
+Rows 10–18 were confirmed in one combined pass (the user reported "Payload tests all worked" after running each Streamer.bot action in turn), not as individually itemised results with a raw log excerpt per row — consistent with the user-reported convention used elsewhere in this file. Rows 4–7 were confirmed in a separate, more detailed exchange; the exact wording each time is recorded above.
+
+### Two real bugs caught during this pass
+
+**Emote catalog stopped resolving after an anchor-triggered worker restart — root-caused and fixed.** Switching the chat anchor from desktop Settings restarts the OpenVR worker (a fresh, empty `ChatImageCache`), but does not restart the Streamer.bot event stream, since anchor mode is not part of `EventStreamSettings`. `TrayApplicationContext.EnsureEmoteCatalogAsync`'s fetch-once guard was keyed only to the event-stream instance, so it silently skipped re-delivering an already-fetched catalog to the new worker - emote and badge images stopped resolving (falling back to styled text) for the rest of the session after any anchor change, notification/chat toggle, or other settings save that restarts the runtime without restarting the event stream. This is a latent bug in the Phase 3 delivery-race fix, exposed by Phase 4's anchor setting giving an easy way to trigger a mid-session worker restart. Fixed by caching the fetched catalog value itself (not just a "fetched" boolean) so a new worker receives it via the existing bounded retry loop without a redundant Streamer.bot request. No dedicated automated test was added (`TrayApplicationContext` is not currently exercised by the self-test suites); re-verify with a fresh anchor switch, notification toggle, or chat toggle followed by chat activity.
+
+**Chat/dashboard blink on texture update — resolved as a confirmed pre-existing platform behaviour, not a bug.** Confirmed live: the chat window blinks on every repaint (`SetOverlayRaw`) and the dashboard blinks on every Settings-page interaction (`SetOverlayFromFile`). A first fix attempt - dropping chat's alpha to zero right at the texture swap, on the theory the swap itself was showing through - was tried and confirmed *not* to fix it: it just replaced the blink with a more visible fade-to-invisible-and-back, and was reverted. The decisive test: rapidly clicking the shortcut wizard's **Tolerance** slider - unmodified by any phase of this app, live since the very first release - reproduces the *identical* blink. Timing evidence rules out application-side slowness as the cause: every dashboard page update logged across this session (Settings, List, GestureType, RecordInput, Review, and Tolerance itself) measured 15-32 ms, with no correlation between duration and which page was showing. Conclusion: this is inherent SteamVR/OpenVR compositor behaviour when any overlay texture is replaced, present on both of this app's texture-update paths despite their different costs, and predates every phase of this project - it was simply never stress-tested with rapid repeated clicking until Phase 4b's sliders invited it. Documented as a known limitation in `README.md` rather than chased further; the temporary timing diagnostics added to `ChatOverlay.RepaintIfOwed` and `VrDashboardController.ShowPage` have been removed, their purpose served.
+
+### Frame-timing impact
+
+Not measured, for the same reason as Phases 2 and 3: no capture of a running
+game's frame times with the anchor tracker and control-command handling
+active has been taken.
+
+## Phase 4b — VR settings tab, with appearance and gaze settings — not yet run
+
+### Scope
+
+Landed per the approved plan (`smooth-finding-creek.md`): a **Settings** tab
+in the SteamVR dashboard, reached by peer navigation alongside the existing
+**Shortcuts** wizard entry point, plus five new settings the wizard never
+had - `ChatOpacity`, `ChatSizeScale`, `GazeSensitivity`,
+`NotificationOpacity`, `NotificationSizeScale` - since `PHASE4B_PROMPT.md`'s
+own scope (anchor mode/hand, panel size, opacity, on/off, gaze sensitivity)
+assumed settings Phase 4 had not actually shipped.
+
+- **Navigation.** `VrDashboardController` gained a `DashboardPage.Settings`
+  page sitting as a peer to `List` (the wizard's entry point), not inside the
+  wizard's page stack. The tab strip is drawn only on `List` and `Settings`;
+  the five wizard sub-pages (`GestureType`, `Tolerance`, `ActionPicker`,
+  `RecordInput`, `Review`) are **completely untouched** - zero lines changed
+  in their render or click-handling code. `List` itself was reflowed (title/
+  subtitle/rows shifted down, visible row count 6→5) to make room for the tab
+  strip at the top; row math in `VrDashboardController.HandleListClick` and
+  `VrDashboardRenderer.Render` was updated together via shared
+  `VrDashboardLayout` constants, not independently.
+- **Controls.** Toggles for on/off, segmented two/three-way buttons for
+  anchor mode, anchor hand (disabled when Headset is selected, not hidden)
+  and gaze sensitivity, and sliders for opacity/size that reuse the
+  tolerance-picker's exact shape: click-to-position, a hit region far taller
+  than the visible track, snapped to 5% steps.
+- **GDI+, deliberately.** `VrDashboardRenderer`/`VrDashboardLayout`/
+  `VrDashboardController` stay GDI+ for the new Settings page, consistent
+  with the rest of the proven, hardware-tested dashboard, while chat and
+  notifications remain WPF. Two renderers is a known, deliberate state, not
+  an accident - migrating the dashboard to WPF is possible later cleanup, not
+  a current need.
+- **Live-apply, no restart.** `VrDashboardController` runs inside the OpenVR
+  worker process already, so a settings-page edit applies to the live
+  `ChatOverlay`/`NotificationOverlay` immediately, in the same process and
+  thread - no IPC round trip needed for the *effect*. The *persistence* back
+  to `settings.json` reuses the exact pattern already proven for VR-created
+  shortcuts (`OpenVrWorkerMessage` → `OpenVrWorkerSession` drain queue →
+  `BridgeEngine.VrSettingsChanged` → `TrayApplicationContext.
+  SaveVrSettingsChange`), deliberately **without** calling
+  `RestartRuntimeAsync` - restarting would tear down the very dashboard the
+  wearer is looking at.
+- **Override interaction (§B5).** An anchor edited from the VR settings page
+  calls `SurfaceOverrideState.SetSavedDefaultAnchor`, which sets the new
+  saved default *and* clears any active Streamer.bot override in the same
+  call - an explicit user edit wins rather than silently doing nothing while
+  an override is in effect. Opacity, size and gaze sensitivity have no
+  Streamer.bot override mechanism at all (Phase 4's control commands only
+  ever covered anchor/show/hide/clear), so there is no override to interact
+  with for those three.
+
+### What is already covered without a headset
+
+All automated, added this phase: `TestSettingsPageLayoutRectangles` (every
+tab/toggle/segmented/slider rectangle is declared once in
+`VrDashboardLayout`, hit-tests to the control it is drawn as, does not
+overlap its neighbours, and stays on the canvas and clear of the tab strip -
+this caught a real bug: the two tabs were drawn exactly adjacent with zero
+gap, unlike every other button row's convention, now fixed with the same
+20px gap the rest of the dashboard uses), an extended
+`TestSurfaceOverrideStateAppliesAndResetsControlCommands` (a VR-style
+`SetSavedDefaultAnchor` call while a Streamer.bot override is active takes
+effect immediately and clears the override, and a later Streamer.bot
+`reset` returns to the *new* default, not the original one), and extended
+settings-migration coverage (the five new fields round-trip through
+`UserSettingsStore`, and a settings file written before Phase 4b defaults to
+exactly today's hardcoded appearance - 0.95 opacity, 1.0 size scale, Normal
+gaze sensitivity). All pre-existing self-tests continue to pass unmodified,
+which is the strongest automated evidence available that the wizard itself
+was not disturbed. Both self-test suites pass and both projects build with
+zero warnings in Debug and Release; `dotnet format --verify-no-changes`
+passes for all three projects (a pre-existing, unrelated whitespace-only
+formatting drift in `OpenVrInput.cs` - a file untouched by any phase in this
+session - was found and fixed mechanically while verifying this). None of
+this proves the Settings tab actually renders correctly in the headset, that
+a laser click lands on the control it visually appears to, or that the
+wizard's *behaviour* (not just its unchanged source code) still matches -
+only the manual steps below do that.
+
+### Preparation
+
+SteamVR running, both Vive controllers on and tracked, SteamVR2Bot running
+with at least one saved shortcut and the chat/notification settings from
+Phase 4 already exercised. Open the SteamVR dashboard → SteamVR2Bot.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Look at the **Shortcuts** and **Settings** tabs at the top of the List page | Both render clearly, current tab highlighted; clicking **Settings** switches pages | not run |
+| 2 | On the List page, confirm the shortcut list and "Create a new shortcut" bar | Renders and behaves exactly as before (allowing for one fewer visible row before "+N more on the desktop") | not run |
+| 3 | Click through the entire wizard: create a shortcut, edit it, delete it | Every page (gesture type, tolerance, record input, action picker, review) behaves exactly as before Phase 4b, with no visual or functional change | not run |
+| 4 | On the Settings page, toggle **Chat** off, then back on | Chat window disappears immediately; turning it back on makes it reappear immediately, without leaving the Settings page or a worker restart | not run |
+| 5 | Set the Chat anchor mode to **Headset**, then back to **Controller** | Chat window moves immediately each time, matching the desktop's anchor behaviour | not run |
+| 6 | With Chat anchor on **Controller**, switch the hand segmented control between **Left**/**Right** | Chat window follows the chosen hand immediately; the hand control is greyed out and non-interactive when **Headset** is selected | not run |
+| 7 | Click along the Chat **Opacity** slider at several points | Chat window's gazed-at brightness changes immediately and visibly, matching where you clicked | not run |
+| 8 | Click along the Chat **Size** slider at several points | Chat window's size changes immediately and visibly | not run |
+| 9 | Cycle the **Gaze sensitivity** control through Relaxed/Normal/Tight | Chat window's gaze-scale trigger angle noticeably widens/narrows - Relaxed grows the window even when not looked at directly, Tight requires looking more directly at it | not run |
+| 10 | Repeat steps 4-8 for **Notifications** (toggle, anchor mode, anchor hand, opacity, size), triggering a test notification after each change | Each change is visible on the next notification; toggling off suppresses notifications entirely, toggling back on resumes them | not run |
+| 11 | While a Streamer.bot anchor override is active on Chat (send `{"target":"control","command":"anchor","surface":"chat","mode":"head"}`), change the Chat anchor from the VR settings page to **Controller** | The VR edit wins immediately; sending `{"target":"control","command":"reset","surface":"chat"}` afterward returns to **Controller**, not back to Headset | not run |
+| 12 | Close the SteamVR dashboard, then reopen it and go to Settings | Every value shown matches what was last set, including anything changed in step 11 | not run |
+| 13 | Change a value on the Settings page, then check the desktop app's Settings tab (no restart) | The desktop control shows the new value | not run |
+| 14 | Restart SteamVR2Bot entirely | All Phase 4b settings survive - both anchor mode/hand, opacity, size and gaze sensitivity for both surfaces | not run |
+| 15 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates - the product contract, unaffected by this phase | not run |
+
+### Frame-timing impact
+
+Not measured, for the same reason as Phases 2-4: no capture of a running
+game's frame times with the Settings page open and being interacted with has
+been taken.

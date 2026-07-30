@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using System.Threading.Channels;
 using SvrBridge.Core;
@@ -38,6 +39,7 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         _commandResults = new();
     private readonly ConcurrentQueue<ShortcutConfig> _createdShortcuts = new();
     private readonly ConcurrentQueue<string> _deletedShortcutIds = new();
+    private readonly ConcurrentQueue<VrSettingsSnapshot> _vrSettingsChanges = new();
     private InputSnapshot _snapshot;
     private ControllerSetup _setup = ControllerSetup.Unknown;
     private Exception? _failure;
@@ -177,6 +179,25 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
     public void SetEmoteCatalog(IReadOnlyDictionary<string, string> catalog) =>
         SendCommand(new OpenVrWorkerCommand("emoteCatalog", EmoteCatalog: catalog));
 
+    /// <summary>
+    /// Fire-and-forget, for the same reason as <see cref="SetEmoteCatalog"/>:
+    /// the caller (<c>TrayApplicationContext.SaveAndApplySettingsAsync</c>)
+    /// only sends this when it has already decided a restart is unnecessary,
+    /// so there is no result to wait on here - the worker's own
+    /// <c>"vrSettingsChanged"</c> echo back is what confirms it landed.
+    /// </summary>
+    public void ApplySettingsChange(VrSettingsSnapshot settings) =>
+        SendCommand(new OpenVrWorkerCommand("applySettings", VrSettings: settings));
+
+    /// <summary>
+    /// Fire-and-forget, for the same reason as <see cref="ShowChatMessage"/>:
+    /// the caller is the event feed's consumption loop, and the worker's own
+    /// <see cref="SurfaceOverrideState"/> per surface is what remembers the
+    /// resulting override, not this call.
+    /// </summary>
+    public void ApplyControlCommand(StreamerBotEventPayload payload) =>
+        SendCommand(new OpenVrWorkerCommand("control", Payload: payload));
+
     public void ShowDashboard(string imagePath)
         => ShowDashboard(imagePath, [], []);
 
@@ -237,6 +258,18 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         while (_deletedShortcutIds.TryDequeue(out var shortcutId))
         {
             result.Add(shortcutId);
+        }
+
+        return result;
+    }
+
+    /// <summary>Drains settings changes made from the VR settings page - see <c>OpenVrWorker.ApplyVrSettingsChange</c>.</summary>
+    public IReadOnlyList<VrSettingsSnapshot> DrainVrSettingsChanges()
+    {
+        var result = new List<VrSettingsSnapshot>();
+        while (_vrSettingsChanges.TryDequeue(out var settings))
+        {
+            result.Add(settings);
         }
 
         return result;
@@ -328,6 +361,34 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         startInfo.ArgumentList.Add(actionManifest);
         startInfo.ArgumentList.Add("--poll-interval");
         startInfo.ArgumentList.Add(config.PollIntervalMs.ToString());
+        // Baked in at spawn rather than pushed at runtime, so an anchor
+        // change from the desktop takes effect on the next worker restart -
+        // the same as an address or password change already does. See
+        // AppConfig.ChatAnchor.
+        startInfo.ArgumentList.Add("--chat-anchor-mode");
+        startInfo.ArgumentList.Add(((int)config.ChatAnchor.Mode).ToString());
+        startInfo.ArgumentList.Add("--chat-anchor-hand");
+        startInfo.ArgumentList.Add(((int)config.ChatAnchor.Hand).ToString());
+        startInfo.ArgumentList.Add("--notification-anchor-mode");
+        startInfo.ArgumentList.Add(((int)config.NotificationAnchor.Mode).ToString());
+        startInfo.ArgumentList.Add("--notification-anchor-hand");
+        startInfo.ArgumentList.Add(((int)config.NotificationAnchor.Hand).ToString());
+        // Same "baked in at spawn" reasoning as the anchor args above - see
+        // AppConfig.ChatOpacity.
+        startInfo.ArgumentList.Add("--chat-enabled");
+        startInfo.ArgumentList.Add(config.ChatEnabled.ToString());
+        startInfo.ArgumentList.Add("--notifications-enabled");
+        startInfo.ArgumentList.Add(config.NotificationsEnabled.ToString());
+        startInfo.ArgumentList.Add("--chat-opacity");
+        startInfo.ArgumentList.Add(config.ChatOpacity.ToString(CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--chat-size-scale");
+        startInfo.ArgumentList.Add(config.ChatSizeScale.ToString(CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--gaze-sensitivity");
+        startInfo.ArgumentList.Add(((int)config.GazeSensitivity).ToString());
+        startInfo.ArgumentList.Add("--notification-opacity");
+        startInfo.ArgumentList.Add(config.NotificationOpacity.ToString(CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--notification-size-scale");
+        startInfo.ArgumentList.Add(config.NotificationSizeScale.ToString(CultureInfo.InvariantCulture));
         if (!string.IsNullOrWhiteSpace(config.OpenVrDllPath))
         {
             startInfo.ArgumentList.Add("--openvr-dll");
@@ -464,6 +525,13 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
                 }
 
                 break;
+            case "vrSettingsChanged":
+                if (message.VrSettingsChanged is { } vrSettings)
+                {
+                    _vrSettingsChanges.Enqueue(vrSettings);
+                }
+
+                break;
         }
     }
 
@@ -557,6 +625,45 @@ internal static class OpenVrWorker
                 out var parsedInterval)
                 ? Math.Clamp(parsedInterval, 1, 1000)
                 : 10;
+            var chatDefaultAnchor = new OverlayAnchor(
+                ParseEnumArgument(
+                    GetArgumentValue(args, "--chat-anchor-mode"),
+                    OverlayAnchorMode.Controller),
+                ParseEnumArgument(
+                    GetArgumentValue(args, "--chat-anchor-hand"),
+                    OverlayAnchorHand.Left));
+            var notificationDefaultAnchor = new OverlayAnchor(
+                ParseEnumArgument(
+                    GetArgumentValue(args, "--notification-anchor-mode"),
+                    OverlayAnchorMode.Head),
+                ParseEnumArgument(
+                    GetArgumentValue(args, "--notification-anchor-hand"),
+                    OverlayAnchorHand.Left));
+            // Transient overrides a Streamer.bot control command places on
+            // top of the saved defaults above - see SurfaceOverrideState's
+            // own remarks for why the saved default itself is never mutated
+            // here. Remembered even before either overlay exists (a "hide"
+            // sent ahead of the first chat message should still apply once
+            // it is created), the same reason latestEmoteCatalog below exists.
+            var chatOverride = new SurfaceOverrideState(chatDefaultAnchor);
+            var notificationOverride = new SurfaceOverrideState(notificationDefaultAnchor);
+
+            // Opacity, size and gaze sensitivity have no Streamer.bot
+            // override mechanism (Phase 4's control commands only cover
+            // anchor/show/hide/clear) - only the VR settings page and the
+            // desktop can change them, so plain mutable locals are enough;
+            // there is no "saved default vs transient override" distinction
+            // to track for these the way SurfaceOverrideState tracks anchor.
+            var chatEnabled = ParseBoolArgument(GetArgumentValue(args, "--chat-enabled"));
+            var chatOpacity = ParseDoubleArgument(GetArgumentValue(args, "--chat-opacity"), 0.95);
+            var chatSizeScale = ParseDoubleArgument(GetArgumentValue(args, "--chat-size-scale"), 1.0);
+            var gazeSensitivity = ParseEnumArgument(
+                GetArgumentValue(args, "--gaze-sensitivity"),
+                GazeSensitivity.Normal);
+            var notificationsEnabled = ParseBoolArgument(GetArgumentValue(args, "--notifications-enabled"));
+            var notificationOpacity = ParseDoubleArgument(GetArgumentValue(args, "--notification-opacity"), 1.0);
+            var notificationSizeScale =
+                ParseDoubleArgument(GetArgumentValue(args, "--notification-size-scale"), 1.0);
 
             using var openVr = new OpenVrInput(
                 openVrDll,
@@ -581,6 +688,129 @@ internal static class OpenVrWorker
             // here so it can be applied the moment chatOverlay is created,
             // rather than being silently lost.
             IReadOnlyDictionary<string, string>? latestEmoteCatalog = null;
+
+            // Shared by the "notify"/"chat" command handlers (lazy, on first
+            // message - unchanged from before Phase 4b) and the VR settings
+            // page's on/off toggle (eager, so the wearer sees the surface
+            // appear immediately without leaving the page - see §B4 of the
+            // Phase 4b plan). A no-op if the overlay already exists either way.
+            void EnsureNotificationOverlay()
+            {
+                if (notificationOverlay is not null)
+                {
+                    return;
+                }
+
+                notificationOverlay = NotificationOverlay.TryCreate(
+                    openVr,
+                    notificationOverride.EffectiveAnchor,
+                    notificationOpacity,
+                    notificationSizeScale,
+                    message => Emit(new OpenVrWorkerMessage("log", Message: message)));
+                if (notificationOverlay is not null && notificationOverride.Hidden)
+                {
+                    notificationOverlay.SetHidden(true);
+                }
+            }
+
+            void EnsureChatOverlay()
+            {
+                if (chatOverlay is not null)
+                {
+                    return;
+                }
+
+                chatOverlay = ChatOverlay.TryCreate(
+                    openVr,
+                    chatOverride.EffectiveAnchor,
+                    chatOpacity,
+                    chatSizeScale,
+                    gazeSensitivity,
+                    message => Emit(new OpenVrWorkerMessage("log", Message: message)));
+
+                if (chatOverlay is not null)
+                {
+                    if (chatOverride.Hidden)
+                    {
+                        chatOverlay.SetHidden(true);
+                    }
+
+                    // Poses are needed for gaze detection from the moment the
+                    // window exists; left off until then so a worker that
+                    // never creates this overlay never pays for pose
+                    // sampling either.
+                    openVr.MotionSamplingEnabled = true;
+
+                    // Applies a catalog that may have arrived before this
+                    // overlay existed to receive it - see latestEmoteCatalog
+                    // above.
+                    if (latestEmoteCatalog is not null)
+                    {
+                        chatOverlay.SetEmoteCatalog(latestEmoteCatalog);
+                    }
+                }
+            }
+
+            // Applies a change reported by the VR settings page - see
+            // VrDashboardController.ApplySettingsChange - live, in this same
+            // process and thread, and reports it onward to the tray for
+            // persistence. A desktop-made change never reaches this: it goes
+            // through a full worker restart instead, with the new values
+            // baked into fresh spawn args, the same as an address or
+            // password change already does.
+            void ApplyVrSettingsChange(VrSettingsSnapshot newSettings)
+            {
+                if (newSettings.ChatEnabled != chatEnabled)
+                {
+                    chatEnabled = newSettings.ChatEnabled;
+                    if (chatEnabled)
+                    {
+                        EnsureChatOverlay();
+                    }
+                    else
+                    {
+                        chatOverlay?.Dispose();
+                        chatOverlay = null;
+                    }
+                }
+
+                if (newSettings.NotificationsEnabled != notificationsEnabled)
+                {
+                    notificationsEnabled = newSettings.NotificationsEnabled;
+                    if (notificationsEnabled)
+                    {
+                        EnsureNotificationOverlay();
+                    }
+                    else
+                    {
+                        notificationOverlay?.Dispose();
+                        notificationOverlay = null;
+                    }
+                }
+
+                chatOpacity = newSettings.ChatOpacity;
+                chatSizeScale = newSettings.ChatSizeScale;
+                gazeSensitivity = newSettings.GazeSensitivity;
+                notificationOpacity = newSettings.NotificationOpacity;
+                notificationSizeScale = newSettings.NotificationSizeScale;
+
+                chatOverlay?.SetOpacity(chatOpacity);
+                chatOverlay?.SetSizeScale(chatSizeScale);
+                chatOverlay?.SetGazeSensitivity(gazeSensitivity);
+                notificationOverlay?.SetOpacity(notificationOpacity);
+                notificationOverlay?.SetSizeScale(notificationSizeScale);
+
+                // SetSavedDefaultAnchor also clears any active Streamer.bot
+                // anchor override - an explicit VR edit wins, per §B5 of the
+                // Phase 4b plan.
+                chatOverride.SetSavedDefaultAnchor(newSettings.ChatAnchor);
+                chatOverlay?.SetAnchorOverride(chatOverride.EffectiveAnchor);
+                notificationOverride.SetSavedDefaultAnchor(newSettings.NotificationAnchor);
+                notificationOverlay?.SetAnchorOverride(notificationOverride.EffectiveAnchor);
+
+                Emit(new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: newSettings));
+            }
+
             _ = Task.Run(() => ReadCommandsAsync(commands.Writer));
 
             var snapshot = openVr.Poll();
@@ -622,10 +852,7 @@ internal static class OpenVrWorker
                     {
                         try
                         {
-                            notificationOverlay ??= NotificationOverlay.TryCreate(
-                                openVr,
-                                message => Emit(
-                                    new OpenVrWorkerMessage("log", Message: message)));
+                            EnsureNotificationOverlay();
                             notificationOverlay?.Enqueue(notification);
                         }
                         catch (Exception exception)
@@ -644,32 +871,7 @@ internal static class OpenVrWorker
                     {
                         try
                         {
-                            if (chatOverlay is null)
-                            {
-                                chatOverlay = ChatOverlay.TryCreate(
-                                    openVr,
-                                    message => Emit(
-                                        new OpenVrWorkerMessage("log", Message: message)));
-
-                                if (chatOverlay is not null)
-                                {
-                                    // Poses are needed for gaze detection from
-                                    // the moment the window exists; left off
-                                    // until then so a worker that never
-                                    // receives a chat message never pays for
-                                    // pose sampling either.
-                                    openVr.MotionSamplingEnabled = true;
-
-                                    // Applies a catalog that may have arrived
-                                    // before this overlay existed to receive
-                                    // it - see latestEmoteCatalog above.
-                                    if (latestEmoteCatalog is not null)
-                                    {
-                                        chatOverlay.SetEmoteCatalog(latestEmoteCatalog);
-                                    }
-                                }
-                            }
-
+                            EnsureChatOverlay();
                             chatOverlay?.Enqueue(chatMessage);
                         }
                         catch (Exception exception)
@@ -680,6 +882,28 @@ internal static class OpenVrWorker
                                 new OpenVrWorkerMessage(
                                     "log",
                                     Message: $"A chat message could not be shown: {exception.Message}"));
+                        }
+                    }
+
+                    if (command.Kind == "applySettings" && command.VrSettings is { } desktopSettings)
+                    {
+                        // A desktop-made appearance/anchor/enable change,
+                        // pushed the opposite direction from a VR settings-
+                        // page edit but applied through the exact same
+                        // function - see ApplyVrSettingsChange. Lets the
+                        // tray avoid a full worker restart for a change that
+                        // does not need one; TrayApplicationContext only
+                        // sends this when nothing else changed.
+                        try
+                        {
+                            ApplyVrSettingsChange(desktopSettings);
+                        }
+                        catch (Exception exception)
+                        {
+                            Emit(
+                                new OpenVrWorkerMessage(
+                                    "log",
+                                    Message: $"A desktop settings change could not be applied: {exception.Message}"));
                         }
                     }
 
@@ -694,6 +918,78 @@ internal static class OpenVrWorker
                         // reporting.
                         latestEmoteCatalog = emoteCatalog;
                         chatOverlay?.SetEmoteCatalog(emoteCatalog);
+                    }
+
+                    if (command.Kind == "control" && command.Payload is { } controlPayload)
+                    {
+                        try
+                        {
+                            ApplyControlCommand(controlPayload);
+                        }
+                        catch (Exception exception)
+                        {
+                            Emit(
+                                new OpenVrWorkerMessage(
+                                    "log",
+                                    Message: $"A control command could not be applied: {exception.Message}"));
+                        }
+
+                        void ApplyControlCommand(StreamerBotEventPayload payload)
+                        {
+                            var command = payload.Command.Trim().ToLowerInvariant();
+                            var isChat = payload.Surface != ControlSurface.Notifications;
+                            var surfaceName = isChat ? "chat" : "notifications";
+
+                            if (command == "clear")
+                            {
+                                // A one-shot action against a surface's own
+                                // backlog, not a lasting override - see
+                                // SurfaceOverrideState's own remarks.
+                                if (isChat)
+                                {
+                                    chatOverlay?.ClearMessages();
+                                }
+                                else
+                                {
+                                    notificationOverlay?.ClearQueue();
+                                }
+
+                                return;
+                            }
+
+                            if (command is not ("show" or "hide" or "anchor" or "reset"))
+                            {
+                                Emit(
+                                    new OpenVrWorkerMessage(
+                                        "log",
+                                        Message: $"An unrecognised control command (\"{payload.Command}\") "
+                                                 + $"for {surfaceName} was ignored."));
+                                return;
+                            }
+
+                            if (command == "anchor" && payload.RequestedAnchorMode is null)
+                            {
+                                Emit(
+                                    new OpenVrWorkerMessage(
+                                        "log",
+                                        Message: $"An anchor control command for {surfaceName} was ignored: "
+                                                 + "no valid mode was given."));
+                                return;
+                            }
+
+                            var state = isChat ? chatOverride : notificationOverride;
+                            state.Apply(payload);
+                            if (isChat)
+                            {
+                                chatOverlay?.SetAnchorOverride(state.EffectiveAnchor);
+                                chatOverlay?.SetHidden(state.Hidden);
+                            }
+                            else
+                            {
+                                notificationOverlay?.SetAnchorOverride(state.EffectiveAnchor);
+                                notificationOverlay?.SetHidden(state.Hidden);
+                            }
+                        }
                     }
 
                     if (command.Kind == "testOverlay")
@@ -735,11 +1031,29 @@ internal static class OpenVrWorker
                         string? error = null;
                         try
                         {
+                            // Built from this worker's own live state, not
+                            // anything passed on the command - it is always
+                            // at least as fresh, since a VR settings edit
+                            // updates it immediately and a desktop edit only
+                            // ever reaches this worker via a full restart
+                            // with new spawn args. See ApplyVrSettingsChange.
+                            var vrSettings = new VrSettingsSnapshot(
+                                chatEnabled,
+                                chatOverride.SavedDefault,
+                                chatOpacity,
+                                chatSizeScale,
+                                gazeSensitivity,
+                                notificationsEnabled,
+                                notificationOverride.SavedDefault,
+                                notificationOpacity,
+                                notificationSizeScale);
+
                             dashboard = new VrDashboardController(
                                 openVr,
                                 command.Shortcuts ?? [],
                                 command.Actions ?? [],
                                 command.Activate,
+                                vrSettings,
                                 shortcut => Emit(
                                     new OpenVrWorkerMessage(
                                         "shortcutCreated",
@@ -748,6 +1062,7 @@ internal static class OpenVrWorker
                                     new OpenVrWorkerMessage(
                                         "shortcutDeleted",
                                         ShortcutDeletedId: shortcutId)),
+                                ApplyVrSettingsChange,
                                 message => Emit(
                                     new OpenVrWorkerMessage(
                                         "log",
@@ -814,7 +1129,7 @@ internal static class OpenVrWorker
                     // A true no-op whenever nothing is queued or showing - see
                     // NotificationOverlay.Tick - so this costs nothing on the
                     // 10 ms poll loop between notifications.
-                    notificationOverlay?.Tick(Environment.TickCount64);
+                    notificationOverlay?.Tick(openVr, Environment.TickCount64);
                 }
                 catch (Exception exception)
                 {
@@ -917,6 +1232,17 @@ internal static class OpenVrWorker
                 setup.Controllers.Select(controller =>
                     $"{controller.Hand}:{controller.ControllerType}:{controller.Model}")));
 
+    private static TEnum ParseEnumArgument<TEnum>(string? raw, TEnum fallback)
+        where TEnum : struct, Enum =>
+        int.TryParse(raw, out var value) && Enum.IsDefined(typeof(TEnum), value)
+            ? (TEnum)(object)value
+            : fallback;
+
+    private static bool ParseBoolArgument(string? raw) => bool.TryParse(raw, out var value) && value;
+
+    private static double ParseDoubleArgument(string? raw, double fallback) =>
+        double.TryParse(raw, CultureInfo.InvariantCulture, out var value) ? value : fallback;
+
     private static string? GetArgumentValue(string[] args, string name)
     {
         for (var index = 0; index < args.Length - 1; index++)
@@ -940,7 +1266,8 @@ internal sealed record OpenVrWorkerCommand(
     bool Activate = true,
     bool Enabled = false,
     StreamerBotEventPayload? Payload = null,
-    IReadOnlyDictionary<string, string>? EmoteCatalog = null);
+    IReadOnlyDictionary<string, string>? EmoteCatalog = null,
+    VrSettingsSnapshot? VrSettings = null);
 
 internal sealed record OpenVrWorkerMessage(
     string Kind,
@@ -950,4 +1277,5 @@ internal sealed record OpenVrWorkerMessage(
     string? RequestId = null,
     string? Error = null,
     ShortcutConfig? ShortcutCreated = null,
-    string? ShortcutDeletedId = null);
+    string? ShortcutDeletedId = null,
+    VrSettingsSnapshot? VrSettingsChanged = null);

@@ -22,6 +22,9 @@ public interface IOpenVrSession : IDisposable
 
     IReadOnlyList<string> DrainDeletedShortcutIds() => [];
 
+    /// <summary>Settings changes made from the VR settings page since the last drain. Empty by default.</summary>
+    IReadOnlyList<VrSettingsSnapshot> DrainVrSettingsChanges() => [];
+
     /// <summary>
     /// True once SteamVR has asked the app to quit, as opposed to the session
     /// dropping for a reason worth reconnecting after.
@@ -59,6 +62,26 @@ public interface IOpenVrSession : IDisposable
     /// by default, for the same reason as <see cref="ShowNotification"/>.
     /// </summary>
     void SetEmoteCatalog(IReadOnlyDictionary<string, string> catalog)
+    {
+    }
+
+    /// <summary>
+    /// Applies a Streamer.bot <c>control</c> payload - show/hide/clear/anchor
+    /// on the session's overlay surfaces. A no-op by default, for the same
+    /// reason as <see cref="ShowNotification"/>.
+    /// </summary>
+    void ApplyControlCommand(StreamerBotEventPayload payload)
+    {
+    }
+
+    /// <summary>
+    /// Applies a desktop-made appearance/anchor/enable change to the
+    /// session's overlay surfaces live, without a worker restart - the
+    /// opposite direction of a VR settings-page edit, applied through the
+    /// same effect. A no-op by default, for the same reason as
+    /// <see cref="ShowNotification"/>.
+    /// </summary>
+    void ApplySettingsChange(VrSettingsSnapshot settings)
     {
     }
 }

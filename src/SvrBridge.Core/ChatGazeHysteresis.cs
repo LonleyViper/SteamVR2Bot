@@ -40,6 +40,24 @@ public sealed class ChatGazeHysteresis
         _exitCosine = MathF.Cos(exitAngleDegrees * MathF.PI / 180f);
     }
 
+    /// <summary>
+    /// Builds an instance from the small set of named choices the VR and
+    /// desktop settings pages present, per §B1 of the Phase 4b plan - a
+    /// person judges "how directly do I need to look" by trying it on, not
+    /// by typing a raw angle. <see cref="GazeSensitivity.Normal"/> is exactly
+    /// the 20°/35° default this type always had, so choosing it reproduces
+    /// today's behaviour precisely.
+    /// </summary>
+    public static ChatGazeHysteresis Create(GazeSensitivity sensitivity) =>
+        sensitivity switch
+        {
+            // Wider cone: the window grows even when not looked at directly.
+            GazeSensitivity.Relaxed => new ChatGazeHysteresis(30f, 45f),
+            // Narrower cone: the wearer must look more directly at the window.
+            GazeSensitivity.Tight => new ChatGazeHysteresis(12f, 22f),
+            _ => new ChatGazeHysteresis()
+        };
+
     /// <summary>The verdict as of the most recent <see cref="Update"/>, or false before the first call.</summary>
     public bool IsGazing => _isGazing;
 

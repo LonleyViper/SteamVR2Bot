@@ -13,6 +13,16 @@ public enum StreamerBotEventTarget
 }
 
 /// <summary>
+/// Which overlay a <see cref="StreamerBotEventTarget.Control"/> payload's
+/// command applies to. See <see cref="StreamerBotEventPayload.Surface"/>.
+/// </summary>
+public enum ControlSurface
+{
+    Chat,
+    Notifications
+}
+
+/// <summary>
 /// One badge on a chat message: a friendly label and, when known, an image
 /// URL. Twitch chatters can carry several at once (broadcaster, subscriber,
 /// bits, Prime, a channel's own custom loyalty badge, ...), so this is a
@@ -95,6 +105,35 @@ public sealed record StreamerBotEventPayload
     public IReadOnlyList<ChatBadge> Badges { get; init; } = [];
 
     /// <summary>
+    /// Which overlay a <see cref="StreamerBotEventTarget.Control"/> command
+    /// applies to. Defaults to <see cref="ControlSurface.Chat"/> when the
+    /// field is absent or unrecognised, since a bare
+    /// <c>{"command":"clear"}</c> most naturally means "clear the chat ring
+    /// buffer" - the exact phrase §B3 of the Phase 4 plan names the command
+    /// after. Meaningless outside a control payload.
+    /// </summary>
+    public ControlSurface Surface { get; init; } = ControlSurface.Chat;
+
+    /// <summary>
+    /// The anchor mode an <c>anchor</c> control command is requesting, or
+    /// null when the <c>mode</c> field is absent or not "controller"/"head".
+    /// A null value means the command is malformed and must be ignored
+    /// rather than applied with a guessed mode.
+    /// </summary>
+    public OverlayAnchorMode? RequestedAnchorMode { get; init; }
+
+    /// <summary>
+    /// The hand an <c>anchor</c> control command is requesting alongside
+    /// <see cref="RequestedAnchorMode"/>, or null when the <c>hand</c> field
+    /// is absent or not "left"/"right". Unlike a missing mode this is not
+    /// treated as malformed - a caller applying the command defaults it to
+    /// <see cref="OverlayAnchorHand.Left"/>, since head mode does not use it
+    /// anyway and requiring a hand for every head-anchor request would be
+    /// needless friction on the Streamer.bot side.
+    /// </summary>
+    public OverlayAnchorHand? RequestedAnchorHand { get; init; }
+
+    /// <summary>
     /// Parses a payload body, reporting why it was rejected rather than
     /// throwing. Callers are receive loops that must survive bad input.
     /// </summary>
@@ -167,7 +206,10 @@ public sealed record StreamerBotEventPayload
             Command = ReadString(body, "command").Trim(),
             EmoteNames = ReadStringArray(body, "emotes"),
             BadgeImageUrl = ReadString(body, "badgeImageUrl"),
-            Badges = ReadBadges(body, "badges")
+            Badges = ReadBadges(body, "badges"),
+            Surface = ReadSurface(body),
+            RequestedAnchorMode = ReadAnchorMode(body),
+            RequestedAnchorHand = ReadAnchorHand(body)
         };
         rejection = "";
         return true;
@@ -292,6 +334,32 @@ public sealed record StreamerBotEventPayload
 
         return result;
     }
+
+    /// <summary>Reads the "surface" field, defaulting to chat - see <see cref="Surface"/>.</summary>
+    private static ControlSurface ReadSurface(JsonElement body) =>
+        ReadString(body, "surface").Trim().ToLowerInvariant() switch
+        {
+            "notification" or "notifications" => ControlSurface.Notifications,
+            _ => ControlSurface.Chat
+        };
+
+    /// <summary>Reads the "mode" field for an anchor command, or null - see <see cref="RequestedAnchorMode"/>.</summary>
+    private static OverlayAnchorMode? ReadAnchorMode(JsonElement body) =>
+        ReadString(body, "mode").Trim().ToLowerInvariant() switch
+        {
+            "controller" => OverlayAnchorMode.Controller,
+            "head" => OverlayAnchorMode.Head,
+            _ => null
+        };
+
+    /// <summary>Reads the "hand" field for an anchor command, or null - see <see cref="RequestedAnchorHand"/>.</summary>
+    private static OverlayAnchorHand? ReadAnchorHand(JsonElement body) =>
+        ReadString(body, "hand").Trim().ToLowerInvariant() switch
+        {
+            "left" => OverlayAnchorHand.Left,
+            "right" => OverlayAnchorHand.Right,
+            _ => null
+        };
 
     /// <summary>
     /// Normalises to <c>#RRGGBB</c> and discards anything else. The renderer is

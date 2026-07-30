@@ -13,6 +13,47 @@ public sealed class AppConfig
     public ChordConfig Chord { get; init; } = new();
     public IReadOnlyList<ShortcutConfig> Shortcuts { get; init; } = [];
 
+    /// <summary>
+    /// The saved default anchor for the chat window. Baked into the OpenVR
+    /// worker at spawn (see <c>OpenVrWorkerSession.CreateStartInfo</c>)
+    /// rather than pushed at runtime, so a desktop anchor change takes effect
+    /// on the next worker restart - the same as an address or password
+    /// change already does. A Streamer.bot <c>anchor</c> control command can
+    /// still override it in memory for the life of that worker; see
+    /// <see cref="SurfaceOverrideState"/>.
+    /// </summary>
+    public OverlayAnchor ChatAnchor { get; init; } = new(OverlayAnchorMode.Controller, OverlayAnchorHand.Left);
+
+    /// <summary>The saved default anchor for notifications. See <see cref="ChatAnchor"/>.</summary>
+    public OverlayAnchor NotificationAnchor { get; init; } = OverlayAnchor.Head;
+
+    /// <summary>
+    /// Whether the chat window starts on. Baked in at spawn like the anchor
+    /// fields above, so the OpenVR worker knows the initial state without
+    /// waiting for a "chat" command - needed so the VR settings page's on/off
+    /// toggle can create or dispose the overlay in place, immediately,
+    /// without a worker restart.
+    /// </summary>
+    public bool ChatEnabled { get; init; }
+
+    /// <summary>Whether notifications start on. See <see cref="ChatEnabled"/>.</summary>
+    public bool NotificationsEnabled { get; init; }
+
+    /// <summary>The chat window's saved default gazed-at alpha ceiling. See <see cref="ChatAnchor"/> for why this is baked in at spawn.</summary>
+    public double ChatOpacity { get; init; } = 0.95;
+
+    /// <summary>Multiplies the chat window's saved default widths. See <see cref="ChatOpacity"/>.</summary>
+    public double ChatSizeScale { get; init; } = 1.0;
+
+    /// <summary>The chat window's saved default gaze sensitivity. See <see cref="ChatOpacity"/>.</summary>
+    public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
+
+    /// <summary>The notification panel's saved default peak alpha. See <see cref="ChatOpacity"/>.</summary>
+    public double NotificationOpacity { get; init; } = 1.0;
+
+    /// <summary>Multiplies the notification panel's saved default width. See <see cref="ChatOpacity"/>.</summary>
+    public double NotificationSizeScale { get; init; } = 1.0;
+
     public static AppConfig Load(string path)
     {
         if (!File.Exists(path))

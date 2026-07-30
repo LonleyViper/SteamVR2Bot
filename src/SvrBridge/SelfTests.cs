@@ -481,6 +481,33 @@ internal static class SelfTests
             "A control payload lost its command.");
 
         Assert(
+            ParsePayload("""{"target":"control","command":"clear"}""").Surface
+                == ControlSurface.Chat,
+            "A control payload with no surface field did not default to chat.");
+        Assert(
+            ParsePayload("""{"target":"control","command":"clear","surface":"notifications"}""")
+                .Surface == ControlSurface.Notifications,
+            "A control payload did not recognise the notifications surface.");
+        Assert(
+            ParsePayload("""{"target":"control","command":"clear","surface":"hologram"}""").Surface
+                == ControlSurface.Chat,
+            "An unrecognised surface value was not treated as the chat default.");
+
+        var anchorCommand = ParsePayload(
+            """{"target":"control","command":"anchor","mode":"Head","hand":"Right"}""");
+        Assert(
+            anchorCommand.RequestedAnchorMode == OverlayAnchorMode.Head
+            && anchorCommand.RequestedAnchorHand == OverlayAnchorHand.Right,
+            "An anchor control payload did not parse its mode and hand.");
+        Assert(
+            ParsePayload("""{"target":"control","command":"anchor"}""").RequestedAnchorMode is null,
+            "A missing anchor mode was not left null.");
+        Assert(
+            ParsePayload("""{"target":"control","command":"anchor","mode":"sideways"}""")
+                .RequestedAnchorMode is null,
+            "An unrecognised anchor mode was not left null.");
+
+        Assert(
             ParsePayload("""{"target":"chat","text":"Kappa hi","emotes":["Kappa","",42,"PogChamp"]}""")
                 .EmoteNames.SequenceEqual(["Kappa", "PogChamp"]),
             "An emotes array did not keep its valid string entries and skip the invalid ones.");

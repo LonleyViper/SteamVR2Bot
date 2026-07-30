@@ -8,6 +8,7 @@ internal static class TraySelfTests
         TestVrScrollLimiter();
         TestPackagedViveBinding();
         TestDashboardBottomBarLayout();
+        TestSettingsPageLayoutRectangles();
         TestRenamedDataDirectoryMigration();
         TestOverlayTransformComposition();
         TestOverlayHandleRoundTrip();
@@ -28,6 +29,11 @@ internal static class TraySelfTests
         TestChatRenderEmbedsCachedBadgeImage();
         TestChatRenderEmbedsMultipleBadges();
         TestChatRingBufferThreadSafeConcurrentAccess();
+        TestOverlayAnchorOffsetsMatchProvenTransforms();
+        TestSurfaceOverrideStateAppliesAndResetsControlCommands();
+        TestChatDeveloperInjectorProducesExpectedMessages();
+        TestChatCommandJsonRoundTripPreservesBadgesAndEmotes();
+        TestRequiresRuntimeRestartDistinguishesLiveAppliableChanges();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -65,7 +71,12 @@ internal static class TraySelfTests
                     }
                 ],
                 StartBridgeWhenAppOpens = true,
-                EventStreamEnabled = true
+                EventStreamEnabled = true,
+                ChatOpacity = 0.8,
+                ChatSizeScale = 1.2,
+                GazeSensitivity = SvrBridge.Core.GazeSensitivity.Tight,
+                NotificationOpacity = 0.7,
+                NotificationSizeScale = 0.6
             };
 
             store.Save(expected);
@@ -92,6 +103,13 @@ internal static class TraySelfTests
                 && actualShortcut.Gesture.Mode == expectedShortcut.Gesture.Mode
                 && actualShortcut.Gesture.HoldMs == expectedShortcut.Gesture.HoldMs,
                 "Protected multi-shortcut settings did not round-trip.");
+            Assert(
+                actual.ChatOpacity == expected.ChatOpacity
+                && actual.ChatSizeScale == expected.ChatSizeScale
+                && actual.GazeSensitivity == expected.GazeSensitivity
+                && actual.NotificationOpacity == expected.NotificationOpacity
+                && actual.NotificationSizeScale == expected.NotificationSizeScale,
+                "The Phase 4b appearance/gaze settings did not round-trip.");
 
             UserSettingsStore.ValidateForSave(
                 expected with
@@ -154,6 +172,14 @@ internal static class TraySelfTests
             Assert(
                 !store.Load().EventStreamEnabled,
                 "An upgraded settings file turned the event feed on by itself.");
+            var upgraded = store.Load();
+            Assert(
+                upgraded.ChatOpacity == 0.95
+                && upgraded.ChatSizeScale == 1.0
+                && upgraded.GazeSensitivity == SvrBridge.Core.GazeSensitivity.Normal
+                && upgraded.NotificationOpacity == 1.0
+                && upgraded.NotificationSizeScale == 1.0,
+                "A settings file written before Phase 4b did not default to today's hardcoded appearance.");
 
             AssertThrows(
                 () => UserSettingsStore.Validate(
@@ -427,6 +453,108 @@ internal static class TraySelfTests
             "Cancel and Save are not at opposite ends of the review bar.");
     }
 
+    /// <summary>
+    /// The Phase 4b tab strip and the Settings page's segmented controls
+    /// follow the same shared-rectangle-table rule as the bottom bar tested
+    /// above: every control the renderer draws is declared once in
+    /// <see cref="VrDashboardLayout"/> and hit-tests to itself, and no two
+    /// controls on the same page overlap.
+    /// </summary>
+    private static void TestSettingsPageLayoutRectangles()
+    {
+        var segmentedRows = new (string Name, Rectangle[] Row)[]
+        {
+            ("tabs", VrDashboardLayout.Tabs),
+            ("chat anchor mode", VrDashboardLayout.ChatAnchorMode),
+            ("chat anchor hand", VrDashboardLayout.ChatAnchorHand),
+            ("notification anchor mode", VrDashboardLayout.NotificationAnchorMode),
+            ("notification anchor hand", VrDashboardLayout.NotificationAnchorHand),
+            ("gaze sensitivity", VrDashboardLayout.GazeSensitivity)
+        };
+
+        foreach (var (name, row) in segmentedRows)
+        {
+            for (var index = 0; index < row.Length; index++)
+            {
+                var button = row[index];
+                Assert(
+                    button.Width >= 200,
+                    $"A {name} button is too narrow to hit with a laser.");
+                Assert(
+                    index == 0 || button.Left > row[index - 1].Right,
+                    $"The {name} buttons overlap.");
+
+                // Centre, both edges, and the gap that follows must all
+                // resolve to this button, or the drawn button and the click
+                // disagree - the same property TestDashboardBottomBarLayout
+                // proves for the wizard's own bottom bar.
+                Assert(
+                    VrDashboardLayout.IndexAt(row, button.Left + (button.Width / 2f)) == index
+                    && VrDashboardLayout.IndexAt(row, button.Left) == index
+                    && VrDashboardLayout.IndexAt(row, button.Right - 1) == index,
+                    $"A click on a {name} button resolved to a different button.");
+            }
+        }
+
+        // Each surface's toggle and its two segmented controls sit in the
+        // same visual row, on the same Y band, so a Y-based dispatch alone
+        // cannot tell them apart - they must not overlap along X either.
+        Assert(
+            !VrDashboardLayout.ChatAnchorMode[^1].IntersectsWith(VrDashboardLayout.ChatAnchorHand[0])
+            && !VrDashboardLayout.ChatAnchorHand[^1].IntersectsWith(VrDashboardLayout.ChatToggle),
+            "The chat controls row overlaps itself.");
+        Assert(
+            !VrDashboardLayout.NotificationAnchorMode[^1].IntersectsWith(
+                VrDashboardLayout.NotificationAnchorHand[0])
+            && !VrDashboardLayout.NotificationAnchorHand[^1].IntersectsWith(
+                VrDashboardLayout.NotificationToggle),
+            "The notifications controls row overlaps itself.");
+
+        // The opacity and size sliders share a row the same way.
+        Assert(
+            !VrDashboardLayout.ChatOpacityTrack.IntersectsWith(VrDashboardLayout.ChatSizeTrack),
+            "The chat opacity and size sliders overlap.");
+        Assert(
+            !VrDashboardLayout.NotificationOpacityTrack.IntersectsWith(
+                VrDashboardLayout.NotificationSizeTrack),
+            "The notification opacity and size sliders overlap.");
+
+        // Every control on the settings page must stay on the canvas and
+        // clear of the tab strip at the top.
+        Rectangle[] allControls =
+        [
+            VrDashboardLayout.ChatToggle,
+            VrDashboardLayout.NotificationToggle,
+            VrDashboardLayout.ChatOpacityTrack,
+            VrDashboardLayout.ChatSizeTrack,
+            VrDashboardLayout.NotificationOpacityTrack,
+            VrDashboardLayout.NotificationSizeTrack,
+            .. VrDashboardLayout.ChatAnchorMode,
+            .. VrDashboardLayout.ChatAnchorHand,
+            .. VrDashboardLayout.NotificationAnchorMode,
+            .. VrDashboardLayout.NotificationAnchorHand,
+            .. VrDashboardLayout.GazeSensitivity
+        ];
+        foreach (var control in allControls)
+        {
+            Assert(
+                control.Top >= VrDashboardLayout.TabStripY + VrDashboardLayout.TabStripHeight
+                && control.Bottom <= 900
+                && control.Left >= 0
+                && control.Right <= 1400,
+                "A settings-page control falls outside the canvas or under the tab strip.");
+        }
+
+        // The List page's row count dropped from 6 to 5 to make room for the
+        // tab strip - its last row must still clear the bottom bar.
+        var lastListRowBottom = VrDashboardLayout.ListRowsStartY
+                                 + ((VrDashboardLayout.ListVisibleRowCount - 1) * VrDashboardLayout.ListRowHeight)
+                                 + 92;
+        Assert(
+            lastListRowBottom < VrDashboardLayout.BarY,
+            "The shortcut list's last row now overlaps the bottom bar.");
+    }
+
     private static void TestVrScrollLimiter()
     {
         var limiter = new VrDashboardScrollLimiter(500);
@@ -584,6 +712,286 @@ internal static class TraySelfTests
         Assert(
             MathF.Abs(rotated.M13) < 1e-5f && MathF.Abs(rotated.M23 - 1f) < 1e-5f,
             "Rotating a translated overlay transform did not move the translation with it.");
+    }
+
+    /// <summary>
+    /// Guards the Phase 4 anchor refactor (§B2): the offsets
+    /// <see cref="SvrBridge.Core.OverlayAnchor"/> hands out must stay bit-for-bit
+    /// the same as the wrist and head transforms Phase 1/2/3 already proved in
+    /// the headset, not merely "close" values reinvented for the occasion.
+    /// </summary>
+    private static void TestOverlayAnchorOffsetsMatchProvenTransforms()
+    {
+        var provenWristOffset =
+            SvrBridge.Core.VrOverlayTransform.Translation(0f, 0.06f, -0.12f)
+            * SvrBridge.Core.VrOverlayTransform.RotationX(-0.6f);
+        var provenHeadOffset =
+            SvrBridge.Core.VrOverlayTransform.Translation(0f, -0.12f, -0.6f);
+
+        Assert(
+            SvrBridge.Core.OverlayAnchor.ControllerOffset.Equals(provenWristOffset),
+            "The controller-anchor offset no longer matches the wrist transform Phase 1/3 proved in the headset.");
+        Assert(
+            SvrBridge.Core.OverlayAnchor.HeadOffset.Equals(provenHeadOffset),
+            "The head-anchor offset no longer matches the transform Phase 2 proved in the headset.");
+
+        var chatDefault = new SvrBridge.Core.OverlayAnchor(
+            SvrBridge.Core.OverlayAnchorMode.Controller,
+            SvrBridge.Core.OverlayAnchorHand.Left);
+        var notificationDefault = SvrBridge.Core.OverlayAnchor.Head;
+        Assert(
+            chatDefault.Offset.Equals(provenWristOffset)
+            && notificationDefault.Offset.Equals(provenHeadOffset),
+            "The default chat/notification anchors resolve to the wrong offset.");
+    }
+
+    /// <summary>
+    /// Covers the control-command semantics from §B3 of the Phase 4 plan
+    /// without OpenVR: each command applies the expected override,
+    /// <c>reset</c> restores the saved default, and an unrecognised command
+    /// or a malformed <c>anchor</c> command changes nothing.
+    /// </summary>
+    private static void TestSurfaceOverrideStateAppliesAndResetsControlCommands()
+    {
+        var savedDefault = new SvrBridge.Core.OverlayAnchor(
+            SvrBridge.Core.OverlayAnchorMode.Controller,
+            SvrBridge.Core.OverlayAnchorHand.Left);
+        var state = new SvrBridge.Core.SurfaceOverrideState(savedDefault);
+
+        Assert(
+            state.EffectiveAnchor.Equals(savedDefault) && !state.Hidden,
+            "A fresh override state did not start at the saved default, visible.");
+
+        state.Apply(ControlPayload("hide"));
+        Assert(state.Hidden, "The hide command did not set the hidden override.");
+
+        state.Apply(ControlPayload("show"));
+        Assert(!state.Hidden, "The show command did not clear the hidden override.");
+
+        state.Apply(
+            ControlPayload("anchor") with
+            {
+                RequestedAnchorMode = SvrBridge.Core.OverlayAnchorMode.Head,
+                RequestedAnchorHand = SvrBridge.Core.OverlayAnchorHand.Right
+            });
+        Assert(
+            state.EffectiveAnchor.Mode == SvrBridge.Core.OverlayAnchorMode.Head,
+            "The anchor command did not switch the effective anchor to head mode.");
+
+        state.Apply(ControlPayload("anchor")); // no mode given - malformed
+        Assert(
+            state.EffectiveAnchor.Mode == SvrBridge.Core.OverlayAnchorMode.Head,
+            "A malformed anchor command (no mode) changed the effective anchor.");
+
+        state.Apply(ControlPayload("hide"));
+        state.Apply(ControlPayload("reset"));
+        Assert(
+            state.EffectiveAnchor.Equals(savedDefault) && !state.Hidden,
+            "Reset did not restore the saved default anchor and clear the hidden override.");
+
+        state.Apply(ControlPayload("bogus-command"));
+        Assert(
+            state.EffectiveAnchor.Equals(savedDefault) && !state.Hidden,
+            "An unrecognised command changed the override state instead of being ignored.");
+
+        // A VR settings-page edit (§B5 of the Phase 4b plan): while a
+        // Streamer.bot anchor override is active, an explicit user edit must
+        // win, not appear to do nothing, and must also become the new
+        // default a later Streamer.bot "reset" returns to.
+        state.Apply(
+            ControlPayload("anchor") with
+            {
+                RequestedAnchorMode = SvrBridge.Core.OverlayAnchorMode.Head,
+                RequestedAnchorHand = SvrBridge.Core.OverlayAnchorHand.Right
+            });
+        var vrChosenAnchor = new SvrBridge.Core.OverlayAnchor(
+            SvrBridge.Core.OverlayAnchorMode.Controller,
+            SvrBridge.Core.OverlayAnchorHand.Right);
+        state.SetSavedDefaultAnchor(vrChosenAnchor);
+        Assert(
+            state.EffectiveAnchor.Equals(vrChosenAnchor) && state.AnchorOverride is null,
+            "A VR settings edit did not take effect immediately and clear the active override.");
+
+        state.Apply(ControlPayload("reset"));
+        Assert(
+            state.EffectiveAnchor.Equals(vrChosenAnchor),
+            "Reset after a VR settings edit did not return to the new default the wearer just chose.");
+    }
+
+    private static SvrBridge.Core.StreamerBotEventPayload ControlPayload(string command) =>
+        new()
+        {
+            Target = SvrBridge.Core.StreamerBotEventTarget.Control,
+            Command = command
+        };
+
+    /// <summary>
+    /// Covers §B1's in-app chat test harness: the burst, ring-buffer-fill,
+    /// long-message, multi-badge and unknown-emote injectors each produce the
+    /// shape the manual headset matrix expects, without needing SteamVR to
+    /// run them through.
+    /// </summary>
+    private static void TestChatDeveloperInjectorProducesExpectedMessages()
+    {
+        var burst = TrayApplicationContext.BuildChatBurstMessages();
+        Assert(
+            burst.Count == 12
+            && burst.All(message => message.Target == SvrBridge.Core.StreamerBotEventTarget.Chat),
+            "The chat burst injector did not produce 12 chat-target messages.");
+
+        var fill = TrayApplicationContext.BuildRingBufferFillMessages();
+        Assert(
+            fill.Count > SvrBridge.Core.ChatRingBuffer.DefaultCapacity,
+            "The ring-buffer fill injector did not produce enough messages to overflow the cap.");
+
+        var buffer = new SvrBridge.Core.ChatRingBuffer();
+        foreach (var message in fill)
+        {
+            buffer.Append(message);
+        }
+
+        var evicted = fill.Count - SvrBridge.Core.ChatRingBuffer.DefaultCapacity;
+        Assert(
+            buffer.Snapshot().Count == SvrBridge.Core.ChatRingBuffer.DefaultCapacity
+            && buffer.Snapshot()[0].Text.EndsWith($"#{evicted + 1}.", StringComparison.Ordinal),
+            "Filling the ring buffer past its cap did not evict the oldest fill messages first.");
+
+        var longMessage = TrayApplicationContext.BuildLongChatMessage();
+        Assert(
+            longMessage.Text.Length >= 300 && !longMessage.Text.Contains(' '),
+            "The long-message injector did not produce an unbroken 300+ character string.");
+
+        var multiBadge = TrayApplicationContext.BuildMultiBadgeChatMessage();
+        Assert(multiBadge.Badges.Count == 3, "The multi-badge injector did not attach three badges.");
+
+        var unknownEmote = TrayApplicationContext.BuildUnknownEmoteChatMessage();
+        Assert(
+            unknownEmote.EmoteNames.Count == 1,
+            "The unknown-emote injector did not tag an emote name for the renderer to miss on.");
+    }
+
+    /// <summary>
+    /// A "chat" command's <c>StreamerBotEventPayload</c> crosses process
+    /// boundaries as JSON, from <c>OpenVrWorkerSession.SendCommand</c> (case
+    /// -insensitive, camelCase) to <c>OpenVrWorker.RunAsync</c>'s receiving
+    /// side (camelCase only, not case-insensitive). Every other field of the
+    /// payload uses plain init-only properties, which System.Text.Json
+    /// deserialises via a parameterless constructor and property setters -
+    /// but <c>ChatBadge</c> is a positional record, which System.Text.Json
+    /// instead deserialises by matching JSON properties to constructor
+    /// *parameter* names. That path had never been exercised end to end by
+    /// an automated test - only implicitly by live Twitch badges reaching
+    /// the headset - so this proves the exact options pair used in
+    /// production round-trips a multi-badge chat message without dropping
+    /// any of it.
+    /// </summary>
+    private static void TestChatCommandJsonRoundTripPreservesBadgesAndEmotes()
+    {
+        var sendOptions = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+        };
+        var receiveOptions = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+        };
+
+        var original = TrayApplicationContext.BuildMultiBadgeChatMessage();
+        var command = new OpenVrWorkerCommand("chat", Payload: original);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(command, sendOptions);
+        var received = System.Text.Json.JsonSerializer.Deserialize<OpenVrWorkerCommand>(json, receiveOptions);
+
+        Assert(
+            received?.Payload is not null,
+            "The chat command's payload was lost crossing the worker command channel.");
+        Assert(
+            received!.Payload!.Badges.Count == original.Badges.Count
+            && received.Payload.Badges.SequenceEqual(original.Badges),
+            "The chat command's badges did not survive the worker command channel's JSON round trip.");
+
+        var unknownEmote = TrayApplicationContext.BuildUnknownEmoteChatMessage();
+        var emoteJson = System.Text.Json.JsonSerializer.Serialize(
+            new OpenVrWorkerCommand("chat", Payload: unknownEmote),
+            sendOptions);
+        var receivedEmote = System.Text.Json.JsonSerializer
+            .Deserialize<OpenVrWorkerCommand>(emoteJson, receiveOptions)
+            ?.Payload;
+        Assert(
+            receivedEmote is not null
+            && receivedEmote.EmoteNames.SequenceEqual(unknownEmote.EmoteNames),
+            "The chat command's emote names did not survive the worker command channel's JSON round trip.");
+    }
+
+    /// <summary>
+    /// A desktop settings save must restart the runtime for anything
+    /// connection- or shortcut-shaped, but apply live for the Phase 4b
+    /// appearance/anchor/enable fields alone - otherwise every opacity or
+    /// size trackbar drag would restart the worker mid-session, exactly the
+    /// disruption the VR settings page's live-apply design exists to avoid.
+    /// </summary>
+    private static void TestRequiresRuntimeRestartDistinguishesLiveAppliableChanges()
+    {
+        var baseline = new UserSettings
+        {
+            StreamerBotAddress = "ws://127.0.0.1:8080/1",
+            ChatOpacity = 0.95,
+            ChatSizeScale = 1.0,
+            GazeSensitivity = SvrBridge.Core.GazeSensitivity.Normal,
+            NotificationOpacity = 1.0,
+            NotificationSizeScale = 1.0
+        };
+
+        Assert(
+            !TrayApplicationContext.RequiresRuntimeRestart(baseline, baseline with { ChatEnabled = true }),
+            "Toggling chat on required a restart.");
+        Assert(
+            !TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with { ChatOpacity = 0.6, ChatSizeScale = 1.4 }),
+            "Changing opacity/size required a restart.");
+        Assert(
+            !TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with
+                {
+                    ChatAnchorMode = SvrBridge.Core.OverlayAnchorMode.Head,
+                    GazeSensitivity = SvrBridge.Core.GazeSensitivity.Tight
+                }),
+            "Changing anchor mode or gaze sensitivity required a restart.");
+
+        Assert(
+            TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with { StreamerBotAddress = "ws://192.168.1.50:8080/1" }),
+            "Changing the Streamer.bot address did not require a restart.");
+        Assert(
+            TrayApplicationContext.RequiresRuntimeRestart(baseline, baseline with { Password = "changed" }),
+            "Changing the password did not require a restart.");
+        Assert(
+            TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with
+                {
+                    Shortcuts =
+                    [
+                        new SvrBridge.Core.ShortcutConfig
+                        {
+                            Id = "new-shortcut",
+                            ActionName = "Some action"
+                        }
+                    ]
+                }),
+            "Adding a shortcut did not require a restart.");
+
+        // A freshly-read UserSettings always carries a brand new Shortcuts
+        // array instance, even when its contents are identical - this must
+        // not be mistaken for a change (a naive record-equality diff would).
+        var same = baseline with { Shortcuts = baseline.Shortcuts.ToArray() };
+        Assert(
+            !TrayApplicationContext.RequiresRuntimeRestart(baseline, same),
+            "An unchanged settings object with a new Shortcuts array instance was seen as requiring a restart.");
     }
 
     /// <summary>

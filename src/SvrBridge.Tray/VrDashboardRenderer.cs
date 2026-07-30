@@ -33,34 +33,36 @@ internal static class VrDashboardRenderer
         using var card = new SolidBrush(Color.FromArgb(30, 41, 59));
         using var disabled = new SolidBrush(Color.FromArgb(100, 116, 139));
 
-        graphics.DrawString("SteamVR2Bot", titleFont, white, 60, 42);
+        DrawTabStrip(graphics, bodyFont, white, blue, card, activeIndex: 0);
+
+        graphics.DrawString("SteamVR2Bot", titleFont, white, 60, 96);
         graphics.DrawString(
             "Your controller shortcuts and what they run",
             subtitleFont,
             muted,
             64,
-            104);
+            158);
 
-        var visible = shortcuts.Take(6).ToArray();
+        var visible = shortcuts.Take(VrDashboardLayout.ListVisibleRowCount).ToArray();
         if (visible.Length == 0)
         {
-            DrawRoundedRectangle(graphics, card, new Rectangle(60, 170, 1280, 170), 18);
+            DrawRoundedRectangle(graphics, card, new Rectangle(60, 210, 1280, 170), 18);
             graphics.DrawString(
                 "No shortcuts yet",
                 headingFont,
                 white,
                 92,
-                205);
+                245);
             graphics.DrawString(
                 "Open SteamVR2Bot on the desktop and choose Add shortcut.",
                 bodyFont,
                 muted,
                 92,
-                255);
+                295);
         }
         else
         {
-            var y = 160;
+            var y = VrDashboardLayout.ListRowsStartY;
             foreach (var shortcut in visible)
             {
                 DrawRoundedRectangle(
@@ -114,7 +116,7 @@ internal static class VrDashboardRenderer
                     headingFont,
                     white,
                     new Rectangle(1210, y + 14, 100, 64));
-                y += 105;
+                y += VrDashboardLayout.ListRowHeight;
             }
 
             if (shortcuts.Count > visible.Length)
@@ -292,6 +294,91 @@ internal static class VrDashboardRenderer
                 fonts.Body,
                 brushes.White,
                 new Rectangle(60, 800, 1280, 64));
+        });
+    }
+
+    /// <summary>
+    /// The VR settings page - anchor mode/hand, opacity, size and (chat only)
+    /// gaze sensitivity per surface, per §B1/§B4 of the Phase 4b plan. No
+    /// bottom bar: every change here applies and saves automatically, the
+    /// same as the desktop.
+    /// </summary>
+    public static string RenderSettings(VrSettingsSnapshot settings)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            // Deliberately no repeated "SteamVR2Bot" title/subtitle here -
+            // the tab strip immediately above already establishes "you are
+            // in Settings", and the full title collided with the first
+            // section heading below it (a real layout bug caught live: the
+            // title at the same fixed y the List page uses landed directly
+            // on top of "Chat" and the anchor buttons, since this page's
+            // rows start much higher than List's do).
+            DrawTabStrip(graphics, fonts.Body, brushes.White, brushes.Blue, brushes.Card, activeIndex: 1);
+
+            DrawSurfaceSection(
+                graphics,
+                fonts,
+                brushes,
+                "Chat",
+                VrDashboardLayout.ChatControlsY,
+                settings.ChatEnabled,
+                VrDashboardLayout.ChatToggle,
+                VrDashboardLayout.ChatAnchorMode,
+                VrDashboardLayout.ChatAnchorHand,
+                settings.ChatAnchor);
+            DrawSlider(
+                graphics,
+                fonts,
+                brushes,
+                VrDashboardLayout.ChatOpacityTrack,
+                "Opacity",
+                $"{Math.Round((settings.ChatOpacity - 0.2) / 0.8 * 100)}%",
+                (float)Math.Clamp((settings.ChatOpacity - 0.2) / 0.8, 0, 1));
+            DrawSlider(
+                graphics,
+                fonts,
+                brushes,
+                VrDashboardLayout.ChatSizeTrack,
+                "Size",
+                $"{Math.Round(settings.ChatSizeScale * 100)}%",
+                (float)Math.Clamp((settings.ChatSizeScale - 0.5) / 1.5, 0, 1));
+            DrawSegmented(
+                graphics,
+                fonts,
+                brushes,
+                VrDashboardLayout.GazeSensitivity,
+                ["Relaxed gaze", "Normal gaze", "Tight gaze"],
+                (int)settings.GazeSensitivity,
+                enabled: true);
+
+            DrawSurfaceSection(
+                graphics,
+                fonts,
+                brushes,
+                "Notifications",
+                VrDashboardLayout.NotificationControlsY,
+                settings.NotificationsEnabled,
+                VrDashboardLayout.NotificationToggle,
+                VrDashboardLayout.NotificationAnchorMode,
+                VrDashboardLayout.NotificationAnchorHand,
+                settings.NotificationAnchor);
+            DrawSlider(
+                graphics,
+                fonts,
+                brushes,
+                VrDashboardLayout.NotificationOpacityTrack,
+                "Opacity",
+                $"{Math.Round((settings.NotificationOpacity - 0.2) / 0.8 * 100)}%",
+                (float)Math.Clamp((settings.NotificationOpacity - 0.2) / 0.8, 0, 1));
+            DrawSlider(
+                graphics,
+                fonts,
+                brushes,
+                VrDashboardLayout.NotificationSizeTrack,
+                "Size",
+                $"{Math.Round(settings.NotificationSizeScale * 100)}%",
+                (float)Math.Clamp((settings.NotificationSizeScale - 0.5) / 1.5, 0, 1));
         });
     }
 
@@ -990,6 +1077,107 @@ internal static class VrDashboardRenderer
             LineAlignment = StringAlignment.Center
         };
         graphics.DrawString(text, font, brush, bounds, format);
+    }
+
+    /// <summary>Peer navigation between the Shortcuts and Settings pages - see <see cref="VrDashboardLayout.Tabs"/>.</summary>
+    private static void DrawTabStrip(
+        Graphics graphics,
+        Font font,
+        Brush white,
+        Brush blue,
+        Brush card,
+        int activeIndex)
+    {
+        string[] labels = ["Shortcuts", "Settings"];
+        for (var index = 0; index < VrDashboardLayout.Tabs.Length; index++)
+        {
+            var rectangle = VrDashboardLayout.Tabs[index];
+            DrawRoundedRectangle(graphics, index == activeIndex ? blue : card, rectangle, 14);
+            DrawCenteredText(graphics, labels[index], font, white, rectangle);
+        }
+    }
+
+    /// <summary>One surface's row on the settings page: heading, anchor mode/hand segmented controls, and an on/off toggle.</summary>
+    private static void DrawSurfaceSection(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        string title,
+        int rowY,
+        bool enabled,
+        Rectangle toggle,
+        Rectangle[] anchorMode,
+        Rectangle[] anchorHand,
+        OverlayAnchor anchor)
+    {
+        graphics.DrawString(title, fonts.Heading, brushes.White, 60, rowY - 34);
+
+        var modeIndex = anchor.Mode == OverlayAnchorMode.Head ? 1 : 0;
+        DrawSegmented(graphics, fonts, brushes, anchorMode, ["Controller", "Headset"], modeIndex, enabled: true);
+
+        // Which hand only means anything in Controller mode - drawn disabled
+        // rather than hidden, so its position on the page never moves.
+        var handIndex = anchor.Hand == OverlayAnchorHand.Right ? 1 : 0;
+        var handEnabled = anchor.Mode == OverlayAnchorMode.Controller;
+        DrawSegmented(graphics, fonts, brushes, anchorHand, ["Left hand", "Right hand"], handIndex, handEnabled);
+
+        DrawRoundedRectangle(graphics, enabled ? brushes.Green : brushes.Disabled, toggle, 14);
+        DrawCenteredText(graphics, enabled ? "On" : "Off", fonts.Heading, brushes.White, toggle);
+    }
+
+    /// <summary>A row of 2-4 adjacent buttons, one highlighted as the current choice - see §B4 of the Phase 4b plan.</summary>
+    private static void DrawSegmented(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        IReadOnlyList<Rectangle> rectangles,
+        IReadOnlyList<string> labels,
+        int selectedIndex,
+        bool enabled)
+    {
+        for (var index = 0; index < rectangles.Count; index++)
+        {
+            var rectangle = rectangles[index];
+            var isSelected = index == selectedIndex;
+            var fill = !enabled ? brushes.Disabled : isSelected ? brushes.Blue : brushes.Card;
+            DrawRoundedRectangle(graphics, fill, rectangle, 14);
+            DrawCenteredText(graphics, labels[index], fonts.Body, brushes.White, rectangle);
+        }
+    }
+
+    /// <summary>
+    /// A click-to-position slider drawn inside a hit region far taller than
+    /// the visible track, reusing the shape proven by the tolerance picker -
+    /// see <see cref="RenderTolerancePicker"/> and §B4 of the Phase 4b plan.
+    /// </summary>
+    private static void DrawSlider(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        Rectangle hitRegion,
+        string label,
+        string valueText,
+        float ratio)
+    {
+        graphics.DrawString($"{label}: {valueText}", fonts.Body, brushes.White, hitRegion.Left, hitRegion.Top);
+
+        const int trackHeight = 18;
+        var trackX = hitRegion.Left + 10;
+        var trackY = hitRegion.Top + 52;
+        var trackWidth = hitRegion.Width - 20;
+        var knobX = trackX + (int)(trackWidth * ratio);
+
+        DrawRoundedRectangle(
+            graphics,
+            brushes.Disabled,
+            new Rectangle(trackX, trackY, trackWidth, trackHeight),
+            trackHeight / 2);
+        DrawRoundedRectangle(
+            graphics,
+            brushes.Blue,
+            new Rectangle(trackX, trackY, Math.Max(trackHeight, knobX - trackX), trackHeight),
+            trackHeight / 2);
+        graphics.FillEllipse(brushes.White, knobX - 14, trackY - 5, 28, 28);
     }
 
     private static void DrawEllipsizedText(

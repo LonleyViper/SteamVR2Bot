@@ -23,6 +23,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private EventStreamSettings? _appliedEventStream;
     private readonly object _emoteCatalogGate = new();
     private StreamerBotEventStream? _emoteCatalogFetchedFor;
+    private IReadOnlyDictionary<string, string>? _lastFetchedEmoteCatalog;
     private UserSettings _settings;
     private bool _dashboardAvailable;
     private bool _isExiting;
@@ -68,6 +69,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _engine.ControllerSetupChanged += _mainForm.UpdateControllerSetup;
         _engine.ShortcutCreated += SaveDashboardShortcut;
         _engine.ShortcutDeleted += DeleteDashboardShortcut;
+        _engine.VrSettingsChanged += SaveVrSettingsChange;
         _engine.VrShutdownRequested += OnVrShutdownRequested;
 
         var menu = new ContextMenuStrip();
@@ -83,6 +85,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
             CheckOnClick = true,
             Checked = false
         };
+        var chatTestHarness = new ToolStripMenuItem("Chat test harness (developer)");
+        var injectBurst = new ToolStripMenuItem("Inject a chat burst (12 messages)");
+        var fillRingBuffer = new ToolStripMenuItem("Fill the ring buffer (45 messages)");
+        var injectLongMessage = new ToolStripMenuItem("Inject a long unbroken message");
+        var injectMultiBadge = new ToolStripMenuItem("Inject a multi-badge message");
+        var injectUnknownEmote = new ToolStripMenuItem("Inject an unknown-emote message");
+        chatTestHarness.DropDownItems.AddRange(
+        [
+            injectBurst,
+            fillRingBuffer,
+            injectLongMessage,
+            injectMultiBadge,
+            injectUnknownEmote
+        ]);
         var exit = new ToolStripMenuItem("Exit");
 
         open.Click += (_, _) => ShowMainWindow();
@@ -101,6 +117,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
         bindings.Click += (_, _) => OpenControllerBindings();
         logs.Click += (_, _) => OpenLogs();
         testOverlay.Click += (_, _) => ToggleTestOverlay(testOverlay);
+        injectBurst.Click += (_, _) =>
+            InjectDeveloperChatMessages(BuildChatBurstMessages(), "Chat burst");
+        fillRingBuffer.Click += (_, _) =>
+            InjectDeveloperChatMessages(BuildRingBufferFillMessages(), "Ring-buffer fill");
+        injectLongMessage.Click += (_, _) =>
+            InjectDeveloperChatMessages([BuildLongChatMessage()], "Long message");
+        injectMultiBadge.Click += (_, _) =>
+            InjectDeveloperChatMessages([BuildMultiBadgeChatMessage()], "Multi-badge message");
+        injectUnknownEmote.Click += (_, _) =>
+            InjectDeveloperChatMessages([BuildUnknownEmoteChatMessage()], "Unknown-emote message");
         exit.Click += (_, _) => ExitApplication();
 
         menu.Items.AddRange(
@@ -112,6 +138,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             bindings,
             logs,
             testOverlay,
+            chatTestHarness,
             new ToolStripSeparator(),
             exit
         ]);
@@ -176,6 +203,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private async Task SaveAndApplySettingsAsync()
     {
         UserSettings updated;
+        var previous = _settings;
         try
         {
             updated = _mainForm.ReadSettings();
@@ -197,8 +225,56 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        // A change limited to the Phase 4b appearance/anchor/enable fields
+        // applies live to the already-running worker - the same effect a VR
+        // settings-page edit has, pushed the other direction - so it does
+        // not need to interrupt anything happening in the headset with a
+        // full restart. Anything else (address, password, gesture mode, the
+        // event feed toggle, or a shortcut change) still restarts, unchanged
+        // from before this phase.
+        if (!RequiresRuntimeRestart(previous, updated)
+            && _engine.ApplySettingsChange(BuildVrSettingsSnapshot(updated)))
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "settings.applied_live",
+                    "Applied without restarting."));
+            return;
+        }
+
         await RestartRuntimeAsync();
     }
+
+    /// <summary>
+    /// True when something other than the Phase 4b appearance/anchor/enable
+    /// fields changed. Deliberately an explicit allow-list of
+    /// restart-requiring fields rather than a record-equality diff: a
+    /// freshly-read <see cref="UserSettings.Shortcuts"/> array is a new
+    /// instance on every call, which would make a blanket equality check
+    /// always see "something changed" and defeat the point.
+    /// <para>Internal rather than private so <c>TraySelfTests</c> can prove this without a headset.</para>
+    /// </summary>
+    internal static bool RequiresRuntimeRestart(UserSettings previous, UserSettings updated) =>
+        previous.StreamerBotAddress != updated.StreamerBotAddress
+        || previous.Password != updated.Password
+        || previous.GestureMode != updated.GestureMode
+        || previous.ActionName != updated.ActionName
+        || previous.ActionId != updated.ActionId
+        || previous.StartBridgeWhenAppOpens != updated.StartBridgeWhenAppOpens
+        || previous.EventStreamEnabled != updated.EventStreamEnabled
+        || !previous.GetShortcuts().SequenceEqual(updated.GetShortcuts());
+
+    private static VrSettingsSnapshot BuildVrSettingsSnapshot(UserSettings settings) =>
+        new(
+            settings.ChatEnabled,
+            settings.ChatAnchor,
+            settings.ChatOpacity,
+            settings.ChatSizeScale,
+            settings.GazeSensitivity,
+            settings.NotificationsEnabled,
+            settings.NotificationAnchor,
+            settings.NotificationOpacity,
+            settings.NotificationSizeScale);
 
     private async Task RestartRuntimeAsync()
     {
@@ -353,18 +429,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// connected event stream, via Streamer.bot's own <c>TwitchGetEmotes</c>
     /// request - confirmed live to aggregate all four sources with ready
     /// image URLs, so nothing platform-specific needs to live here beyond
-    /// asking for it. Called both when a stream freshly connects and when
-    /// settings change without the stream needing to restart (chat can be
-    /// turned on while an already-connected stream keeps running), so it
-    /// guards its own idempotency rather than relying on either caller to.
+    /// asking for it. Called both when a stream freshly connects and after
+    /// every settings-triggered runtime restart (chat can be turned on, or
+    /// an anchor changed, while an already-connected stream keeps running),
+    /// so it guards its own idempotency rather than relying on either
+    /// caller to.
     /// <para>
     /// Fetching from Streamer.bot and delivering to the worker are guarded
-    /// separately. The event stream routinely connects before the SteamVR
-    /// worker has finished starting, so a single delivery attempt that loses
-    /// that race would otherwise fetch a perfectly good catalog and then
-    /// silently drop it forever - confirmed live: the very first run logged
-    /// exactly that. Only the fetch is marked done-once; delivery retries on
-    /// a bounded delay until a worker exists to receive it.
+    /// separately, and for two different reasons now. The event stream
+    /// routinely connects before the SteamVR worker has finished starting,
+    /// so a single delivery attempt that loses that race would otherwise
+    /// fetch a perfectly good catalog and then silently drop it forever -
+    /// confirmed live: the very first run logged exactly that. Separately,
+    /// <em>any</em> settings save that restarts the runtime (address,
+    /// password, chat/notifications toggles, or a Phase 4 anchor change)
+    /// replaces the OpenVR worker process - and with it, a brand new, empty
+    /// <c>ChatImageCache</c> - without touching this event stream, since
+    /// anchor/chat/notification settings are not part of
+    /// <see cref="EventStreamSettings"/>. A fetch-once guard keyed only to
+    /// the stream would then permanently skip redelivering an
+    /// already-fetched catalog to that new worker - confirmed live: emote
+    /// and badge images stopped resolving for the rest of a session after
+    /// switching the chat anchor from Settings, with only the fetch-once
+    /// guard tripping and no new delivery attempted. So the fetch result is
+    /// cached, and delivery is retried on every call this method makes,
+    /// whether or not a fresh fetch happened.
     /// </para>
     /// </summary>
     private async Task EnsureEmoteCatalogAsync()
@@ -375,28 +464,48 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        IReadOnlyDictionary<string, string>? catalog;
         lock (_emoteCatalogGate)
         {
             if (ReferenceEquals(_emoteCatalogFetchedFor, stream))
             {
-                return;
+                // Either already fetched for this stream (deliver the cached
+                // result below - a new worker may still be waiting for it)
+                // or a fetch for it is already in flight/permanently failed
+                // (nothing to deliver yet either way).
+                catalog = _lastFetchedEmoteCatalog;
+                if (catalog is null)
+                {
+                    return;
+                }
             }
-
-            _emoteCatalogFetchedFor = stream;
+            else
+            {
+                _emoteCatalogFetchedFor = stream;
+                catalog = null;
+            }
         }
 
         try
         {
-            using var response = await stream.SendRequestAsync("TwitchGetEmotes", CancellationToken.None);
-            var catalog = TwitchEmoteCatalog.Parse(response.RootElement);
-            OnActivity(
-                new BridgeActivity(
-                    "streamerbot.emote_catalog",
-                    $"Loaded {catalog.Count} Twitch/BTTV/FFZ/7TV emotes from Streamer.bot."));
+            if (catalog is null)
+            {
+                using var response = await stream.SendRequestAsync("TwitchGetEmotes", CancellationToken.None);
+                var parsed = TwitchEmoteCatalog.Parse(response.RootElement);
+                OnActivity(
+                    new BridgeActivity(
+                        "streamerbot.emote_catalog",
+                        $"Loaded {parsed.Count} Twitch/BTTV/FFZ/7TV emotes from Streamer.bot."));
+                catalog = parsed.ImageUrlsByName;
+                lock (_emoteCatalogGate)
+                {
+                    _lastFetchedEmoteCatalog = catalog;
+                }
+            }
 
             for (var attempt = 0; attempt < EmoteCatalogDeliveryAttempts; attempt++)
             {
-                if (_engine.SetEmoteCatalog(catalog.ImageUrlsByName))
+                if (_engine.SetEmoteCatalog(catalog))
                 {
                     return;
                 }
@@ -415,8 +524,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             // Emote images sit on top of chat, which already works without
             // them - a failure here must not affect chat itself. The guard
-            // above means this will not retry until the stream reconnects,
-            // an acceptable cadence for something this infrequently needed.
+            // above means a failed fetch will not retry until the stream
+            // reconnects, an acceptable cadence for something this
+            // infrequently needed.
             OnActivity(
                 new BridgeActivity(
                     "streamerbot.emote_catalog_failed",
@@ -503,6 +613,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                             "A chat message arrived with no SteamVR session to show it on.",
                             BridgeLogLevel.Debug));
                 }
+
+                if (received.Payload.Target == StreamerBotEventTarget.Control)
+                {
+                    ApplyControlCommand(received.Payload);
+                }
             }
         }
         catch (Exception exception)
@@ -512,6 +627,43 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     "streamerbot.event_pump_stopped",
                     $"Stopped reading Streamer.bot events: {exception.Message}",
                     BridgeLogLevel.Warning));
+        }
+    }
+
+    /// <summary>
+    /// Forwards a "control" payload (show/hide/clear/anchor/reset) to the
+    /// running worker, gated by the same setting that gates the surface's
+    /// content - a control command for a surface the user has turned off has
+    /// nothing to control, the same reasoning already applied to chat and
+    /// notification payloads above.
+    /// </summary>
+    private void ApplyControlCommand(StreamerBotEventPayload payload)
+    {
+        var surfaceEnabled = payload.Surface == ControlSurface.Notifications
+            ? _settings.NotificationsEnabled
+            : _settings.ChatEnabled;
+        if (!surfaceEnabled)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "openvr.control_ignored",
+                    $"A control command (\"{payload.Command}\") for "
+                    + $"{(payload.Surface == ControlSurface.Notifications ? "notifications" : "chat")} "
+                    + "was ignored because that surface is turned off.",
+                    BridgeLogLevel.Debug));
+            return;
+        }
+
+        if (!_engine.ApplyControlCommand(payload))
+        {
+            // Routine, for the same reason as the chat/notification branches
+            // above: this only means no worker is currently running to apply
+            // it to.
+            OnActivity(
+                new BridgeActivity(
+                    "openvr.control_unavailable",
+                    "A control command arrived with no SteamVR session to apply it to.",
+                    BridgeLogLevel.Debug));
         }
     }
 
@@ -731,6 +883,51 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 _mainForm.ShowSettingsError(
                     $"The VR shortcut could not be deleted. {exception.Message}");
+            }
+        });
+    }
+
+    /// <summary>
+    /// Persists a change made from the VR settings page and mirrors it into
+    /// the desktop UI - the same shape as <see cref="SaveDashboardShortcut"/>,
+    /// deliberately with no <c>RestartRuntimeAsync</c> call. The change
+    /// already applied live in the worker that reported it (see
+    /// <c>OpenVrWorker.ApplyVrSettingsChange</c>); restarting here would only
+    /// tear down the dashboard the wearer is currently looking at.
+    /// </summary>
+    private void SaveVrSettingsChange(VrSettingsSnapshot snapshot)
+    {
+        _mainForm.BeginInvoke(() =>
+        {
+            var updated = _settings with
+            {
+                ChatEnabled = snapshot.ChatEnabled,
+                ChatAnchorMode = snapshot.ChatAnchor.Mode,
+                ChatAnchorHand = snapshot.ChatAnchor.Hand,
+                ChatOpacity = snapshot.ChatOpacity,
+                ChatSizeScale = snapshot.ChatSizeScale,
+                GazeSensitivity = snapshot.GazeSensitivity,
+                NotificationsEnabled = snapshot.NotificationsEnabled,
+                NotificationAnchorMode = snapshot.NotificationAnchor.Mode,
+                NotificationAnchorHand = snapshot.NotificationAnchor.Hand,
+                NotificationOpacity = snapshot.NotificationOpacity,
+                NotificationSizeScale = snapshot.NotificationSizeScale
+            };
+
+            try
+            {
+                _settingsStore.Save(updated);
+                _settings = updated;
+                _mainForm.ApplySettings(updated);
+                OnActivity(
+                    new BridgeActivity(
+                        "dashboard.settings_changed",
+                        "Saved a VR settings change automatically."));
+            }
+            catch (Exception exception)
+            {
+                _mainForm.ShowSettingsError(
+                    $"A VR settings change could not be saved. {exception.Message}");
             }
         });
     }
@@ -980,6 +1177,96 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     BridgeLogLevel.Warning));
         }
     }
+
+    /// <summary>
+    /// The in-app chat test harness (§B1 of the Phase 4 plan): injects
+    /// synthetic messages straight into the running worker's chat ring
+    /// buffer through the same <see cref="BridgeEngine.ShowChatMessage"/>
+    /// path a real Streamer.bot payload takes, bypassing the WebSocket and
+    /// Streamer.bot entirely. Replaces an earlier, abandoned attempt to do
+    /// this from a Streamer.bot C# action, which could not be diagnosed from
+    /// this app's own logs because the failure was in another program.
+    /// </summary>
+    private void InjectDeveloperChatMessages(
+        IReadOnlyList<StreamerBotEventPayload> messages,
+        string description)
+    {
+        if (!_settings.ChatEnabled)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "chat.dev_inject_skipped",
+                    $"{description} was skipped: turn on chat in Settings first.",
+                    BridgeLogLevel.Warning));
+            return;
+        }
+
+        var delivered = messages.Count(message => _engine.ShowChatMessage(message));
+        OnActivity(
+            new BridgeActivity(
+                "chat.dev_injected",
+                delivered == messages.Count
+                    ? $"{description}: sent {delivered} message(s) directly to the chat window."
+                    : $"{description}: only {delivered} of {messages.Count} message(s) reached the "
+                      + "chat window - no SteamVR session is running.",
+                delivered == messages.Count ? BridgeLogLevel.Info : BridgeLogLevel.Warning));
+    }
+
+    /// <summary>
+    /// Around a dozen messages at once, to exercise repaint coalescing.
+    /// Internal rather than private so <c>TraySelfTests</c> can assert its
+    /// shape without a headset - see §B1 of the Phase 4 plan.
+    /// </summary>
+    internal static IReadOnlyList<StreamerBotEventPayload> BuildChatBurstMessages() =>
+        Enumerable.Range(1, 12)
+            .Select(index => DevChatMessage($"BurstTester{index}", $"Burst test message #{index}."))
+            .ToArray();
+
+    /// <summary>Past the 40-message ring-buffer cap, to exercise eviction.</summary>
+    internal static IReadOnlyList<StreamerBotEventPayload> BuildRingBufferFillMessages() =>
+        Enumerable.Range(1, 45)
+            .Select(index => DevChatMessage("FillTester", $"Fill test message #{index}."))
+            .ToArray();
+
+    /// <summary>An unbroken 300-character string with no spaces, to exercise wrapping.</summary>
+    internal static StreamerBotEventPayload BuildLongChatMessage() =>
+        DevChatMessage(
+            "LongMessageTester",
+            string.Concat(Enumerable.Repeat("abcdefghij", 30)));
+
+    /// <summary>Three badges at once, to exercise multi-badge rendering.</summary>
+    internal static StreamerBotEventPayload BuildMultiBadgeChatMessage() =>
+        DevChatMessage(
+            "MultiBadgeTester",
+            "Look at all my badges!",
+            badges:
+            [
+                new ChatBadge("Moderator", ""),
+                new ChatBadge("Prime", ""),
+                new ChatBadge("glhf-pledge", "")
+            ]);
+
+    /// <summary>An emote name no catalog will ever know, to exercise the styled-text fallback.</summary>
+    internal static StreamerBotEventPayload BuildUnknownEmoteChatMessage() =>
+        DevChatMessage(
+            "UnknownEmoteTester",
+            "Check out this DevHarnessMadeUpEmote9000 emote",
+            emotes: ["DevHarnessMadeUpEmote9000"]);
+
+    private static StreamerBotEventPayload DevChatMessage(
+        string user,
+        string text,
+        IReadOnlyList<string>? emotes = null,
+        IReadOnlyList<ChatBadge>? badges = null) =>
+        new()
+        {
+            Target = StreamerBotEventTarget.Chat,
+            User = user,
+            Colour = "#60C8FF",
+            Text = text,
+            EmoteNames = emotes ?? [],
+            Badges = badges ?? []
+        };
 
     private void OnActivity(BridgeActivity activity)
     {

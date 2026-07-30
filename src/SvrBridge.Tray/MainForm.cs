@@ -17,6 +17,15 @@ internal sealed class MainForm : Form
     private readonly Label _eventStreamState = new();
     private readonly CheckBox _notifications = new();
     private readonly CheckBox _chat = new();
+    private readonly ComboBox _chatAnchorMode = new();
+    private readonly ComboBox _chatAnchorHand = new();
+    private readonly ComboBox _notificationAnchorMode = new();
+    private readonly ComboBox _notificationAnchorHand = new();
+    private readonly TrackBar _chatOpacity = new();
+    private readonly TrackBar _chatSizeScale = new();
+    private readonly ComboBox _gazeSensitivity = new();
+    private readonly TrackBar _notificationOpacity = new();
+    private readonly TrackBar _notificationSizeScale = new();
     private readonly Button _add = new();
     private readonly Button _edit = new();
     private readonly Button _remove = new();
@@ -78,9 +87,44 @@ internal sealed class MainForm : Form
             StartBridgeWhenAppOpens = true,
             EventStreamEnabled = _eventStream.Checked,
             NotificationsEnabled = _notifications.Checked,
-            ChatEnabled = _chat.Checked
+            ChatEnabled = _chat.Checked,
+            ChatAnchorMode = SelectedAnchorMode(_chatAnchorMode),
+            ChatAnchorHand = SelectedAnchorHand(_chatAnchorHand),
+            NotificationAnchorMode = SelectedAnchorMode(_notificationAnchorMode),
+            NotificationAnchorHand = SelectedAnchorHand(_notificationAnchorHand),
+            ChatOpacity = OpacityFromSlider(_chatOpacity),
+            ChatSizeScale = SizeScaleFromSlider(_chatSizeScale),
+            GazeSensitivity = (GazeSensitivity)Math.Clamp(_gazeSensitivity.SelectedIndex, 0, 2),
+            NotificationOpacity = OpacityFromSlider(_notificationOpacity),
+            NotificationSizeScale = SizeScaleFromSlider(_notificationSizeScale)
         };
     }
+
+    private static OverlayAnchorMode SelectedAnchorMode(ComboBox combo) =>
+        combo.SelectedIndex == 1 ? OverlayAnchorMode.Head : OverlayAnchorMode.Controller;
+
+    private static OverlayAnchorHand SelectedAnchorHand(ComboBox combo) =>
+        combo.SelectedIndex == 1 ? OverlayAnchorHand.Right : OverlayAnchorHand.Left;
+
+    private static void ApplyAnchorMode(ComboBox combo, OverlayAnchorMode mode) =>
+        combo.SelectedIndex = mode == OverlayAnchorMode.Head ? 1 : 0;
+
+    private static void ApplyAnchorHand(ComboBox combo, OverlayAnchorHand hand) =>
+        combo.SelectedIndex = hand == OverlayAnchorHand.Right ? 1 : 0;
+
+    // Opacity's usable range is 0.2-1.0 - below 0.2 a panel is not worth
+    // showing at all - mapped onto the TrackBar's 0-100 integer range.
+    private static double OpacityFromSlider(TrackBar slider) => 0.2 + (slider.Value / 100.0 * 0.8);
+
+    private static void ApplyOpacityToSlider(TrackBar slider, double opacity) =>
+        slider.Value = (int)Math.Round(Math.Clamp((opacity - 0.2) / 0.8, 0, 1) * 100);
+
+    // Size scale's usable range is 0.5-2.0 - half to double today's hardcoded
+    // widths - mapped the same way.
+    private static double SizeScaleFromSlider(TrackBar slider) => 0.5 + (slider.Value / 100.0 * 1.5);
+
+    private static void ApplySizeScaleToSlider(TrackBar slider, double scale) =>
+        slider.Value = (int)Math.Round(Math.Clamp((scale - 0.5) / 1.5, 0, 1) * 100);
 
     public void ApplySettings(UserSettings settings)
     {
@@ -92,6 +136,15 @@ internal sealed class MainForm : Form
             _eventStream.Checked = settings.EventStreamEnabled;
             _notifications.Checked = settings.NotificationsEnabled;
             _chat.Checked = settings.ChatEnabled;
+            ApplyAnchorMode(_chatAnchorMode, settings.ChatAnchorMode);
+            ApplyAnchorHand(_chatAnchorHand, settings.ChatAnchorHand);
+            ApplyAnchorMode(_notificationAnchorMode, settings.NotificationAnchorMode);
+            ApplyAnchorHand(_notificationAnchorHand, settings.NotificationAnchorHand);
+            ApplyOpacityToSlider(_chatOpacity, settings.ChatOpacity);
+            ApplySizeScaleToSlider(_chatSizeScale, settings.ChatSizeScale);
+            _gazeSensitivity.SelectedIndex = (int)settings.GazeSensitivity;
+            ApplyOpacityToSlider(_notificationOpacity, settings.NotificationOpacity);
+            ApplySizeScaleToSlider(_notificationSizeScale, settings.NotificationSizeScale);
             _shortcutItems.Clear();
             _shortcutItems.AddRange(settings.GetShortcuts());
             RefreshShortcutGrid();
@@ -411,13 +464,17 @@ internal sealed class MainForm : Form
         panel.Controls.Add(_notifications);
         panel.Controls.Add(new Label
         {
-            Text = "Payloads with “target”: “notification” draw a head-anchored panel "
+            Text = "Payloads with “target”: “notification” draw a panel "
                    + "in VR for a few seconds. Requires the event feed above to be turned on.",
             AutoSize = true,
             MaximumSize = new Size(650, 0),
             ForeColor = Color.FromArgb(92, 101, 112),
             Margin = new Padding(40, 0, 0, 6)
         });
+        panel.Controls.Add(
+            AnchorRow("Anchor:", _notificationAnchorMode, _notificationAnchorHand));
+        panel.Controls.Add(SliderRow("Opacity:", _notificationOpacity));
+        panel.Controls.Add(SliderRow("Size:", _notificationSizeScale));
 
         _chat.Text = "Show chat messages on your wrist (preview)";
         _chat.AutoSize = true;
@@ -426,7 +483,7 @@ internal sealed class MainForm : Form
         panel.Controls.Add(_chat);
         panel.Controls.Add(new Label
         {
-            Text = "Your Twitch chat appears in a window behind your left controller that "
+            Text = "Your Twitch chat appears in a window that "
                    + "grows and brightens when you look at it - no Streamer.bot action needed. "
                    + "Payloads with “target”: “chat” from your own actions appear there too. "
                    + "Requires the event feed above to be turned on.",
@@ -435,6 +492,10 @@ internal sealed class MainForm : Form
             ForeColor = Color.FromArgb(92, 101, 112),
             Margin = new Padding(40, 0, 0, 6)
         });
+        panel.Controls.Add(AnchorRow("Anchor:", _chatAnchorMode, _chatAnchorHand));
+        panel.Controls.Add(SliderRow("Opacity:", _chatOpacity));
+        panel.Controls.Add(SliderRow("Size:", _chatSizeScale));
+        panel.Controls.Add(GazeSensitivityRow());
 
         ConfigureButton(_findActions, "Refresh Streamer.bot actions", false);
         _findActions.Click += (_, _) => FindActionsRequested?.Invoke();
@@ -472,6 +533,84 @@ internal sealed class MainForm : Form
             Margin = new Padding(0, 18, 0, 0)
         });
         return panel;
+    }
+
+    /// <summary>A "Controller / Headset" mode combo plus a "Left / Right" hand combo, the latter only meaningful in Controller mode.</summary>
+    private Control AnchorRow(string label, ComboBox modeCombo, ComboBox handCombo)
+    {
+        modeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        modeCombo.Items.AddRange(["Controller", "Headset"]);
+        modeCombo.Width = 110;
+        handCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        handCombo.Items.AddRange(["Left hand", "Right hand"]);
+        handCombo.Width = 110;
+        modeCombo.SelectedIndexChanged += (_, _) =>
+        {
+            handCombo.Enabled = modeCombo.SelectedIndex != 1;
+            NotifySettingsChanged();
+        };
+        handCombo.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
+
+        var row = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Margin = new Padding(40, 0, 0, 10)
+        };
+        row.Controls.Add(new Label
+        {
+            Text = label,
+            AutoSize = true,
+            Margin = new Padding(0, 6, 8, 0)
+        });
+        row.Controls.Add(modeCombo);
+        row.Controls.Add(handCombo);
+        return row;
+    }
+
+    /// <summary>A single 0-100 TrackBar row for an opacity or size setting, labelled and change-notifying.</summary>
+    private Control SliderRow(string label, TrackBar slider)
+    {
+        slider.Minimum = 0;
+        slider.Maximum = 100;
+        slider.TickFrequency = 10;
+        slider.Width = 260;
+        slider.ValueChanged += (_, _) => NotifySettingsChanged();
+
+        var row = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Margin = new Padding(40, 0, 0, 10)
+        };
+        row.Controls.Add(new Label
+        {
+            Text = label,
+            AutoSize = true,
+            Margin = new Padding(0, 6, 8, 0)
+        });
+        row.Controls.Add(slider);
+        return row;
+    }
+
+    private Control GazeSensitivityRow()
+    {
+        _gazeSensitivity.DropDownStyle = ComboBoxStyle.DropDownList;
+        _gazeSensitivity.Items.AddRange(["Relaxed", "Normal", "Tight"]);
+        _gazeSensitivity.Width = 130;
+        _gazeSensitivity.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
+
+        var row = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Margin = new Padding(40, 0, 0, 10)
+        };
+        row.Controls.Add(new Label
+        {
+            Text = "Gaze sensitivity:",
+            AutoSize = true,
+            Margin = new Padding(0, 6, 8, 0)
+        });
+        row.Controls.Add(_gazeSensitivity);
+        return row;
     }
 
     private Control CreateActivityPage()

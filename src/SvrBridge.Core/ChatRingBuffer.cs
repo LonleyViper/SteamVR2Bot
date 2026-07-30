@@ -70,6 +70,21 @@ public sealed class ChatRingBuffer
         }
     }
 
+    /// <summary>
+    /// Empties the buffer immediately and bumps the version, so a throttled
+    /// reader that was mid-repaint still notices the change on its next
+    /// check. Used by the <c>clear</c> control command - see §B3 of the
+    /// Phase 4 plan.
+    /// </summary>
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _messages.Clear();
+            _version++;
+        }
+    }
+
     /// <summary>A copy of the current messages, oldest first, newest last.</summary>
     public IReadOnlyList<StreamerBotEventPayload> Snapshot()
     {

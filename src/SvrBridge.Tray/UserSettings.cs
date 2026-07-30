@@ -41,6 +41,59 @@ internal sealed record UserSettings
     /// </summary>
     public bool ChatEnabled { get; init; }
 
+    /// <summary>
+    /// Where the chat window is pinned by default. Defaults to the left
+    /// controller - the exact placement Phase 1/3 proved in the headset - so
+    /// a settings file saved before this field existed loads with the
+    /// behaviour it already had. See §B2 of the Phase 4 plan.
+    /// </summary>
+    public OverlayAnchorMode ChatAnchorMode { get; init; } = OverlayAnchorMode.Controller;
+
+    /// <summary>Which hand <see cref="ChatAnchorMode"/> follows in Controller mode.</summary>
+    public OverlayAnchorHand ChatAnchorHand { get; init; } = OverlayAnchorHand.Left;
+
+    /// <summary>
+    /// Where notifications are pinned by default. Defaults to the headset -
+    /// the exact placement Phase 2 proved in the headset - for the same
+    /// migration reason as <see cref="ChatAnchorMode"/>.
+    /// </summary>
+    public OverlayAnchorMode NotificationAnchorMode { get; init; } = OverlayAnchorMode.Head;
+
+    /// <summary>Which hand <see cref="NotificationAnchorMode"/> follows in Controller mode.</summary>
+    public OverlayAnchorHand NotificationAnchorHand { get; init; } = OverlayAnchorHand.Left;
+
+    public OverlayAnchor ChatAnchor => new(ChatAnchorMode, ChatAnchorHand);
+
+    public OverlayAnchor NotificationAnchor => new(NotificationAnchorMode, NotificationAnchorHand);
+
+    /// <summary>
+    /// The chat window's gazed-at alpha ceiling, 0.2-1.0. Defaults to 0.95 -
+    /// the value <see cref="ChatOverlay"/> hardcoded before Phase 4b, so an
+    /// old settings file keeps the exact behaviour it already had. The faint,
+    /// not-gazed-at alpha scales from this proportionally rather than being a
+    /// separate setting - see <see cref="ChatOverlay"/>'s own remarks.
+    /// </summary>
+    public double ChatOpacity { get; init; } = 0.95;
+
+    /// <summary>
+    /// Multiplies the chat window's gazed-at and faint widths, 0.5-2.0.
+    /// Defaults to 1.0 - today's hardcoded widths, unscaled.
+    /// </summary>
+    public double ChatSizeScale { get; init; } = 1.0;
+
+    /// <summary>How readily the chat window's gaze detection triggers. See <see cref="Core.GazeSensitivity"/>.</summary>
+    public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
+
+    /// <summary>
+    /// The notification panel's peak alpha while holding, 0.2-1.0. Defaults
+    /// to 1.0 - the value <see cref="NotificationOverlay"/> hardcoded before
+    /// Phase 4b.
+    /// </summary>
+    public double NotificationOpacity { get; init; } = 1.0;
+
+    /// <summary>Multiplies the notification panel's width, 0.5-2.0. Defaults to 1.0 - today's hardcoded width, unscaled.</summary>
+    public double NotificationSizeScale { get; init; } = 1.0;
+
     public IReadOnlyList<ShortcutConfig> GetShortcuts()
     {
         if (Shortcuts.Count > 0)
@@ -101,7 +154,16 @@ internal sealed record UserSettings
                     _ => 2000
                 },
                 CooldownMs = 250
-            }
+            },
+            ChatAnchor = ChatAnchor,
+            NotificationAnchor = NotificationAnchor,
+            ChatEnabled = ChatEnabled,
+            NotificationsEnabled = NotificationsEnabled,
+            ChatOpacity = ChatOpacity,
+            ChatSizeScale = ChatSizeScale,
+            GazeSensitivity = GazeSensitivity,
+            NotificationOpacity = NotificationOpacity,
+            NotificationSizeScale = NotificationSizeScale
         };
 }
 
@@ -162,7 +224,16 @@ internal sealed class UserSettingsStore
             StartBridgeWhenAppOpens = settings.StartBridgeWhenAppOpens,
             EventStreamEnabled = settings.EventStreamEnabled,
             NotificationsEnabled = settings.NotificationsEnabled,
-            ChatEnabled = settings.ChatEnabled
+            ChatEnabled = settings.ChatEnabled,
+            ChatAnchorMode = settings.ChatAnchorMode,
+            ChatAnchorHand = settings.ChatAnchorHand,
+            NotificationAnchorMode = settings.NotificationAnchorMode,
+            NotificationAnchorHand = settings.NotificationAnchorHand,
+            ChatOpacity = settings.ChatOpacity,
+            ChatSizeScale = settings.ChatSizeScale,
+            GazeSensitivity = settings.GazeSensitivity,
+            NotificationOpacity = settings.NotificationOpacity,
+            NotificationSizeScale = settings.NotificationSizeScale
         };
 
         var json = JsonSerializer.Serialize(
@@ -222,7 +293,23 @@ internal sealed class UserSettingsStore
                 // existed, which is exactly the "off" the default describes.
                 EventStreamEnabled = saved.EventStreamEnabled,
                 NotificationsEnabled = saved.NotificationsEnabled,
-                ChatEnabled = saved.ChatEnabled
+                ChatEnabled = saved.ChatEnabled,
+                // Absent from every settings file written before Phase 4,
+                // which is exactly the hardcoded placement those phases
+                // already had - see the defaults on SavedSettings below.
+                ChatAnchorMode = saved.ChatAnchorMode,
+                ChatAnchorHand = saved.ChatAnchorHand,
+                NotificationAnchorMode = saved.NotificationAnchorMode,
+                NotificationAnchorHand = saved.NotificationAnchorHand,
+                // Absent from every settings file written before Phase 4b,
+                // which is exactly the hardcoded opacity/size/sensitivity
+                // those phases already had - see the defaults on
+                // SavedSettings below.
+                ChatOpacity = saved.ChatOpacity,
+                ChatSizeScale = saved.ChatSizeScale,
+                GazeSensitivity = saved.GazeSensitivity,
+                NotificationOpacity = saved.NotificationOpacity,
+                NotificationSizeScale = saved.NotificationSizeScale
             };
         }
         catch (JsonException exception)
@@ -305,5 +392,14 @@ internal sealed class UserSettingsStore
         public bool EventStreamEnabled { get; init; }
         public bool NotificationsEnabled { get; init; }
         public bool ChatEnabled { get; init; }
+        public OverlayAnchorMode ChatAnchorMode { get; init; } = OverlayAnchorMode.Controller;
+        public OverlayAnchorHand ChatAnchorHand { get; init; } = OverlayAnchorHand.Left;
+        public OverlayAnchorMode NotificationAnchorMode { get; init; } = OverlayAnchorMode.Head;
+        public OverlayAnchorHand NotificationAnchorHand { get; init; } = OverlayAnchorHand.Left;
+        public double ChatOpacity { get; init; } = 0.95;
+        public double ChatSizeScale { get; init; } = 1.0;
+        public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
+        public double NotificationOpacity { get; init; } = 1.0;
+        public double NotificationSizeScale { get; init; } = 1.0;
     }
 }

@@ -1,13 +1,12 @@
-using System.Numerics;
 using SvrBridge.Core;
 
 namespace SvrBridge.Tray;
 
 /// <summary>
-/// The wrist-anchored chat window: one persistent <see cref="VrOverlaySurface"/>
-/// pinned to the left controller, a <see cref="ChatRingBuffer"/> written by
-/// the event stream's consumption loop, and a WPF renderer that repaints at
-/// most ~10 Hz per §B2 of the chat plan.
+/// The chat window: one persistent <see cref="VrOverlaySurface"/>, a
+/// <see cref="ChatRingBuffer"/> written by the event stream's consumption
+/// loop, and a WPF renderer that repaints at most ~10 Hz per §B2 of the chat
+/// plan.
 /// <para>
 /// Lives entirely inside the OpenVR worker process, ticked from the same
 /// single thread that owns every other OpenVR call - see
@@ -16,12 +15,19 @@ namespace SvrBridge.Tray;
 /// </para>
 /// <para>
 /// Visibility is gaze-scale, not show/hide, per §B1: the window is always
-/// present behind the controller, small and faint, and grows large and
-/// opaque when the wearer looks at it. That animation runs on every tick
-/// through <see cref="VrOverlaySurface.SetAlpha"/> and
+/// present at its anchor, small and faint, and grows large and opaque when
+/// the wearer looks at it. That animation runs on every tick through
+/// <see cref="VrOverlaySurface.SetAlpha"/> and
 /// <see cref="VrOverlaySurface.SetWidthInMeters"/> alone - no texture
 /// repaint is involved - and is entirely decoupled from the throttled text
 /// repaint below: the two run on independent clocks by design.
+/// </para>
+/// <para>
+/// Anchoring is wrist-relative by default (Phase 1/3's proven placement),
+/// but is no longer hardcoded to the left controller: it is driven by an
+/// <see cref="OverlayAnchorTracker"/> so a Streamer.bot <c>anchor</c> control
+/// command can move it to the right controller or the headset instead - see
+/// §B2 and §B3 of the Phase 4 plan.
 /// </para>
 /// </summary>
 internal sealed class ChatOverlay : IDisposable
@@ -34,15 +40,6 @@ internal sealed class ChatOverlay : IDisposable
     private const float LargeAlpha = 0.95f;
 
     /// <summary>
-    /// Sits above and slightly in front of the controller origin, tipped
-    /// back like a watch face - the exact transform Phase 1's test overlay
-    /// proved against the headset. Reused rather than reinvented, per §B5.
-    /// </summary>
-    private static readonly VrOverlayTransform WristOffset =
-        VrOverlayTransform.Translation(0f, 0.06f, -0.12f)
-        * VrOverlayTransform.RotationX(-0.6f);
-
-    /// <summary>
     /// A 150 ms time constant for the gaze-scale ease: fast enough that
     /// looking at the window feels immediate, slow enough that the grow and
     /// shrink read as motion rather than a snap.
@@ -52,15 +49,22 @@ internal sealed class ChatOverlay : IDisposable
     private readonly VrOverlaySurface _surface;
     private readonly IVrPanelRenderer<ChatContent> _renderer;
     private readonly ChatRingBuffer _messages = new();
-    private readonly ChatGazeHysteresis _gaze = new();
     private readonly ChatRepaintThrottle _repaintThrottle = new();
     private readonly ChatImageCache _chatImages;
+    private readonly OverlayAnchorTracker _anchorTracker;
     private readonly Action<string> _log;
 
-    // The index the transform is currently bound to. Kept only to notice
-    // when it changes, never trusted as the source of truth - see Tick.
-    private uint? _boundDeviceIndex;
-    private bool _warnedAboutMissingController;
+    private ChatGazeHysteresis _gaze;
+
+    // Opacity is the gazed-at (large) alpha ceiling; size is a multiplier on
+    // both widths. The faint, not-gazed-at state scales proportionally from
+    // the same SmallAlpha/LargeAlpha ratio the hardcoded constants always
+    // had, rather than being its own setting - see SetOpacity/SetSizeScale.
+    private double _opacity = LargeAlpha;
+    private double _sizeScale = 1.0;
+
+    private bool _hidden;
+    private bool _shown = true;
     private float _currentWidth = SmallWidthMeters;
     private float _currentAlpha = SmallAlpha;
     private long? _lastAnimateMs;
@@ -70,20 +74,31 @@ internal sealed class ChatOverlay : IDisposable
         VrOverlaySurface surface,
         IVrPanelRenderer<ChatContent> renderer,
         ChatImageCache chatImages,
+        OverlayAnchorTracker anchorTracker,
+        ChatGazeHysteresis gaze,
         Action<string> log)
     {
         _surface = surface;
         _renderer = renderer;
         _chatImages = chatImages;
+        _anchorTracker = anchorTracker;
+        _gaze = gaze;
         _log = log;
     }
 
     /// <summary>
-    /// Creates the surface and shows it immediately, small and faint, at the
-    /// wrist. Returns null when this SteamVR version has no overlay
-    /// interface, which is not worth failing the worker over.
+    /// Creates the surface and shows it immediately, small and faint, at
+    /// <paramref name="defaultAnchor"/>. Returns null when this SteamVR
+    /// version has no overlay interface, which is not worth failing the
+    /// worker over.
     /// </summary>
-    public static ChatOverlay? TryCreate(OpenVrInput openVr, Action<string> log)
+    public static ChatOverlay? TryCreate(
+        OpenVrInput openVr,
+        OverlayAnchor defaultAnchor,
+        double opacity,
+        double sizeScale,
+        GazeSensitivity gazeSensitivity,
+        Action<string> log)
     {
         if (!openVr.SupportsOverlaySurfaces)
         {
@@ -96,14 +111,26 @@ internal sealed class ChatOverlay : IDisposable
         IVrPanelRenderer<ChatContent>? renderer = null;
         try
         {
-            surface.SetWidthInMeters(SmallWidthMeters);
+            surface.SetWidthInMeters(SmallWidthMeters * (float)sizeScale);
             surface.SetCurvature(0.05f);
-            surface.SetAlpha(SmallAlpha);
+            surface.SetAlpha(SmallAlpha * (float)(opacity / LargeAlpha));
             surface.SetSortOrder(0);
             renderer = new WpfChatRenderer(chatImages);
-            var overlay = new ChatOverlay(surface, renderer, chatImages, log);
+            var anchorTracker = new OverlayAnchorTracker("The chat window", defaultAnchor, log);
+            anchorTracker.Tick(openVr, surface);
+            var overlay = new ChatOverlay(
+                surface,
+                renderer,
+                chatImages,
+                anchorTracker,
+                ChatGazeHysteresis.Create(gazeSensitivity),
+                log)
+            {
+                _opacity = opacity,
+                _sizeScale = sizeScale
+            };
             surface.Show();
-            log("The chat window is on. It stays behind your left controller and grows on gaze.");
+            log($"The chat window is on. {DescribePlacement(defaultAnchor)}");
             return overlay;
         }
         catch
@@ -147,8 +174,43 @@ internal sealed class ChatOverlay : IDisposable
     }
 
     /// <summary>
-    /// Re-resolves the wrist attachment, advances the gaze-scale animation,
-    /// and repaints the texture when owed. Called once per OpenVR poll
+    /// Moves this surface to a different anchor - the effect of a
+    /// Streamer.bot <c>anchor</c> control command, or a <c>reset</c> handing
+    /// back the saved default. A no-op if it is already there.
+    /// </summary>
+    public void SetAnchorOverride(OverlayAnchor anchor) => _anchorTracker.SetAnchor(anchor);
+
+    /// <summary>
+    /// Forces this surface hidden regardless of gaze, or clears that
+    /// override - the effect of a Streamer.bot <c>hide</c>/<c>show</c>
+    /// control command.
+    /// </summary>
+    public void SetHidden(bool hidden) => _hidden = hidden;
+
+    /// <summary>Empties the ring buffer - the effect of a <c>clear</c> control command.</summary>
+    public void ClearMessages() => _messages.Clear();
+
+    /// <summary>
+    /// Sets the gazed-at alpha ceiling, 0.2-1.0 - a VR or desktop settings
+    /// change. The faint, not-gazed-at alpha is derived from this, not set
+    /// independently - see the field remarks above.
+    /// </summary>
+    public void SetOpacity(double opacity) => _opacity = Math.Clamp(opacity, 0.2, 1.0);
+
+    /// <summary>Sets the width multiplier, 0.5-2.0 - a VR or desktop settings change.</summary>
+    public void SetSizeScale(double sizeScale) => _sizeScale = Math.Clamp(sizeScale, 0.5, 2.0);
+
+    /// <summary>
+    /// Rebuilds the gaze detector with a new sensitivity - a VR or desktop
+    /// settings change. Momentarily resets whether the wearer is currently
+    /// judged to be gazing; a cosmetic reset only, corrected on the very next
+    /// tick.
+    /// </summary>
+    public void SetGazeSensitivity(GazeSensitivity sensitivity) => _gaze = ChatGazeHysteresis.Create(sensitivity);
+
+    /// <summary>
+    /// Re-resolves the anchor, advances the gaze-scale animation, and
+    /// repaints the texture when owed. Called once per OpenVR poll
     /// (~10 ms), like <see cref="VrTestOverlay.Tick"/> and
     /// <see cref="NotificationOverlay.Tick"/>.
     /// </summary>
@@ -159,42 +221,27 @@ internal sealed class ChatOverlay : IDisposable
             return;
         }
 
-        ReattachIfNeeded(openVr);
-        AnimateGaze(openVr, nowMs);
-        RepaintIfOwed(nowMs);
-    }
+        _anchorTracker.Tick(openVr, _surface);
 
-    /// <summary>
-    /// The device index is asked for on every tick rather than cached, for
-    /// the same reason <see cref="VrTestOverlay"/> does: tracked device
-    /// indices are not stable across controller sleep, reconnect or a
-    /// battery change, and a role can come back unassigned. An overlay bound
-    /// to a stale index detaches with no error reported anywhere.
-    /// </summary>
-    private void ReattachIfNeeded(OpenVrInput openVr)
-    {
-        var deviceIndex = openVr.TryGetControllerDeviceIndex(ControllerHand.Left);
-        if (deviceIndex is null)
+        if (_hidden)
         {
-            if (!_warnedAboutMissingController)
+            if (_shown)
             {
-                _warnedAboutMissingController = true;
-                _log("The chat window is waiting for a left controller.");
+                _surface.Hide();
+                _shown = false;
             }
 
-            _boundDeviceIndex = null;
             return;
         }
 
-        _warnedAboutMissingController = false;
-        if (_boundDeviceIndex == deviceIndex)
+        if (!_shown)
         {
-            return;
+            _surface.Show();
+            _shown = true;
         }
 
-        _surface.AttachToDevice(deviceIndex.Value, WristOffset);
-        _boundDeviceIndex = deviceIndex;
-        _log($"The chat window is following left controller device {deviceIndex.Value}.");
+        AnimateGaze(openVr, nowMs);
+        RepaintIfOwed(nowMs);
     }
 
     private void AnimateGaze(OpenVrInput openVr, long nowMs)
@@ -203,8 +250,11 @@ internal sealed class ChatOverlay : IDisposable
         _lastAnimateMs = nowMs;
 
         var isGazing = _gaze.Update(GazeDot(openVr.LatestMotion));
-        var targetWidth = isGazing ? LargeWidthMeters : SmallWidthMeters;
-        var targetAlpha = isGazing ? LargeAlpha : SmallAlpha;
+        var largeAlpha = (float)_opacity;
+        var smallAlpha = largeAlpha * (SmallAlpha / LargeAlpha);
+        var sizeScale = (float)_sizeScale;
+        var targetWidth = (isGazing ? LargeWidthMeters : SmallWidthMeters) * sizeScale;
+        var targetAlpha = isGazing ? largeAlpha : smallAlpha;
 
         // Exponential ease towards the target rather than an instant jump,
         // so the transition reads as smooth motion - required by the manual
@@ -221,27 +271,45 @@ internal sealed class ChatOverlay : IDisposable
     /// Cosine of the angle between the head's forward vector and the
     /// head-to-window direction, both already expressed in
     /// <see cref="MotionSample"/>'s head-relative <see cref="BodyFrame"/>.
-    /// The window is treated as co-located with the left controller for this
-    /// purpose - close enough at wrist distance to matter.
+    /// <para>
+    /// A head-anchored window (see <see cref="OverlayAnchor.HeadOffset"/>)
+    /// sits directly ahead of the wearer by construction, so there is no
+    /// separate "not looking at it" state worth detecting there - this
+    /// always reads as fully gazed at, which is the degenerate case of the
+    /// same formula rather than a special one. A controller-anchored window
+    /// is treated as co-located with whichever hand it currently follows,
+    /// close enough at wrist distance to matter.
+    /// </para>
     /// <para>
     /// Because that frame's own forward axis is, by construction, its local
     /// +Z, the dot product collapses to the Z component of the normalised
     /// direction to the controller - no explicit forward vector is needed.
     /// <see cref="BodyFrame"/> is yaw-only (see its own remarks), so this
-    /// reads as "roughly facing the wrist's direction" rather than a true
+    /// reads as "roughly facing the anchor's direction" rather than a true
     /// eye-line check that accounts for head pitch; that is the same
     /// simplification the rest of this codebase's gesture recognition
     /// already makes with the same data.
     /// </para>
     /// </summary>
-    private static float GazeDot(MotionSample motion)
+    private float GazeDot(MotionSample motion)
     {
-        if ((motion.Tracking & MotionTracking.Left) == 0)
+        var anchor = _anchorTracker.Anchor;
+        if (anchor.Mode == OverlayAnchorMode.Head)
+        {
+            return 1f;
+        }
+
+        var trackingFlag = anchor.Hand == OverlayAnchorHand.Left
+            ? MotionTracking.Left
+            : MotionTracking.Right;
+        if ((motion.Tracking & trackingFlag) == 0)
         {
             return -1f;
         }
 
-        var direction = motion.LeftPosition;
+        var direction = anchor.Hand == OverlayAnchorHand.Left
+            ? motion.LeftPosition
+            : motion.RightPosition;
         var lengthSquared = direction.LengthSquared();
         return lengthSquared < 1e-6f ? -1f : direction.Z / MathF.Sqrt(lengthSquared);
     }
@@ -266,6 +334,11 @@ internal sealed class ChatOverlay : IDisposable
         _surface.SetTexture(rendered.Rgba, rendered.Width, rendered.Height);
         _repaintThrottle.MarkPainted(combinedVersion, nowMs);
     }
+
+    private static string DescribePlacement(OverlayAnchor anchor) =>
+        anchor.Mode == OverlayAnchorMode.Head
+            ? "It sits in front of you and grows on gaze."
+            : $"It stays behind your {(anchor.Hand == OverlayAnchorHand.Left ? "left" : "right")} controller and grows on gaze.";
 
     public void Dispose()
     {

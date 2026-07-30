@@ -58,6 +58,14 @@ public sealed class NotificationPlayer
     /// <summary>Items waiting behind whatever is currently showing, if anything.</summary>
     public int QueuedCount => _queue.Count;
 
+    /// <summary>
+    /// Drops every queued item behind whatever is currently on screen,
+    /// without interrupting that one - used by the <c>clear</c> control
+    /// command. Yanking a notification off mid-fade would read as a glitch;
+    /// dropping only the backlog behind it does not.
+    /// </summary>
+    public void ClearQueue() => _queue.Clear();
+
     /// <summary>True while a notification is on screen (fading in, holding, or fading out).</summary>
     public bool IsShowing => _current is not null;
 
