@@ -35,6 +35,11 @@ internal static class TraySelfTests
         TestChatDeveloperInjectorProducesExpectedMessages();
         TestChatCommandJsonRoundTripPreservesBadgesAndEmotes();
         TestRequiresRuntimeRestartDistinguishesLiveAppliableChanges();
+        TestOverlayTextureCopyRespectsAnOverWideRowPitch();
+        TestOverlaySourceFormatsConvertToTheSameRgba();
+        TestOverlayUploadFallsBackOnDeviceLossAndRecovers();
+        TestOverlayUploadDefaultsOffUntilExplicitlyEnabled();
+        TestD3D11OverlayTextureRoundTripsRgbaWithoutSwappingChannels();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -258,22 +263,19 @@ internal static class TraySelfTests
             && browser.FirstVisibleItemNumber == 1,
             "Returning to VR action groups did not reset scrolling.");
 
-        var previewPath = VrDashboardRenderer.RenderActionPicker(browser);
-        using var preview = new Bitmap(previewPath);
-        Assert(
-            preview.Width == 1400 && preview.Height == 900,
-            "The grouped VR action picker rendered at the wrong size.");
+        var preview = VrDashboardRenderer.RenderActionPicker(browser);
+        AssertDashboardPage(preview, "The grouped VR action picker");
 
-        var gestureTypePath = VrDashboardRenderer.RenderGestureTypePicker(false);
+        var gestureTypePreview = VrDashboardRenderer.RenderGestureTypePicker(false);
+        AssertDashboardPage(gestureTypePreview, "The VR gesture type picker");
+
+        // Replaces an older check that two pages never reused an image path
+        // while SteamVR could still be loading one. There are no image files
+        // any more - pages are uploaded as pixels - so the equivalent question
+        // is whether two different pages actually produce different pixels.
         Assert(
-            !gestureTypePath.Equals(
-                previewPath,
-                StringComparison.OrdinalIgnoreCase),
-            "Dashboard pages reused an image path while SteamVR could still be loading it.");
-        using var quickInputPreview = new Bitmap(gestureTypePath);
-        Assert(
-            quickInputPreview.Width == 1400 && quickInputPreview.Height == 900,
-            "The VR gesture type picker rendered at the wrong size.");
+            !preview.Rgba.AsSpan().SequenceEqual(gestureTypePreview.Rgba),
+            "Two different dashboard pages rendered byte-identical textures.");
 
         var doublePressInput =
             SvrBridge.Core.ControllerInputBinding.Physical(
@@ -299,30 +301,24 @@ internal static class TraySelfTests
         Assert(
             doublePressShortcut.FriendlyGesture == "Double press Left Menu Button",
             "The double-press gesture did not have a friendly description.");
-        var listPath = VrDashboardRenderer.Render([doublePressShortcut]);
-        using var listPreview = new Bitmap(listPath);
-        Assert(
-            listPreview.Width == 1400 && listPreview.Height == 900,
-            "The editable VR shortcut list rendered at the wrong size.");
+        AssertDashboardPage(
+            VrDashboardRenderer.Render([doublePressShortcut]),
+            "The editable VR shortcut list");
 
-        var gesturePath = VrDashboardRenderer.RenderTolerancePicker(
-            SvrBridge.Core.ChordMode.DoublePress,
-            500);
-        using var gesturePreview = new Bitmap(gesturePath);
-        Assert(
-            gesturePreview.Width == 1400 && gesturePreview.Height == 900,
-            "The VR tolerance slider rendered at the wrong size.");
+        AssertDashboardPage(
+            VrDashboardRenderer.RenderTolerancePicker(
+                SvrBridge.Core.ChordMode.DoublePress,
+                500),
+            "The VR tolerance slider");
 
-        var handPath = VrDashboardRenderer.RenderInputRecorder(
-            SvrBridge.Core.ChordMode.Simultaneous,
-            SvrBridge.Core.ControllerSetup.Unknown,
-            doublePressInput);
-        using var handPreview = new Bitmap(handPath);
-        Assert(
-            handPreview.Width == 1400 && handPreview.Height == 900,
-            "The VR input recorder rendered at the wrong size.");
+        AssertDashboardPage(
+            VrDashboardRenderer.RenderInputRecorder(
+                SvrBridge.Core.ChordMode.Simultaneous,
+                SvrBridge.Core.ControllerSetup.Unknown,
+                doublePressInput),
+            "The VR input recorder");
 
-        var buttonPath = VrDashboardRenderer.RenderShortcutReview(
+        var review = VrDashboardRenderer.RenderShortcutReview(
             SvrBridge.Core.ChordMode.DoublePress,
             doublePressInput,
             doublePressInput,
@@ -333,10 +329,27 @@ internal static class TraySelfTests
             500,
             2000,
             false);
-        using var buttonPreview = new Bitmap(buttonPath);
+        AssertDashboardPage(review, "The VR shortcut review");
+    }
+
+    /// <summary>
+    /// Every dashboard page must come back at the fixed page size with a
+    /// tightly packed straight-alpha RGBA buffer to match. The size is not
+    /// cosmetic: <c>VrDashboardLayout</c>'s rectangles and hit testing, and the
+    /// mouse scale <c>OpenVrInput.EnsureDashboardCreated</c> sets, are all
+    /// written in this coordinate space.
+    /// </summary>
+    private static void AssertDashboardPage(RenderedPanel page, string description)
+    {
         Assert(
-            buttonPreview.Width == 1400 && buttonPreview.Height == 900,
-            "The VR shortcut review rendered at the wrong size.");
+            page.Width == VrDashboardRenderer.PageWidth
+            && page.Height == VrDashboardRenderer.PageHeight,
+            $"{description} rendered at {page.Width}x{page.Height} rather than "
+            + $"{VrDashboardRenderer.PageWidth}x{VrDashboardRenderer.PageHeight}.");
+        Assert(
+            page.Rgba.Length == page.Width * page.Height * 4,
+            $"{description} returned {page.Rgba.Length} bytes for a "
+            + $"{page.Width}x{page.Height} RGBA texture.");
     }
 
     private static void TestRenamedDataDirectoryMigration()
@@ -1767,6 +1780,360 @@ internal static class TraySelfTests
             Text = text,
             EmoteNames = emoteNames ?? []
         };
+
+    /// <summary>
+    /// The row-pitch copy, against a destination pitch deliberately wider than
+    /// the row - which is the normal case on real hardware, because drivers pad
+    /// rows for alignment. A single block copy passes a same-pitch test and
+    /// shears the image on every machine where the pitch differs, so the
+    /// padding here is the entire point.
+    /// </summary>
+    private static void TestOverlayTextureCopyRespectsAnOverWideRowPitch()
+    {
+        const int width = 5;
+        const int height = 4;
+        const int rowBytes = width * 4;
+        // Not a multiple of rowBytes, so an off-by-one in the pitch arithmetic
+        // cannot accidentally still line up.
+        const int destinationPitch = rowBytes + 12;
+
+        var source = new byte[rowBytes * height];
+        for (var index = 0; index < source.Length; index++)
+        {
+            source[index] = (byte)(index + 1);
+        }
+
+        var destination = new byte[destinationPitch * height];
+        var pin = System.Runtime.InteropServices.GCHandle.Alloc(
+            destination,
+            System.Runtime.InteropServices.GCHandleType.Pinned);
+        try
+        {
+            D3D11OverlayTexture.CopyRows(
+                source,
+                pin.AddrOfPinnedObject(),
+                destinationPitch,
+                rowBytes,
+                height);
+        }
+        finally
+        {
+            pin.Free();
+        }
+
+        for (var row = 0; row < height; row++)
+        {
+            for (var offset = 0; offset < rowBytes; offset++)
+            {
+                Assert(
+                    destination[(row * destinationPitch) + offset] == source[(row * rowBytes) + offset],
+                    $"The row-pitch copy put the wrong byte at row {row}, offset {offset} - "
+                    + "the image would be sheared.");
+            }
+
+            for (var padding = rowBytes; padding < destinationPitch; padding++)
+            {
+                Assert(
+                    destination[(row * destinationPitch) + padding] == 0,
+                    $"The row-pitch copy wrote into row {row}'s padding, which means it "
+                    + "treated the destination as tightly packed.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The two source formats, each converted for a known solid colour.
+    /// <para>
+    /// The mistake this exists to catch is applying the WPF un-premultiply to
+    /// GDI+ output: GDI+ <c>Format32bppArgb</c> is straight alpha already, so
+    /// dividing by alpha a second time washes the colours out - visibly on the
+    /// semi-transparent panel backgrounds both renderers use, and not at all
+    /// at full opacity, which is where a casual look would check.
+    /// </para>
+    /// </summary>
+    private static void TestOverlaySourceFormatsConvertToTheSameRgba()
+    {
+        // One pixel, half transparent, in a colour whose three channels are
+        // all different so a swap cannot hide.
+        const byte alpha = 128;
+        const byte red = 200;
+        const byte green = 50;
+        const byte blue = 10;
+
+        // GDI+: straight alpha, BGRA in memory.
+        var gdi = new byte[] { blue, green, red, alpha };
+        SvrBridge.Core.OverlayPixelFormat.ConvertGdiBgra32ToRgba(gdi);
+        Assert(
+            gdi[0] == red && gdi[1] == green && gdi[2] == blue && gdi[3] == alpha,
+            $"The GDI+ conversion produced R={gdi[0]} G={gdi[1]} B={gdi[2]} A={gdi[3]} rather "
+            + $"than the straight-alpha RGBA {red}/{green}/{blue}/{alpha} it was given. "
+            + "An un-premultiply here would wash the colour out.");
+
+        // WPF: the same colour premultiplied, still BGRA in memory.
+        var wpf = new byte[]
+        {
+            (byte)(blue * alpha / 255),
+            (byte)(green * alpha / 255),
+            (byte)(red * alpha / 255),
+            alpha
+        };
+        SvrBridge.Core.OverlayPixelFormat.ConvertWpfPbgra32ToRgba(wpf);
+        Assert(
+            Math.Abs(wpf[0] - red) <= 3
+            && Math.Abs(wpf[1] - green) <= 3
+            && Math.Abs(wpf[2] - blue) <= 3
+            && wpf[3] == alpha,
+            $"The WPF conversion produced R={wpf[0]} G={wpf[1]} B={wpf[2]} A={wpf[3]} rather than "
+            + $"approximately {red}/{green}/{blue}/{alpha}. Without the un-premultiply the "
+            + "channels stay darkened by alpha.");
+
+        // Both paths must land on the same bytes for the same colour, which is
+        // what lets one texture format serve every renderer.
+        Assert(
+            Math.Abs(wpf[0] - gdi[0]) <= 3
+            && Math.Abs(wpf[1] - gdi[1]) <= 3
+            && Math.Abs(wpf[2] - gdi[2]) <= 3
+            && wpf[3] == gdi[3],
+            "The GDI+ and WPF conversions disagreed on the same colour, so the dashboard and "
+            + "the chat window would not match in the headset.");
+    }
+
+    /// <summary>
+    /// Device loss must drop to <c>SetOverlayRaw</c> immediately and come back
+    /// to the texture path once a device returns - not fall back permanently.
+    /// A TDR or driver update mid-session would otherwise mean the blink
+    /// returns and never leaves until the app is restarted.
+    /// <para>
+    /// Driven through a fake source rather than a real GPU: forcing an actual
+    /// TDR is not something a start-up self-test can do, and the behaviour
+    /// worth pinning down is the routing, not Direct3D.
+    /// </para>
+    /// </summary>
+    private static void TestOverlayUploadFallsBackOnDeviceLossAndRecovers()
+    {
+        var target = new RecordingUploadTarget();
+        var source = new FakeTextureSource();
+        using var uploader = new OverlayTextureUploader(target, source, "Test surface", _ => { });
+        var frame = new byte[4 * 4 * 4];
+
+        Assert(
+            uploader.Upload(frame, 4, 4) == OverlayUploadPath.Texture,
+            "A healthy device did not use the texture path.");
+        Assert(
+            target.NativeUploads == 1 && target.RawUploads == 0,
+            "The texture path did not hand SteamVR a native texture.");
+
+        source.FailWrites = true;
+        Assert(
+            uploader.Upload(frame, 4, 4) == OverlayUploadPath.Raw,
+            "A failed write did not fall back to SetOverlayRaw.");
+        Assert(
+            source.DeviceLossReports == 1,
+            "The failed write did not tell the device it was lost, so nothing would start "
+            + "recovery.");
+
+        // Still inside the backoff: no device, so still raw, and no repeated
+        // loss reports piling up per frame.
+        source.Available = false;
+        Assert(
+            uploader.Upload(frame, 4, 4) == OverlayUploadPath.Raw,
+            "An unavailable device did not keep using SetOverlayRaw.");
+        Assert(
+            source.DeviceLossReports == 1,
+            "A frame with no device available reported a device loss it did not cause.");
+
+        source.Available = true;
+        source.FailWrites = false;
+        Assert(
+            uploader.Upload(frame, 4, 4) == OverlayUploadPath.Texture,
+            "The uploader did not return to the texture path once a device came back.");
+        Assert(
+            target.LastNativeTexture != target.FirstNativeTexture,
+            "The recovered upload reused the dead texture's pointer.");
+        Assert(
+            target.NativeUploads == 2,
+            "The recovered texture was never handed to SteamVR, so the overlay would freeze "
+            + "on its last frame with no error anywhere.");
+    }
+
+    /// <summary>
+    /// Pins the default-off contract that <see cref="ChatOverlay"/>,
+    /// <see cref="NotificationOverlay"/> and <see cref="VrTestOverlay"/> all
+    /// rely on: constructing an uploader with <c>TexturePathEnabled = false</c>
+    /// (as all three do) must stay on <c>SetOverlayRaw</c> even with a healthy
+    /// device available, and only switch once something explicitly flips the
+    /// flag - the tray's "overlay texture path" developer toggle, in the real
+    /// app. Exercised against the fakes rather than the three overlay
+    /// classes themselves, which need a real OpenVR session to construct.
+    /// </summary>
+    private static void TestOverlayUploadDefaultsOffUntilExplicitlyEnabled()
+    {
+        var target = new RecordingUploadTarget();
+        var source = new FakeTextureSource();
+        using var uploader = new OverlayTextureUploader(target, source, "Test surface", _ => { })
+        {
+            TexturePathEnabled = false
+        };
+        var frame = new byte[4 * 4 * 4];
+
+        Assert(
+            uploader.Upload(frame, 4, 4) == OverlayUploadPath.Raw,
+            "An uploader constructed with TexturePathEnabled false used the texture path anyway, "
+            + "even though a healthy device was available.");
+        Assert(
+            target.RawUploads == 1 && target.NativeUploads == 0,
+            "A disabled texture path still handed SteamVR a native texture.");
+
+        uploader.TexturePathEnabled = true;
+        Assert(
+            uploader.Upload(frame, 4, 4) == OverlayUploadPath.Texture,
+            "Enabling the texture path did not switch a healthy device onto it.");
+        Assert(
+            target.NativeUploads == 1,
+            "Enabling the texture path did not hand SteamVR a native texture.");
+    }
+
+    private sealed class RecordingUploadTarget : IOverlayUploadTarget
+    {
+        public int RawUploads { get; private set; }
+
+        public int NativeUploads { get; private set; }
+
+        public nint FirstNativeTexture { get; private set; }
+
+        public nint LastNativeTexture { get; private set; }
+
+        public void SetRawTexture(byte[] rgba, int width, int height) => RawUploads++;
+
+        public void SetNativeTexture(nint nativeD3D11Texture)
+        {
+            if (NativeUploads == 0)
+            {
+                FirstNativeTexture = nativeD3D11Texture;
+            }
+
+            LastNativeTexture = nativeD3D11Texture;
+            NativeUploads++;
+        }
+    }
+
+    private sealed class FakeTextureSource : IOverlayTextureSource
+    {
+        private nint _nextPointer = 1;
+
+        public bool Available { get; set; } = true;
+
+        public bool FailWrites { get; set; }
+
+        public int DeviceLossReports { get; private set; }
+
+        public IOverlayTexture? TryCreateTexture(int width, int height) =>
+            Available ? new FakeTexture(this, _nextPointer++, width, height) : null;
+
+        public void ReportDeviceLost(Exception exception) => DeviceLossReports++;
+
+        private sealed class FakeTexture(FakeTextureSource owner, nint pointer, int width, int height)
+            : IOverlayTexture
+        {
+            public int Width => width;
+
+            public int Height => height;
+
+            public nint NativeTexture => pointer;
+
+            public void Write(byte[] rgba)
+            {
+                if (owner.FailWrites)
+                {
+                    throw new InvalidOperationException("Simulated device loss.");
+                }
+            }
+
+            public void Dispose()
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// The one check that needs a real GPU: writes a known RGBA pattern
+    /// through <see cref="D3D11OverlayTexture"/> and reads the texture back,
+    /// proving the channel order and the row-pitch copy survive a genuine
+    /// driver round trip rather than only the arithmetic above.
+    /// <para>
+    /// The width is deliberately 37, not a multiple of 256: a driver that pads
+    /// rows exposes a naive block copy, and a conveniently aligned width would
+    /// hide it.
+    /// </para>
+    /// <para>
+    /// Skipped rather than failed when no device can be created - this suite
+    /// also runs on machines with no usable GPU, and falling back to
+    /// <c>SetOverlayRaw</c> is exactly what those machines do.
+    /// </para>
+    /// </summary>
+    private static void TestD3D11OverlayTextureRoundTripsRgbaWithoutSwappingChannels()
+    {
+        const int width = 37;
+        const int height = 11;
+
+        using var device = new D3D11OverlayDevice(_ => { });
+        using var texture = device.TryCreateTexture(width, height) as D3D11OverlayTexture;
+        if (texture is null || device.DeviceForTesting is not { } nativeDevice)
+        {
+            return;
+        }
+
+        var written = new byte[width * height * 4];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var index = ((y * width) + x) * 4;
+                written[index] = (byte)(x * 5);
+                written[index + 1] = (byte)(y * 20);
+                written[index + 2] = (byte)(255 - (x * 5));
+                written[index + 3] = (byte)(128 + (x % 128));
+            }
+        }
+
+        texture.Write(written);
+        AssertRoundTrip(texture.ReadBackForTesting(nativeDevice), written, "the writing device");
+
+        // Cross-device, the way SteamVR reads it: proves the shared handle
+        // opens and the format survives. It deliberately does *not* claim to
+        // catch the missing-wait race that made every dashboard click need
+        // doing twice - that was measured, and this passes either way. See
+        // D3D11OverlayTexture.ReadBackThroughASecondDeviceForTesting.
+        var second = new byte[written.Length];
+        for (var index = 0; index < second.Length; index++)
+        {
+            second[index] = (byte)(255 - written[index]);
+        }
+
+        texture.Write(second);
+        if (texture.ReadBackThroughASecondDeviceForTesting() is { } crossDevice)
+        {
+            AssertRoundTrip(crossDevice, second, "a second device");
+        }
+    }
+
+    private static void AssertRoundTrip(byte[] readBack, byte[] written, string via)
+    {
+        Assert(
+            readBack.Length == written.Length,
+            $"The D3D11 texture read back via {via} returned a different number of bytes "
+            + "than were written.");
+
+        for (var index = 0; index < written.Length; index++)
+        {
+            Assert(
+                readBack[index] == written[index],
+                $"The D3D11 texture did not round-trip RGBA unchanged via {via}. Byte "
+                + $"{index} (pixel {index / 4}, channel {"RGBA"[index % 4]}) was written as "
+                + $"{written[index]} and read back as {readBack[index]} - a channel swap, a "
+                + "row-pitch mistake, or a copy that was never waited for.");
+        }
+    }
 
     private static void Assert(bool condition, string message)
     {

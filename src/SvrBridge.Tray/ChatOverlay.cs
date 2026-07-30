@@ -63,6 +63,8 @@ internal sealed class ChatOverlay : IDisposable
     private double _opacity = LargeAlpha;
     private double _sizeScale = 1.0;
 
+    private readonly OverlayTextureUploader _uploader;
+
     private bool _hidden;
     private bool _shown = true;
     private readonly GazeScaleAnimation _gazeAnimation = new(SmallWidthMeters, SmallAlpha);
@@ -71,6 +73,7 @@ internal sealed class ChatOverlay : IDisposable
 
     private ChatOverlay(
         VrOverlaySurface surface,
+        IOverlayTextureSource textureSource,
         IVrPanelRenderer<ChatContent> renderer,
         ChatImageCache chatImages,
         OverlayAnchorTracker anchorTracker,
@@ -78,6 +81,20 @@ internal sealed class ChatOverlay : IDisposable
         Action<string> log)
     {
         _surface = surface;
+        _uploader = new OverlayTextureUploader(
+            new VrOverlaySurfaceUploadTarget(surface),
+            textureSource,
+            "The chat window",
+            log)
+        {
+            // Default off: this is the first surface converted from
+            // SetOverlayRaw to a persistent D3D11 texture, and the first
+            // native GPU dependency in this app. Live-confirmed working, but
+            // untested across the range of GPUs/drivers real users run -
+            // opt in from the tray's developer menu. See
+            // TrayApplicationContext's texture-path toggle.
+            TexturePathEnabled = false
+        };
         _renderer = renderer;
         _chatImages = chatImages;
         _anchorTracker = anchorTracker;
@@ -93,6 +110,7 @@ internal sealed class ChatOverlay : IDisposable
     /// </summary>
     public static ChatOverlay? TryCreate(
         OpenVrInput openVr,
+        IOverlayTextureSource textureSource,
         OverlayAnchor defaultAnchor,
         double opacity,
         double sizeScale,
@@ -119,6 +137,7 @@ internal sealed class ChatOverlay : IDisposable
             anchorTracker.Tick(openVr, surface);
             var overlay = new ChatOverlay(
                 surface,
+                textureSource,
                 renderer,
                 chatImages,
                 anchorTracker,
@@ -206,6 +225,15 @@ internal sealed class ChatOverlay : IDisposable
     /// tick.
     /// </summary>
     public void SetGazeSensitivity(GazeSensitivity sensitivity) => _gaze = ChatGazeHysteresis.Create(sensitivity);
+
+    /// <summary>
+    /// Developer-only: switches this surface between the default
+    /// <c>SetOverlayRaw</c> path and the persistent-texture path - see
+    /// <see cref="OverlayTextureUploader.TexturePathEnabled"/>. Off by
+    /// default because this is a first-of-its-kind GPU dependency in this
+    /// app; toggled from the tray's developer menu, never persisted.
+    /// </summary>
+    public void SetTexturePathEnabled(bool enabled) => _uploader.TexturePathEnabled = enabled;
 
     /// <summary>
     /// Re-resolves the anchor, advances the gaze-scale animation, and
@@ -335,7 +363,7 @@ internal sealed class ChatOverlay : IDisposable
         }
 
         var rendered = _renderer.Render(new ChatContent(snapshot));
-        _surface.SetTexture(rendered.Rgba, rendered.Width, rendered.Height);
+        _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
         _repaintThrottle.MarkPainted(combinedVersion, nowMs);
     }
 
@@ -355,5 +383,8 @@ internal sealed class ChatOverlay : IDisposable
         _renderer.Dispose();
         _chatImages.Dispose();
         _surface.Dispose();
+        // After the surface, not before: SteamVR holds a reference to the
+        // texture until DestroyOverlay releases it.
+        _uploader.Dispose();
     }
 }

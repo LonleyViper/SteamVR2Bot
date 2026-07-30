@@ -40,11 +40,10 @@ internal static class WpfOverlayPixelPipeline
         var pixels = new byte[stride * height];
         target.CopyPixels(pixels, stride, 0);
 
-        // Order matters: un-premultiply while the buffer is still in WPF's
-        // native BGRA layout, then swap channels last. Swapping first would
-        // un-premultiply the wrong two channels against alpha.
-        OverlayPixelFormat.UnpremultiplyBgra(pixels);
-        OverlayPixelFormat.SwapRedAndBlue(pixels);
+        // Named per source format rather than composed here: the un-premultiply
+        // is the difference between this and the GDI+ path, and applying the
+        // wrong one washes the colours out silently. See OverlayPixelFormat.
+        OverlayPixelFormat.ConvertWpfPbgra32ToRgba(pixels);
         return pixels;
     }
 }

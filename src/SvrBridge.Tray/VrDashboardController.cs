@@ -2,7 +2,7 @@ using SvrBridge.Core;
 
 namespace SvrBridge.Tray;
 
-internal sealed class VrDashboardController
+internal sealed class VrDashboardController : IDisposable
 {
     private readonly OpenVrInput _openVr;
     private readonly Action<ShortcutConfig> _shortcutSaved;
@@ -13,6 +13,7 @@ internal sealed class VrDashboardController
     private readonly IReadOnlyList<StreamerBotAction> _actions;
     private readonly VrActionBrowser _actionBrowser;
     private readonly VrDashboardScrollLimiter _scrollLimiter = new();
+    private readonly OverlayTextureUploader _uploader;
 
     private DashboardPage _page;
     private ControllerSetup _setup = ControllerSetup.Unknown;
@@ -36,6 +37,7 @@ internal sealed class VrDashboardController
 
     public VrDashboardController(
         OpenVrInput openVr,
+        IOverlayTextureSource textureSource,
         IReadOnlyList<ShortcutConfig> shortcuts,
         IReadOnlyList<StreamerBotAction> actions,
         bool activate,
@@ -46,6 +48,19 @@ internal sealed class VrDashboardController
         Action<string> log)
     {
         _openVr = openVr;
+        _uploader = new OverlayTextureUploader(
+            new DashboardUploadTarget(openVr),
+            textureSource,
+            "The SteamVR dashboard",
+            log)
+        {
+            // A dashboard overlay handle accepts SetOverlayTexture and then
+            // never shows the result - see OverlayTextureUploader.
+            // TexturePathEnabled for the evidence. So the dashboard stays on
+            // SetOverlayRaw, which works and blinks, while every regular
+            // overlay keeps the blink-free texture path.
+            TexturePathEnabled = false
+        };
         _shortcuts = shortcuts.ToList();
         _actions = actions;
         _actionBrowser = new VrActionBrowser(actions);
@@ -804,13 +819,23 @@ internal sealed class VrDashboardController
 
     private void ShowPage(
         DashboardPage page,
-        Func<string> render,
+        Func<RenderedPanel> render,
         bool activate = false,
         bool throwOnError = false)
     {
         try
         {
-            _openVr.UpdateDashboard(render(), activate);
+            // Create first, then upload, then show - the upload needs a handle
+            // to land on, and showing an overlay with no texture yet would
+            // flash an empty panel.
+            _openVr.EnsureDashboardCreated();
+            var rendered = render();
+            _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
+            if (activate)
+            {
+                _openVr.ShowDashboardOverlay();
+            }
+
             _page = page;
             _log($"SteamVR dashboard page: {page}.");
 
@@ -827,6 +852,66 @@ internal sealed class VrDashboardController
             }
         }
     }
+
+    /// <summary>
+    /// Developer-only: puts the dashboard back on <c>SetOverlayTexture</c> so
+    /// the finding recorded against
+    /// <see cref="OverlayTextureUploader.TexturePathEnabled"/> can be
+    /// re-checked after a SteamVR update without a rebuild. Repaints
+    /// immediately, since the current page is what the change has to show up
+    /// on.
+    /// </summary>
+    public void SetTexturePathEnabled(bool enabled)
+    {
+        if (_uploader.TexturePathEnabled == enabled)
+        {
+            return;
+        }
+
+        _uploader.TexturePathEnabled = enabled;
+        _log(enabled
+            ? "The SteamVR dashboard is using SetOverlayTexture (developer override)."
+            : "The SteamVR dashboard is using SetOverlayRaw.");
+        RepaintCurrentPage();
+    }
+
+    /// <summary>
+    /// Re-renders and re-uploads whatever page is showing, without changing
+    /// which page that is.
+    /// </summary>
+    private void RepaintCurrentPage()
+    {
+        switch (_page)
+        {
+            case DashboardPage.List:
+                ShowList();
+                break;
+            case DashboardPage.GestureType:
+                ShowGestureTypes();
+                break;
+            case DashboardPage.Tolerance:
+                ShowTolerance();
+                break;
+            case DashboardPage.ActionPicker:
+                ShowActionPicker();
+                break;
+            case DashboardPage.RecordInput:
+                ShowRecording();
+                break;
+            case DashboardPage.Review:
+                ShowReview();
+                break;
+            case DashboardPage.Settings:
+                ShowSettings();
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Releases the dashboard's GPU texture. The overlay handle itself belongs
+    /// to <see cref="OpenVrInput"/> and is not touched here.
+    /// </summary>
+    public void Dispose() => _uploader.Dispose();
 
     private enum DashboardPage
     {

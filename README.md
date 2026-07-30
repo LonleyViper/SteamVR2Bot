@@ -270,16 +270,31 @@ them without retaining them.
   remotely, so this cannot be worked around here - the trigger does not need
   to do anything (no sub-actions, no code), it just needs to exist and be
   enabled.
-- **A panel can briefly blink when its texture updates, most noticeably under
-  rapid interaction** - for example clicking quickly several times along a
-  slider. Confirmed pre-existing SteamVR behaviour, not specific to any one
-  feature: reproduced identically on the shortcut wizard's Tolerance slider
-  (unchanged since the very first release) under the same rapid-click stress
-  that first surfaced it elsewhere, and present on both of the app's texture-
-  update paths despite their different costs - each individual update
-  measured at 15-32 ms, well within a single frame, so this is not the app
-  running slowly. Ordinary, unhurried interaction rarely triggers it
-  noticeably.
+- **The SteamVR dashboard panel can briefly blink when it redraws, most
+  noticeably under rapid interaction** - for example clicking quickly several
+  times along a slider. It is not the app running slowly: each individual
+  update measures 15-32 ms, well within a single frame, and the blink
+  reproduces identically on the shortcut wizard's Tolerance slider, which has
+  been unchanged since the very first release. Ordinary, unhurried interaction
+  rarely triggers it noticeably.
+
+  **The chat window, notifications and the test overlay can stop blinking**
+  by uploading through a persistent Direct3D 11 texture (`SetOverlayTexture`),
+  which SteamVR writes in place, rather than a CPU buffer it reallocates on
+  every write - that reallocation is what shows through as a blink.
+  Live-confirmed working, but off by default: this is the first native GPU
+  dependency in this app, untested across the range of GPUs and drivers real
+  users run. Turn it on from the tray's "Chat test harness" submenu (**Chat &
+  notification overlays via SetOverlayTexture (developer)**) to try it; it is
+  never persisted, so it is off again at the next launch.
+
+  **The dashboard cannot currently use that path.** A SteamVR *dashboard*
+  overlay accepts the GPU-texture call, reports success, and then never
+  displays the result - the panel simply freezes on whatever it last showed.
+  Every ordinary overlay works; only the dashboard behaves this way. So the
+  dashboard stays on the CPU path, where it blinks but is correct. This is a
+  SteamVR behaviour rather than something fixable here, and it is the last
+  surface still affected.
 
 ## Diagnostics
 

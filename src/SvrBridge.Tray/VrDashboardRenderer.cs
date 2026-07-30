@@ -6,14 +6,17 @@ namespace SvrBridge.Tray;
 
 internal static class VrDashboardRenderer
 {
-    private static int _imageSequence;
-    private static int _oldImagesCleaned;
+    /// <summary>
+    /// The dashboard's fixed page size, matching the mouse scale
+    /// <c>OpenVrInput.EnsureDashboardCreated</c> sets and the coordinate space
+    /// <c>VrDashboardLayout</c>'s rectangles and hit testing are written in.
+    /// </summary>
+    public const int PageWidth = 1400;
+    public const int PageHeight = 900;
 
-    public static string Render(IReadOnlyList<ShortcutConfig> shortcuts)
+    public static RenderedPanel Render(IReadOnlyList<ShortcutConfig> shortcuts)
     {
-        var path = NextDashboardImagePath();
-
-        using var bitmap = new Bitmap(1400, 900, PixelFormat.Format32bppArgb);
+        using var bitmap = new Bitmap(PageWidth, PageHeight, PixelFormat.Format32bppArgb);
         using var graphics = Graphics.FromImage(bitmap);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.TextRenderingHint =
@@ -142,11 +145,10 @@ internal static class VrDashboardRenderer
             550,
             817);
 
-        bitmap.Save(path, ImageFormat.Png);
-        return path;
+        return ToRenderedPanel(bitmap);
     }
 
-    public static string RenderActionPicker(VrActionBrowser browser)
+    public static RenderedPanel RenderActionPicker(VrActionBrowser browser)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
@@ -235,7 +237,7 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderGestureTypePicker(bool isEditing)
+    public static RenderedPanel RenderGestureTypePicker(bool isEditing)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
@@ -303,7 +305,7 @@ internal static class VrDashboardRenderer
     /// bottom bar: every change here applies and saves automatically, the
     /// same as the desktop.
     /// </summary>
-    public static string RenderSettings(VrSettingsSnapshot settings)
+    public static RenderedPanel RenderSettings(VrSettingsSnapshot settings)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
@@ -382,7 +384,7 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderTolerancePicker(ChordMode mode, int valueMs)
+    public static RenderedPanel RenderTolerancePicker(ChordMode mode, int valueMs)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
@@ -474,7 +476,7 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderInputRecorder(
+    public static RenderedPanel RenderInputRecorder(
         ChordMode mode,
         ControllerSetup setup,
         ControllerInputBinding? firstInput)
@@ -551,7 +553,7 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderShortcutReview(
+    public static RenderedPanel RenderShortcutReview(
         ChordMode mode,
         ControllerInputBinding? firstInput,
         ControllerInputBinding? secondInput,
@@ -629,7 +631,7 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderGesturePicker(string actionName)
+    public static RenderedPanel RenderGesturePicker(string actionName)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
@@ -688,7 +690,7 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderQuickInputPicker(
+    public static RenderedPanel RenderQuickInputPicker(
         string actionName,
         IReadOnlyList<ControllerInputBinding> inputs,
         bool isEditing = false)
@@ -785,7 +787,7 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderHandPicker(
+    public static RenderedPanel RenderHandPicker(
         string controllerFamily,
         string? firstInput = null)
     {
@@ -850,7 +852,7 @@ internal static class VrDashboardRenderer
         });
     }
 
-    public static string RenderButtonPicker(
+    public static RenderedPanel RenderButtonPicker(
         ControllerHand hand,
         IReadOnlyList<ControllerInputBinding> inputs,
         string? firstInput = null)
@@ -961,11 +963,10 @@ internal static class VrDashboardRenderer
             ? $"{milliseconds / 1000} second{(milliseconds == 1000 ? "" : "s")}"
             : $"{milliseconds / 1000d:0.##} seconds";
 
-    private static string RenderSimplePage(
+    private static RenderedPanel RenderSimplePage(
         Action<Graphics, DashboardFonts, DashboardBrushes> draw)
     {
-        var path = NextDashboardImagePath();
-        using var bitmap = new Bitmap(1400, 900, PixelFormat.Format32bppArgb);
+        using var bitmap = new Bitmap(PageWidth, PageHeight, PixelFormat.Format32bppArgb);
         using var graphics = Graphics.FromImage(bitmap);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.TextRenderingHint =
@@ -974,49 +975,45 @@ internal static class VrDashboardRenderer
         using var fonts = new DashboardFonts();
         using var brushes = new DashboardBrushes();
         draw(graphics, fonts, brushes);
-        bitmap.Save(path, ImageFormat.Png);
-        return path;
+        return ToRenderedPanel(bitmap);
     }
 
-    private static string NextDashboardImagePath()
+    /// <summary>
+    /// Reads a GDI+ bitmap out as the straight-alpha RGBA every overlay upload
+    /// path expects.
+    /// <para>
+    /// <c>Format32bppArgb</c> is <b>straight</b> alpha, BGRA in memory on
+    /// little-endian Windows, so this is a channel swap and nothing else -
+    /// see <see cref="OverlayPixelFormat.ConvertGdiBgra32ToRgba"/>, and note
+    /// that the un-premultiply the WPF renderers need would wash these colours
+    /// out. The row-by-row read is for the same reason the GPU write is:
+    /// <c>BitmapData.Stride</c> can exceed <c>Width * 4</c> for alignment, so
+    /// the source is not one contiguous run.
+    /// </para>
+    /// </summary>
+    private static RenderedPanel ToRenderedPanel(Bitmap bitmap)
     {
-        var directory = AppPaths.DataDirectory;
-        Directory.CreateDirectory(directory);
-        CleanupOldDashboardImages(directory);
-        var sequence = Interlocked.Increment(ref _imageSequence);
-        return Path.Combine(
-            directory,
-            $"vr-dashboard-{Environment.ProcessId}-{sequence}.png");
-    }
-
-    private static void CleanupOldDashboardImages(string directory)
-    {
-        if (Interlocked.Exchange(ref _oldImagesCleaned, 1) != 0)
+        var rectangle = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+        var data = bitmap.LockBits(rectangle, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
         {
-            return;
+            var rowBytes = bitmap.Width * 4;
+            var pixels = new byte[rowBytes * bitmap.Height];
+            for (var y = 0; y < bitmap.Height; y++)
+            {
+                System.Runtime.InteropServices.Marshal.Copy(
+                    data.Scan0 + (y * data.Stride),
+                    pixels,
+                    y * rowBytes,
+                    rowBytes);
+            }
+
+            OverlayPixelFormat.ConvertGdiBgra32ToRgba(pixels);
+            return new RenderedPanel(pixels, bitmap.Width, bitmap.Height);
         }
-
-        var cutoff = DateTime.UtcNow.AddHours(-6);
-        foreach (var path in Directory.EnumerateFiles(
-                     directory,
-                     "vr-dashboard-*.png",
-                     SearchOption.TopDirectoryOnly))
+        finally
         {
-            try
-            {
-                if (File.GetLastWriteTimeUtc(path) < cutoff)
-                {
-                    File.Delete(path);
-                }
-            }
-            catch (IOException)
-            {
-                // SteamVR may still be finishing an asynchronous image load.
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // A stale frame is harmless and can be retried next launch.
-            }
+            bitmap.UnlockBits(data);
         }
     }
 

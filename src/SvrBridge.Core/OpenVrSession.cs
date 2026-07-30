@@ -8,15 +8,17 @@ public interface IOpenVrSession : IDisposable
 
     void OpenBindingUi();
 
-    void ShowDashboard(string imagePath) =>
-        throw new NotSupportedException("This SteamVR session cannot show a dashboard.");
-
+    /// <summary>
+    /// Stands the SteamVR dashboard page up. Takes no image path: the page is
+    /// rendered inside the session that owns the overlay and uploaded as
+    /// pixels, not written to disk as a PNG for SteamVR to decode - see
+    /// <c>VrDashboardController</c>.
+    /// </summary>
     void ShowDashboard(
-        string imagePath,
         IReadOnlyList<ShortcutConfig> shortcuts,
         IReadOnlyList<StreamerBotAction> actions,
         bool activate = true) =>
-        ShowDashboard(imagePath);
+        throw new NotSupportedException("This SteamVR session cannot show a dashboard.");
 
     IReadOnlyList<ShortcutConfig> DrainCreatedShortcuts() => [];
 
@@ -62,6 +64,27 @@ public interface IOpenVrSession : IDisposable
     /// by default, for the same reason as <see cref="ShowNotification"/>.
     /// </summary>
     void SetEmoteCatalog(IReadOnlyDictionary<string, string> catalog)
+    {
+    }
+
+    /// <summary>
+    /// Developer-only override: puts the SteamVR dashboard back on
+    /// <c>SetOverlayTexture</c>, which it does not use by default because a
+    /// dashboard overlay handle accepts the call and never displays the
+    /// result. A no-op by default, for the same reason as
+    /// <see cref="ShowNotification"/>.
+    /// </summary>
+    void SetDashboardTexturePathEnabled(bool enabled)
+    {
+    }
+
+    /// <summary>
+    /// Developer-only override: switches the chat window, notifications and
+    /// the VR test overlay between the default <c>SetOverlayRaw</c> path and
+    /// the persistent-texture path, together. A no-op by default, for the
+    /// same reason as <see cref="ShowNotification"/>.
+    /// </summary>
+    void SetOverlayTexturePathEnabled(bool enabled)
     {
     }
 

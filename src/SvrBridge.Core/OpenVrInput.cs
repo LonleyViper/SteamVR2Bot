@@ -63,6 +63,8 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
     private uint _leftDeviceIndex = InvalidDeviceIndex;
     private uint _rightDeviceIndex = InvalidDeviceIndex;
     private bool _probeMotion;
+    private const string DashboardOverlayKey = "ie.lonelyviper.svrbridge.dashboard";
+
     private ulong _dashboardHandle;
     private ulong _dashboardThumbnailHandle;
     private bool _dashboardThumbnailInitialized;
@@ -439,10 +441,19 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
         }
     }
 
-    public void ShowDashboard(string imagePath) =>
-        UpdateDashboard(imagePath, activate: true);
-
-    public void UpdateDashboard(string imagePath, bool activate)
+    /// <summary>
+    /// Creates and configures the dashboard overlay if it does not exist yet,
+    /// and loads its taskbar thumbnail once. Idempotent - every page render
+    /// calls it, and after the first it does nothing.
+    /// <para>
+    /// Separated from the texture upload because the dashboard no longer has
+    /// a single "update from this file" call. The page pixels now go through
+    /// <see cref="SetDashboardTexture"/> or
+    /// <see cref="SetDashboardD3D11Texture"/>, the same two paths every other
+    /// overlay uses.
+    /// </para>
+    /// </summary>
+    public void EnsureDashboardCreated()
     {
         ThrowIfDisposed();
         if (_overlay is null)
@@ -451,86 +462,181 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
                 "This SteamVR version did not expose dashboard overlays.");
         }
 
-        if (!File.Exists(imagePath))
+        if (_dashboardHandle != 0)
         {
-            throw new FileNotFoundException("VR dashboard image not found.", imagePath);
+            return;
         }
 
-        var key = Marshal.StringToCoTaskMemUTF8("ie.lonelyviper.svrbridge.dashboard");
+        var key = Marshal.StringToCoTaskMemUTF8(DashboardOverlayKey);
         var name = Marshal.StringToCoTaskMemUTF8("SteamVR2Bot");
-        var image = Marshal.StringToCoTaskMemUTF8(imagePath);
         try
         {
-            if (_dashboardHandle == 0)
-            {
-                EnsureOverlaySuccess(
-                    _overlay.Value.CreateDashboardOverlay(
-                        key,
-                        name,
-                        ref _dashboardHandle,
-                        ref _dashboardThumbnailHandle),
-                    "CreateDashboardOverlay");
-                EnsureOverlaySuccess(
-                    _overlay.Value.SetOverlayWidthInMeters(_dashboardHandle, 2.2f),
-                    "SetOverlayWidthInMeters");
-                EnsureOverlaySuccess(
-                    _overlay.Value.SetOverlayInputMethod(_dashboardHandle, 1),
-                    "SetOverlayInputMethod");
-                EnsureOverlaySuccess(
-                    _overlay.Value.SetOverlayFlag(
-                        _dashboardHandle,
-                        1 << 6,
-                        true),
-                    "SetOverlayFlag(SendVRDiscreteScrollEvents)");
-                var mouseScale = new HmdVector2 { X = 1400, Y = 900 };
-                EnsureOverlaySuccess(
-                    _overlay.Value.SetOverlayMouseScale(
-                        _dashboardHandle,
-                        ref mouseScale),
-                    "SetOverlayMouseScale");
-            }
-
             EnsureOverlaySuccess(
-                _overlay.Value.SetOverlayFromFile(_dashboardHandle, image),
-                "SetOverlayFromFile");
-            if (!_dashboardThumbnailInitialized)
-            {
-                // The taskbar strip at the bottom of the SteamVR dashboard shows
-                // this thumbnail while the app is running. It must stay the
-                // static app icon rather than whatever page is currently
-                // rendered, or it flips to a screenshot of the shortcut list.
-                var iconPath = Path.Combine(AppContext.BaseDirectory, "SteamVR2Bot.png");
-                var thumbnailSource = File.Exists(iconPath) ? iconPath : imagePath;
-                var thumbnailImage = thumbnailSource == imagePath
-                    ? image
-                    : Marshal.StringToCoTaskMemUTF8(thumbnailSource);
-                try
-                {
-                    EnsureOverlaySuccess(
-                        _overlay.Value.SetOverlayFromFile(_dashboardThumbnailHandle, thumbnailImage),
-                        "SetOverlayFromFile(thumbnail)");
-                }
-                finally
-                {
-                    if (thumbnailImage != image)
-                    {
-                        Marshal.FreeCoTaskMem(thumbnailImage);
-                    }
-                }
-
-                _dashboardThumbnailInitialized = true;
-            }
-
-            if (activate)
-            {
-                _overlay.Value.ShowDashboard(key);
-            }
+                _overlay.Value.CreateDashboardOverlay(
+                    key,
+                    name,
+                    ref _dashboardHandle,
+                    ref _dashboardThumbnailHandle),
+                "CreateDashboardOverlay");
+            EnsureOverlaySuccess(
+                _overlay.Value.SetOverlayWidthInMeters(_dashboardHandle, 2.2f),
+                "SetOverlayWidthInMeters");
+            EnsureOverlaySuccess(
+                _overlay.Value.SetOverlayInputMethod(_dashboardHandle, 1),
+                "SetOverlayInputMethod");
+            EnsureOverlaySuccess(
+                _overlay.Value.SetOverlayFlag(
+                    _dashboardHandle,
+                    1 << 6,
+                    true),
+                "SetOverlayFlag(SendVRDiscreteScrollEvents)");
+            var mouseScale = new HmdVector2 { X = 1400, Y = 900 };
+            EnsureOverlaySuccess(
+                _overlay.Value.SetOverlayMouseScale(
+                    _dashboardHandle,
+                    ref mouseScale),
+                "SetOverlayMouseScale");
         }
         finally
         {
             Marshal.FreeCoTaskMem(key);
             Marshal.FreeCoTaskMem(name);
-            Marshal.FreeCoTaskMem(image);
+        }
+
+        InitializeDashboardThumbnail();
+    }
+
+    /// <summary>
+    /// Loads the static app icon into the dashboard's taskbar thumbnail, once.
+    /// <para>
+    /// <b>Deliberately still <c>SetOverlayFromFile</c>.</b> This is a genuinely
+    /// file-based, one-time load of an icon on disk - not a repaint - so none
+    /// of the reasons the page path was converted apply to it. It is also the
+    /// one place where feeding the current page would be actively wrong: the
+    /// taskbar strip at the bottom of the SteamVR dashboard shows this while
+    /// the app is running, and it must stay the app icon rather than a
+    /// screenshot of the shortcut list.
+    /// </para>
+    /// <para>
+    /// A missing icon file now simply leaves the thumbnail unset. The old code
+    /// fell back to the current page image, which is precisely the bug above;
+    /// with the page no longer on disk there is nothing to fall back to, and
+    /// nothing worth falling back to either.
+    /// </para>
+    /// </summary>
+    private void InitializeDashboardThumbnail()
+    {
+        if (_dashboardThumbnailInitialized)
+        {
+            return;
+        }
+
+        _dashboardThumbnailInitialized = true;
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "SteamVR2Bot.png");
+        if (!File.Exists(iconPath))
+        {
+            return;
+        }
+
+        var thumbnailImage = Marshal.StringToCoTaskMemUTF8(iconPath);
+        try
+        {
+            EnsureOverlaySuccess(
+                _overlay!.Value.SetOverlayFromFile(_dashboardThumbnailHandle, thumbnailImage),
+                "SetOverlayFromFile(thumbnail)");
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(thumbnailImage);
+        }
+    }
+
+    /// <summary>
+    /// Uploads a dashboard page from straight-alpha RGBA bytes - the fallback
+    /// path, used when no Direct3D device is available. Blinks on every write,
+    /// like every CPU upload.
+    /// </summary>
+    public void SetDashboardTexture(byte[] rgba, int width, int height)
+    {
+        ArgumentNullException.ThrowIfNull(rgba);
+        ThrowIfDisposed();
+        RequireDashboard();
+
+        var required = (long)width * height * 4;
+        if (rgba.Length < required)
+        {
+            throw new ArgumentException(
+                $"The dashboard buffer holds {rgba.Length} bytes but {width}x{height} needs {required}.",
+                nameof(rgba));
+        }
+
+        var pin = GCHandle.Alloc(rgba, GCHandleType.Pinned);
+        try
+        {
+            EnsureOverlaySuccess(
+                _overlay!.Value.SetOverlayRaw(
+                    _dashboardHandle,
+                    pin.AddrOfPinnedObject(),
+                    (uint)width,
+                    (uint)height,
+                    4),
+                "SetOverlayRaw(dashboard)");
+        }
+        finally
+        {
+            pin.Free();
+        }
+    }
+
+    /// <summary>
+    /// Uploads a dashboard page from a persistent Direct3D 11 texture - the
+    /// blink-free path.
+    /// <para>
+    /// Note this is a <em>dashboard</em> overlay handle, from
+    /// <c>CreateDashboardOverlay</c>, where the spike only ever proved
+    /// <c>SetOverlayTexture</c> against a regular one. Nothing in
+    /// <c>openvr.h</c> distinguishes them for this call - a dashboard overlay
+    /// handle is a <c>VROverlayHandle_t</c> like any other - but that is an
+    /// argument, not a test, so it is confirmed in the headset matrix.
+    /// </para>
+    /// </summary>
+    public void SetDashboardD3D11Texture(nint nativeD3D11Texture)
+    {
+        ThrowIfDisposed();
+        RequireDashboard();
+        if (nativeD3D11Texture == nint.Zero)
+        {
+            throw new ArgumentException(
+                "The native D3D11 texture pointer is null.",
+                nameof(nativeD3D11Texture));
+        }
+
+        ((IVrOverlayApi)this).SetOverlayTexture(_dashboardHandle, nativeD3D11Texture);
+    }
+
+    /// <summary>Brings the SteamVR dashboard to this app's page.</summary>
+    public void ShowDashboardOverlay()
+    {
+        ThrowIfDisposed();
+        RequireDashboard();
+
+        var key = Marshal.StringToCoTaskMemUTF8(DashboardOverlayKey);
+        try
+        {
+            _overlay!.Value.ShowDashboard(key);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(key);
+        }
+    }
+
+    private void RequireDashboard()
+    {
+        if (_overlay is null || _dashboardHandle == 0)
+        {
+            throw new InvalidOperationException(
+                "The SteamVR dashboard overlay has not been created yet.");
         }
     }
 
@@ -650,6 +756,19 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
         EnsureOverlaySuccess(
             _overlay!.Value.SetOverlayRaw(handle, buffer, width, height, bytesPerPixel),
             "SetOverlayRaw");
+
+    void IVrOverlayApi.SetOverlayTexture(ulong handle, nint nativeD3D11Texture)
+    {
+        var texture = new VrTexture
+        {
+            Handle = nativeD3D11Texture,
+            Type = VrTextureType.DirectX,
+            ColorSpace = VrColorSpace.Auto
+        };
+        EnsureOverlaySuccess(
+            _overlay!.Value.SetOverlayTexture(handle, ref texture),
+            "SetOverlayTexture");
+    }
 
     void IVrOverlayApi.SetOverlayWidthInMeters(ulong handle, float widthInMeters) =>
         EnsureOverlaySuccess(
@@ -1041,6 +1160,22 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
     /// check the same ten anchors. If even one moves, the interface version
     /// changed and every index here is suspect - do not patch one entry.
     /// </para>
+    /// <para>
+    /// <b>Re-verified once, for <c>SetOverlayTexture</c> (2026-07-30).</b> The
+    /// header was fetched again and its SHA-256 matched the one above
+    /// byte for byte, so it is the same revision rather than merely a
+    /// same-version one. Enumerating <c>IVROverlay</c> afresh reproduced all
+    /// <em>twenty-one</em> indices already listed below - the ten hardware-
+    /// validated anchors and the eleven added alongside them - with no
+    /// movement anywhere, which brackets index 60 on both sides
+    /// (<c>SetOverlayMouseScale</c> 52 below it, <c>SetOverlayRaw</c> 62 and
+    /// <c>SetOverlayFromFile</c> 63 immediately above). Between the last
+    /// validated index below it and the first above it the enumeration places
+    /// exactly the declarations the header shows, ending
+    /// <c>SetOverlayTexture</c> 60, <c>ClearOverlayTexture</c> 61,
+    /// <c>SetOverlayRaw</c> 62 - so an off-by-one at 60 would have had to
+    /// shift 62 too, and it did not.
+    /// </para>
     /// </summary>
     private static VrOverlayFunctions? TryGetOverlayTable(
         VrGetGenericInterface getInterface,
@@ -1086,7 +1221,11 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
             ShowOverlay = GetTableDelegate<ShowOverlayDelegate>(pointer, 43),
             HideOverlay = GetTableDelegate<HideOverlayDelegate>(pointer, 44),
             IsOverlayVisible = GetTableDelegate<IsOverlayVisibleDelegate>(pointer, 45),
-            SetOverlayRaw = GetTableDelegate<SetOverlayRawDelegate>(pointer, 62)
+            SetOverlayRaw = GetTableDelegate<SetOverlayRawDelegate>(pointer, 62),
+
+            // Added by the D3D11 texture spike, from a fresh pass over the
+            // same header - see the re-verification note in the doc comment.
+            SetOverlayTexture = GetTableDelegate<SetOverlayTextureDelegate>(pointer, 60)
         };
     }
 
@@ -1724,6 +1863,53 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
         uint height,
         uint bytesPerPixel);
 
+    /// <summary>
+    /// Mirrors <c>Texture_t</c>: a native texture handle plus the two enums
+    /// that say how to read it. 16 bytes on x64 - an 8-byte pointer and two
+    /// 4-byte enums - with no padding, so sequential layout is exact.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct VrTexture
+    {
+        public nint Handle;
+        public VrTextureType Type;
+        public VrColorSpace ColorSpace;
+    }
+
+    /// <summary>Only the one member this app can produce; see <c>ETextureType</c>.</summary>
+    private enum VrTextureType
+    {
+        /// <summary><c>Handle</c> is an <c>ID3D11Texture2D*</c>.</summary>
+        DirectX = 0
+    }
+
+    /// <summary>
+    /// <c>EColorSpace</c>. <see cref="Auto"/> means gamma for 8-bit-per-channel
+    /// formats and linear otherwise, which for a <c>R8G8B8A8_UNORM</c> texture
+    /// resolves to gamma - the same interpretation
+    /// <see cref="SetOverlayRawDelegate"/> already applies to the identical
+    /// bytes, so the two upload paths agree on colour without either side
+    /// converting.
+    /// </summary>
+    private enum VrColorSpace
+    {
+        Auto = 0,
+        Gamma = 1,
+        Linear = 2
+    }
+
+    /// <summary>
+    /// The GPU counterpart of <see cref="SetOverlayRawDelegate"/>, and the
+    /// reason the D3D11 spike exists. <c>SetOverlayRaw</c> takes width, height
+    /// and stride on every call, so SteamVR treats each call as a fresh
+    /// texture to allocate and upload; this hands over a texture SteamVR keeps
+    /// a reference to, which the caller then rewrites in place.
+    /// </summary>
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate VrOverlayError SetOverlayTextureDelegate(
+        ulong overlayHandle,
+        ref VrTexture texture);
+
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate VrOverlayError SetOverlayAlphaDelegate(
         ulong overlayHandle,
@@ -1781,6 +1967,7 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
         public required HideOverlayDelegate HideOverlay { get; init; }
         public required IsOverlayVisibleDelegate IsOverlayVisible { get; init; }
         public required SetOverlayRawDelegate SetOverlayRaw { get; init; }
+        public required SetOverlayTextureDelegate SetOverlayTexture { get; init; }
         public required SetOverlayAlphaDelegate SetOverlayAlpha { get; init; }
         public required SetOverlaySortOrderDelegate SetOverlaySortOrder { get; init; }
         public required SetOverlayCurvatureDelegate SetOverlayCurvature { get; init; }

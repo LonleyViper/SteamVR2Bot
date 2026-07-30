@@ -91,13 +91,37 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var injectLongMessage = new ToolStripMenuItem("Inject a long unbroken message");
         var injectMultiBadge = new ToolStripMenuItem("Inject a multi-badge message");
         var injectUnknownEmote = new ToolStripMenuItem("Inject an unknown-emote message");
+        // The dashboard runs on SetOverlayRaw because a dashboard overlay
+        // handle accepts SetOverlayTexture and never displays it - see
+        // OverlayTextureUploader.TexturePathEnabled. This is how that finding
+        // gets re-checked after a SteamVR update. Never persisted.
+        var dashboardTexturePath =
+            new ToolStripMenuItem("Dashboard via SetOverlayTexture (developer)")
+            {
+                CheckOnClick = true,
+                Checked = false
+            };
+        // Chat, notifications and the test overlay ship on this same GPU
+        // texture path but off by default - it is the first native GPU
+        // dependency this app has ever had, live-confirmed working but not
+        // yet exercised across the range of GPUs/drivers real users run.
+        // Never persisted, unchecked at every launch.
+        var overlayTexturePath =
+            new ToolStripMenuItem("Chat & notification overlays via SetOverlayTexture (developer)")
+            {
+                CheckOnClick = true,
+                Checked = false
+            };
         chatTestHarness.DropDownItems.AddRange(
         [
             injectBurst,
             fillRingBuffer,
             injectLongMessage,
             injectMultiBadge,
-            injectUnknownEmote
+            injectUnknownEmote,
+            new ToolStripSeparator(),
+            dashboardTexturePath,
+            overlayTexturePath
         ]);
         var exit = new ToolStripMenuItem("Exit");
 
@@ -127,6 +151,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             InjectDeveloperChatMessages([BuildMultiBadgeChatMessage()], "Multi-badge message");
         injectUnknownEmote.Click += (_, _) =>
             InjectDeveloperChatMessages([BuildUnknownEmoteChatMessage()], "Unknown-emote message");
+        dashboardTexturePath.Click += (_, _) => ToggleDashboardTexturePath(dashboardTexturePath);
+        overlayTexturePath.Click += (_, _) => ToggleOverlayTexturePath(overlayTexturePath);
         exit.Click += (_, _) => ExitApplication();
 
         menu.Items.AddRange(
@@ -779,11 +805,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 return;
             }
 
-            var dashboardImage = VrDashboardRenderer.Render(
-                _settings.GetShortcuts());
+            // No image is rendered here any more: the worker's own
+            // VrDashboardController renders and uploads every page, including
+            // the first, so a tray-side render was producing a PNG nothing
+            // read. Removing it is what let the whole disk path go.
             await _engine.ShowDashboardAsync(
                 _settings.ToAppConfig(),
-                dashboardImage,
                 _settings.GetShortcuts(),
                 _mainForm.AvailableActions,
                 activate,
@@ -1174,6 +1201,90 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 new BridgeActivity(
                     "openvr.test_overlay_failed",
                     $"The VR test overlay could not be shown: {exception.Message}",
+                    BridgeLogLevel.Warning));
+        }
+    }
+
+    /// <summary>
+    /// Puts the SteamVR dashboard back on <c>SetOverlayTexture</c>, which it
+    /// does not use by default: a dashboard overlay handle accepts the call,
+    /// reports success and never displays the result, so the panel freezes on
+    /// whatever it had. Checking this is how that finding gets re-checked
+    /// after a SteamVR update - the dashboard repaints immediately, and if the
+    /// page stops tracking your clicks the finding still holds.
+    /// </summary>
+    private void ToggleDashboardTexturePath(ToolStripMenuItem item)
+    {
+        try
+        {
+            if (_engine.SetDashboardTexturePathEnabled(item.Checked))
+            {
+                OnActivity(
+                    new BridgeActivity(
+                        "dashboard.texture_path",
+                        item.Checked
+                            ? "The SteamVR dashboard is using SetOverlayTexture (developer override)."
+                            : "The SteamVR dashboard is using SetOverlayRaw.",
+                        BridgeLogLevel.Info));
+                return;
+            }
+
+            item.Checked = false;
+            OnActivity(
+                new BridgeActivity(
+                    "dashboard.texture_path_unavailable",
+                    "Start SteamVR and open the dashboard before changing how it is delivered.",
+                    BridgeLogLevel.Warning));
+        }
+        catch (Exception exception)
+        {
+            item.Checked = false;
+            OnActivity(
+                new BridgeActivity(
+                    "dashboard.texture_path_failed",
+                    $"The dashboard delivery mode could not be changed: {exception.Message}",
+                    BridgeLogLevel.Warning));
+        }
+    }
+
+    /// <summary>
+    /// Developer-only opt-in for the chat window, notifications and the VR
+    /// test overlay's GPU texture path - see
+    /// <see cref="ChatOverlay.SetTexturePathEnabled"/>. Off by default,
+    /// unlike the dashboard toggle above, which defaults on-until-a-bug-was-
+    /// found: these three ship with the texture path off because it is a
+    /// brand-new native GPU dependency, not because it is known broken.
+    /// </summary>
+    private void ToggleOverlayTexturePath(ToolStripMenuItem item)
+    {
+        try
+        {
+            if (_engine.SetOverlayTexturePathEnabled(item.Checked))
+            {
+                OnActivity(
+                    new BridgeActivity(
+                        "overlay.texture_path",
+                        item.Checked
+                            ? "Chat, notifications and the test overlay are using SetOverlayTexture (developer override)."
+                            : "Chat, notifications and the test overlay are using SetOverlayRaw.",
+                        BridgeLogLevel.Info));
+                return;
+            }
+
+            item.Checked = false;
+            OnActivity(
+                new BridgeActivity(
+                    "overlay.texture_path_unavailable",
+                    "Start SteamVR before changing how these overlays are delivered.",
+                    BridgeLogLevel.Warning));
+        }
+        catch (Exception exception)
+        {
+            item.Checked = false;
+            OnActivity(
+                new BridgeActivity(
+                    "overlay.texture_path_failed",
+                    $"The overlay delivery mode could not be changed: {exception.Message}",
                     BridgeLogLevel.Warning));
         }
     }

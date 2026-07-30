@@ -14,6 +14,42 @@ namespace SvrBridge.Core;
 public static class OverlayPixelFormat
 {
     /// <summary>
+    /// Converts a WPF <c>PixelFormats.Pbgra32</c> buffer - premultiplied
+    /// alpha, BGRA in memory - into the straight-alpha RGBA every overlay
+    /// upload path expects, in place.
+    /// <para>
+    /// Named rather than left as two calls at the call site because the
+    /// premultiply step is the difference between the two source formats and
+    /// the mistake it guards against is silent: applying it to GDI+ output
+    /// (see <see cref="ConvertGdiBgra32ToRgba"/>), which is already straight
+    /// alpha, divides every channel by alpha a second time and washes the
+    /// colours out - most visibly on the semi-transparent panel backgrounds
+    /// both renderers use. Making each source format its own named entry
+    /// point is what stops a future conversion picking the wrong one.
+    /// </para>
+    /// </summary>
+    public static void ConvertWpfPbgra32ToRgba(byte[] pixels)
+    {
+        // Order matters: un-premultiply while the buffer is still in WPF's
+        // native BGRA layout, then swap channels last. Swapping first would
+        // un-premultiply the wrong two channels against alpha.
+        UnpremultiplyBgra(pixels);
+        SwapRedAndBlue(pixels);
+    }
+
+    /// <summary>
+    /// Converts a GDI+ <c>PixelFormat.Format32bppArgb</c> buffer - straight
+    /// alpha, BGRA in memory - into straight-alpha RGBA, in place.
+    /// <para>
+    /// A channel swap and nothing else. GDI+ is <em>not</em> premultiplied
+    /// (that is <c>Format32bppPArgb</c>, which this codebase does not use), so
+    /// there is deliberately no un-premultiply step here - see
+    /// <see cref="ConvertWpfPbgra32ToRgba"/>.
+    /// </para>
+    /// </summary>
+    public static void ConvertGdiBgra32ToRgba(byte[] pixels) => SwapRedAndBlue(pixels);
+
+    /// <summary>
     /// Swaps the red and blue byte of every 4-byte pixel in place, converting
     /// between BGRA and RGBA. GDI+'s <c>Format32bppArgb</c> and WPF's
     /// <c>Pbgra32</c> both store BGRA in memory on little-endian Windows;

@@ -35,6 +35,7 @@ internal sealed class NotificationOverlay : IDisposable
     private readonly IVrPanelRenderer<NotificationContent> _renderer;
     private readonly NotificationPlayer _player;
     private readonly OverlayAnchorTracker _anchorTracker;
+    private readonly OverlayTextureUploader _uploader;
     private readonly Action<string> _log;
 
     // Opacity scales the peak alpha the fade curve holds at; size multiplies
@@ -49,12 +50,22 @@ internal sealed class NotificationOverlay : IDisposable
 
     private NotificationOverlay(
         VrOverlaySurface surface,
+        IOverlayTextureSource textureSource,
         IVrPanelRenderer<NotificationContent> renderer,
         NotificationPlayer player,
         OverlayAnchorTracker anchorTracker,
         Action<string> log)
     {
         _surface = surface;
+        _uploader = new OverlayTextureUploader(
+            new VrOverlaySurfaceUploadTarget(surface),
+            textureSource,
+            "Notifications",
+            log)
+        {
+            // Default off - see ChatOverlay's identical gate for why.
+            TexturePathEnabled = false
+        };
         _renderer = renderer;
         _player = player;
         _anchorTracker = anchorTracker;
@@ -69,6 +80,7 @@ internal sealed class NotificationOverlay : IDisposable
     /// </summary>
     public static NotificationOverlay? TryCreate(
         OpenVrInput openVr,
+        IOverlayTextureSource textureSource,
         OverlayAnchor defaultAnchor,
         double opacity,
         double sizeScale,
@@ -90,7 +102,13 @@ internal sealed class NotificationOverlay : IDisposable
             renderer = new WpfNotificationRenderer();
             var anchorTracker = new OverlayAnchorTracker("Notifications", defaultAnchor, log);
             anchorTracker.Tick(openVr, surface);
-            return new NotificationOverlay(surface, renderer, new NotificationPlayer(), anchorTracker, log)
+            return new NotificationOverlay(
+                surface,
+                textureSource,
+                renderer,
+                new NotificationPlayer(),
+                anchorTracker,
+                log)
             {
                 _opacity = opacity,
                 _sizeScale = sizeScale
@@ -148,6 +166,13 @@ internal sealed class NotificationOverlay : IDisposable
     }
 
     /// <summary>
+    /// Developer-only: switches this surface between the default
+    /// <c>SetOverlayRaw</c> path and the persistent-texture path - see
+    /// <see cref="ChatOverlay.SetTexturePathEnabled"/> for the rationale.
+    /// </summary>
+    public void SetTexturePathEnabled(bool enabled) => _uploader.TexturePathEnabled = enabled;
+
+    /// <summary>
     /// Re-resolves the anchor, advances the fade timeline and, only when a
     /// new item just started, paints its texture. While idle and not hidden
     /// this makes no OpenVR call beyond the anchor check - the "animation
@@ -190,7 +215,7 @@ internal sealed class NotificationOverlay : IDisposable
         {
             var rendered = _renderer.Render(
                 new NotificationContent(payload.Title, payload.Text, payload.Accent));
-            _surface.SetTexture(rendered.Rgba, rendered.Width, rendered.Height);
+            _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
             if (!_shown)
             {
                 _surface.Show();
@@ -212,5 +237,8 @@ internal sealed class NotificationOverlay : IDisposable
         _disposed = true;
         _renderer.Dispose();
         _surface.Dispose();
+        // After the surface: SteamVR holds a reference to the texture until
+        // DestroyOverlay releases it.
+        _uploader.Dispose();
     }
 }

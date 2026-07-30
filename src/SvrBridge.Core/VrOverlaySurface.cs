@@ -102,6 +102,14 @@ internal interface IVrOverlayApi
 
     void SetOverlayRaw(ulong handle, nint buffer, uint width, uint height, uint bytesPerPixel);
 
+    /// <summary>
+    /// The GPU counterpart of <see cref="SetOverlayRaw"/>: hands SteamVR a
+    /// native <c>ID3D11Texture2D</c> it holds a reference to, rather than a
+    /// CPU buffer it copies out of. Takes no dimensions, because the texture
+    /// carries its own.
+    /// </summary>
+    void SetOverlayTexture(ulong handle, nint nativeD3D11Texture);
+
     void SetOverlayWidthInMeters(ulong handle, float widthInMeters);
 
     void ShowOverlay(ulong handle);
@@ -210,6 +218,33 @@ public sealed class VrOverlaySurface : IDisposable
         }
 
         _api.SetOverlayRaw(_handle, buffer, (uint)width, (uint)height, (uint)bytesPerPixel);
+    }
+
+    /// <summary>
+    /// The alternative upload path added by the D3D11 texture spike: hands
+    /// SteamVR a native <c>ID3D11Texture2D</c> it keeps a reference to,
+    /// instead of the CPU buffer <see cref="SetTexture(nint, int, int, int)"/>
+    /// makes SteamVR allocate and copy on every call.
+    /// <para>
+    /// Deliberately takes a raw pointer rather than any graphics type. The
+    /// device, the texture and their lifetime belong to the caller - this
+    /// assembly has no graphics dependency and is not acquiring one. The
+    /// texture must outlive every frame SteamVR draws with it, which in
+    /// practice means until the overlay is destroyed or another texture
+    /// replaces it.
+    /// </para>
+    /// </summary>
+    public void SetD3D11Texture(nint nativeD3D11Texture)
+    {
+        ThrowIfDisposed();
+        if (nativeD3D11Texture == nint.Zero)
+        {
+            throw new ArgumentException(
+                "The native D3D11 texture pointer is null.",
+                nameof(nativeD3D11Texture));
+        }
+
+        _api.SetOverlayTexture(_handle, nativeD3D11Texture);
     }
 
     /// <summary>

@@ -1439,7 +1439,7 @@ Rows 10–18 were confirmed in one combined pass (the user reported "Payload tes
 
 **Emote catalog stopped resolving after an anchor-triggered worker restart — root-caused and fixed.** Switching the chat anchor from desktop Settings restarts the OpenVR worker (a fresh, empty `ChatImageCache`), but does not restart the Streamer.bot event stream, since anchor mode is not part of `EventStreamSettings`. `TrayApplicationContext.EnsureEmoteCatalogAsync`'s fetch-once guard was keyed only to the event-stream instance, so it silently skipped re-delivering an already-fetched catalog to the new worker - emote and badge images stopped resolving (falling back to styled text) for the rest of the session after any anchor change, notification/chat toggle, or other settings save that restarts the runtime without restarting the event stream. This is a latent bug in the Phase 3 delivery-race fix, exposed by Phase 4's anchor setting giving an easy way to trigger a mid-session worker restart. Fixed by caching the fetched catalog value itself (not just a "fetched" boolean) so a new worker receives it via the existing bounded retry loop without a redundant Streamer.bot request. No dedicated automated test was added (`TrayApplicationContext` is not currently exercised by the self-test suites); re-verify with a fresh anchor switch, notification toggle, or chat toggle followed by chat activity.
 
-**Chat/dashboard blink on texture update — resolved as a confirmed pre-existing platform behaviour, not a bug.** Confirmed live: the chat window blinks on every repaint (`SetOverlayRaw`) and the dashboard blinks on every Settings-page interaction (`SetOverlayFromFile`). A first fix attempt - dropping chat's alpha to zero right at the texture swap, on the theory the swap itself was showing through - was tried and confirmed *not* to fix it: it just replaced the blink with a more visible fade-to-invisible-and-back, and was reverted. The decisive test: rapidly clicking the shortcut wizard's **Tolerance** slider - unmodified by any phase of this app, live since the very first release - reproduces the *identical* blink. Timing evidence rules out application-side slowness as the cause: every dashboard page update logged across this session (Settings, List, GestureType, RecordInput, Review, and Tolerance itself) measured 15-32 ms, with no correlation between duration and which page was showing. Conclusion: this is inherent SteamVR/OpenVR compositor behaviour when any overlay texture is replaced, present on both of this app's texture-update paths despite their different costs, and predates every phase of this project - it was simply never stress-tested with rapid repeated clicking until Phase 4b's sliders invited it. Documented as a known limitation in `README.md` rather than chased further; the temporary timing diagnostics added to `ChatOverlay.RepaintIfOwed` and `VrDashboardController.ShowPage` have been removed, their purpose served.
+**Chat/dashboard blink on texture update — resolved as a confirmed pre-existing platform behaviour, not a bug.** *(Conclusion superseded 2026-07-30 — see the D3D11 texture spike at the end of this file. The evidence below is unchanged and still correct; the generalisation from "both CPU upload paths blink" to "all texture replacement blinks" was too broad. `SetOverlayTexture` with a persistent GPU texture does not blink.)* Confirmed live: the chat window blinks on every repaint (`SetOverlayRaw`) and the dashboard blinks on every Settings-page interaction (`SetOverlayFromFile`). A first fix attempt - dropping chat's alpha to zero right at the texture swap, on the theory the swap itself was showing through - was tried and confirmed *not* to fix it: it just replaced the blink with a more visible fade-to-invisible-and-back, and was reverted. The decisive test: rapidly clicking the shortcut wizard's **Tolerance** slider - unmodified by any phase of this app, live since the very first release - reproduces the *identical* blink. Timing evidence rules out application-side slowness as the cause: every dashboard page update logged across this session (Settings, List, GestureType, RecordInput, Review, and Tolerance itself) measured 15-32 ms, with no correlation between duration and which page was showing. Conclusion: this is inherent SteamVR/OpenVR compositor behaviour when any overlay texture is replaced, present on both of this app's texture-update paths despite their different costs, and predates every phase of this project - it was simply never stress-tested with rapid repeated clicking until Phase 4b's sliders invited it. Documented as a known limitation in `README.md` rather than chased further; the temporary timing diagnostics added to `ChatOverlay.RepaintIfOwed` and `VrDashboardController.ShowPage` have been removed, their purpose served.
 
 ### Frame-timing impact
 
@@ -1556,3 +1556,593 @@ Phase 4 already exercised. Open the SteamVR dashboard → SteamVR2Bot.
 Not measured, for the same reason as Phases 2-4: no capture of a running
 game's frame times with the Settings page open and being interacted with has
 been taken.
+
+## Chat gaze animation never converged — root-caused and fixed, 2026-07-30
+
+A prompt drafted before the blink investigation above closed claimed the
+dashboard/chat blink was caused by `ChatOverlay.AnimateGaze`'s exponential
+ease never reaching its target, and by the dashboard's `SetOverlayFromFile`
+path. The blink investigation immediately above already root-caused the
+blink itself as a pre-existing SteamVR/OpenVR compositor limitation on any
+overlay texture update, independent of either mechanism — chat already uses
+`SetOverlayRaw` (no disk, no file) and blinks identically to the dashboard's
+file-based path, which directly rules out a mechanism-specific fix. Per the
+user's decision, only the gaze-animation half was pursued, on its own
+merits as a real, separate bug, not as a blink fix.
+
+### Cause
+
+`AnimateGaze`'s exponential ease asymptotes towards its target and never
+reaches it exactly. `_surface.SetWidthInMeters`/`SetAlpha` were called
+unconditionally every tick (~10 ms, driven by the OpenVR poll), so these two
+overlay calls fired roughly 200 times a second, permanently, for the entire
+time the chat window existed — even sitting fully at rest, with both values
+changing by amounts far below anything visible.
+
+### Fix
+
+Extracted the ease into `SvrBridge.Core.GazeScaleAnimation`, which tracks an
+explicit converged state (both values within a small epsilon of their
+target, then snapped exactly to it) and reports whether it actually moved
+this tick. `ChatOverlay.AnimateGaze` now calls `SetWidthInMeters`/`SetAlpha`
+only when the animation reports it moved — steady state at rest is zero
+overlay calls. `NotificationOverlay` and `VrTestOverlay` were checked for the
+same pattern: neither has it. `NotificationOverlay`'s fade is a linear,
+time-bounded curve that reaches `NotificationPhase.Idle` and stops on its
+own; `VrTestOverlay` sets its width/alpha once at creation and never again.
+
+`TestGazeScaleAnimationConvergesAndStopsIssuingCalls` (`TraySelfTests.cs`)
+proves: a fresh animation starts converged and issues no calls; a target
+change leaves the converged state and re-converges within simulated time;
+re-asserting the same target every tick (exactly what `AnimateGaze` does,
+since it recomputes the target from the gaze verdict on every call) does not
+itself prevent or reopen convergence; a converged animation issues zero
+calls per tick. `TestChatGazeHysteresisNoOscillationAtBoundary` (the existing
+gaze hysteresis test, a different concern — *when* the window grows or
+shrinks, not whether the calls stop) still passes unchanged. Both self-test
+suites pass, both projects build with zero warnings, and
+`dotnet format --verify-no-changes` passes for both.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | The chat window's gaze grow/shrink still looks smooth and unchanged | **PASS** — user-confirmed in headset |
+| 2 | The blink described above is still present (expected — this fix does not address it, per the closed investigation) | **CONFIRMED** — user-confirmed in headset: still blinks on new chat messages |
+
+## Spike — does `SetOverlayTexture` with a persistent D3D11 texture kill the blink? — YES, confirmed in headset
+
+### The question, and why it is being reopened
+
+The blink investigation above (§"Chat/dashboard blink on texture update")
+concluded that the blink is inherent SteamVR/OpenVR compositor behaviour on
+any overlay texture replacement. That investigation was sound but its
+conclusion is scoped too broadly: both paths it tested — `SetOverlayRaw`
+(chat) and `SetOverlayFromFile` (dashboard) — are the *same* mechanism, a
+CPU-side upload where SteamVR allocates and uploads the texture itself.
+Finding they behave identically shows both CPU upload paths blink, not that
+all texture replacement blinks.
+
+The untested family is `SetOverlayTexture` with a GPU texture.
+Desktop-mirror and video-player overlays update at video rates through it
+without blinking, so the blink cannot be inherent to texture replacement as
+such. The specific reason to expect a difference:
+`SetOverlayRaw(handle, buffer, width, height, bytesPerPixel)` takes
+dimensions on every call, implying SteamVR treats each call as a new texture;
+`SetOverlayTexture` hands over a texture SteamVR holds a persistent
+reference to, written in place.
+
+This is a spike, not a feature. It answers one question on one overlay. A
+clean negative closes the question and the branch is thrown away.
+
+### Scope
+
+- **`SetOverlayTexture` bound at vtable index 60** (`OpenVrInput`), with a
+  `Texture_t` mirror carrying the native pointer, `TextureType_DirectX` and
+  `ColorSpace_Auto`. Derivation and cross-check below.
+- **`VrOverlaySurface.SetD3D11Texture(nint)`** alongside the existing
+  `SetTexture` overloads. Nothing was removed and no existing path changed.
+  `SvrBridge.Core` still has no graphics dependency — it takes a raw pointer.
+- **`D3D11OverlayTexture`** (`SvrBridge.Tray`): one device and one
+  `ID3D11Texture2D` sized to the chat panel's fixed 512×768, created once and
+  never reallocated — that is the entire hypothesis. Two textures, in fact:
+  the texture SteamVR holds must be default-usage and shared, which D3D11
+  will not let the CPU map, so writes land in a staging texture and are
+  copied across on the GPU. Both are allocated once.
+- **`Vortice.Windows` 3.8.3** (`Vortice.Direct3D11`), the project's first
+  NuGet dependency — a deliberate, accepted change; the zero-package state
+  was a convention, not a requirement. Not SharpDX, which is unmaintained.
+  The packaged single-file build was confirmed to still produce a working
+  `SteamVR2Bot.exe`.
+- **A runtime A/B toggle**: tray menu → **Chat test harness (developer)** →
+  **Upload via SetOverlayTexture (D3D11 spike)**, unchecked at every launch
+  and never persisted, exactly like the VR test overlay above it. Switching
+  forces one repaint so the change is visible without waiting for a message.
+  This is what makes the comparison direct rather than a comparison against
+  memory of yesterday's blink.
+- **Nothing else was converted.** The dashboard, notifications and the test
+  overlay are untouched; `SetOverlayRaw` remains the shipping path and the
+  default.
+
+### Vtable index derivation — cross-check passed
+
+`openvr.h` was fetched again from `ValveSoftware/openvr` and its SHA-256
+matched the revision recorded in `OpenVrInput.TryGetOverlayTable`'s doc
+comment **byte for byte** (`1E6ED571 99896CC1 F7C5484E 50FA1895 5E97BE15
+BE690BEB 28D998C8 77EAD7FD`), so this is the same header, not merely a
+same-version one. It carries `IVROverlay_028`, `IVRSystem_026` and
+`IVRInput_011` — the three versions this app requests.
+
+`IVROverlay` was enumerated afresh in declaration order. **All twenty-one
+indices already bound landed exactly where the enumeration predicted** — the
+ten hardware-validated anchors (SetOverlayFlag 11, SetOverlayWidthInMeters
+22, PollNextOverlayEvent 48, SetOverlayInputMethod 50, SetOverlayMouseScale
+52, SetOverlayFromFile 63, CreateDashboardOverlay 67, IsDashboardVisible 68,
+IsActiveDashboardOverlay 69, ShowDashboard 72) and the eleven added in Phase
+1 alongside them. Nothing moved.
+
+`SetOverlayTexture` is **index 60**, sitting immediately below
+`ClearOverlayTexture` 61 and `SetOverlayRaw` 62. Both of its neighbours are
+already-validated indices, so an off-by-one at 60 would have had to shift 62
+as well, and it did not.
+
+### Verified without a headset
+
+- Both projects build clean, zero warnings, Debug and Release.
+- Both self-test suites pass, including on the packaged single-file build.
+- `dotnet format --verify-no-changes` passes.
+- **`TestD3D11OverlayTextureRoundTripsRgbaWithoutSwappingChannels`** (new,
+  `TraySelfTests.cs`) writes a known RGBA pattern through
+  `D3D11OverlayTexture` and reads the GPU texture back, asserting every byte.
+  This pins down the two mistakes that would otherwise only appear in the
+  headset and both look deliberate rather than broken: a red/blue swap from
+  choosing the wrong DXGI format (the texture is `R8G8B8A8_UNORM`, matching
+  the straight-alpha RGBA `WpfOverlayPixelPipeline` already produces for
+  `SetOverlayRaw`, so the spike changes only the delivery and never the
+  pixels), and a sheared image from ignoring the mapped row pitch — the test
+  width is deliberately 37, not a multiple of 256, so a driver that pads rows
+  would expose a naive block copy. Confirmed to actually execute on this
+  machine rather than silently skip: a temporary probe that threw when no
+  D3D11 device could be created still exited 0.
+
+None of this shows whether the blink is gone. Only the matrix below does.
+
+### Preparation
+
+Publish (`scripts/Publish-Poc.ps1`) and launch
+`artifacts\publish\SteamVR2Bot.exe` — not `dotnet run`. SteamVR running, both
+controllers on and tracked, **Show chat messages on your wrist** turned on in
+Settings. Send one chat message first so the chat overlay exists, then use
+tray menu → **Chat test harness (developer)** for everything below. Rows 1–2
+are one A/B pair on the same overlay in the same session — run them back to
+back, not on separate days.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | With the D3D11 toggle **off**, click **Inject a chat burst** several times in quick succession | Blink present on each repaint — this is the control, and it must reproduce or the comparison means nothing | **CONFIRMED** — the blink on this path has been user-confirmed twice already in this file (the blink investigation and the gaze-animation fix's row 2); not separately re-itemised in this pass |
+| 2 | Turn the D3D11 toggle **on**, then click **Inject a chat burst** several times the same way | The question. Blink gone / reduced / unchanged? | **PASS — blink GONE.** User-confirmed in headset: "D3D11 spike worked! no blink" |
+| 3 | With the toggle **on**, check the chat text and any emote/badge images | Colours identical to the `SetOverlayRaw` path — usernames, body text, background. Blue text rendering orange (or vice versa) means the DXGI format is wrong despite the self-test | **PASS** — user-confirmed in headset: "Colors all good". No channel swap, consistent with the byte-for-byte round-trip self-test |
+| 4 | With the toggle **on**, look at and away from the chat window | Gaze grow/shrink still smooth; the window is not stuck, black, or blank — `SetOverlayAlpha`/`SetOverlayWidthInMeters` are unaffected by the upload path, so this is a regression check, not a spike result | not run |
+| 5 | Turn the toggle **off** again and inject another burst | The window goes back to updating normally through `SetOverlayRaw` — i.e. handing SteamVR a texture and then going back to raw uploads does not wedge the overlay | not run |
+| 6 | Open the SteamVR dashboard → SteamVR2Bot → Settings, and click the **Tolerance** slider rapidly (the test that reproduced the blink originally) | Blink still present. The dashboard was deliberately **not** converted, so this is expected either way; it is recorded to confirm the spike changed nothing outside chat, not as evidence about the hypothesis | not run |
+| 7 | Trigger a notification | Unchanged — notifications were not converted | not run |
+
+### Result — the blink is GONE
+
+**`SetOverlayTexture` with a persistent D3D11 texture eliminates the blink.**
+User-confirmed in headset, 2026-07-30: rapid repeated chat updates through the
+spike path produce no blink at all, and the colours are correct — no channel
+swap, no shear.
+
+The hypothesis held. The distinction that mattered was **CPU upload versus GPU
+texture reference**, not "any texture replacement": `SetOverlayRaw` takes
+dimensions on every call and SteamVR treats each call as a new texture, while
+`SetOverlayTexture` hands over a texture SteamVR keeps a reference to and the
+app rewrites in place.
+
+**This corrects the conclusion recorded above** in §"Chat/dashboard blink on
+texture update". That investigation's *evidence* stands unchanged and its
+reasoning was sound — both paths it tested really do blink, the Tolerance
+slider really does reproduce it, and application-side slowness really was
+ruled out. What was wrong was the scope of its conclusion: it tested two
+CPU-upload paths, found them identical, and generalised to all texture
+replacement. It is not inherent SteamVR compositor behaviour, and it is not a
+platform limitation. It is a property of the CPU upload path specifically.
+The known-limitation note in `README.md` is now wrong and needs revisiting as
+part of the conversion work below.
+
+### Deliberately not done in this session
+
+Per the spike's own terms, **the rest of the app was not converted**. The
+dashboard (`SetOverlayFromFile`), notifications and the test overlay still use
+their existing paths and still blink. Chat still defaults to `SetOverlayRaw`;
+the D3D11 path is behind the unchecked, non-persisted developer toggle.
+
+Rows 4–7 of the matrix above remain **not run**. They are regression checks
+rather than evidence about the hypothesis, but they are exactly the checks a
+conversion has to pass, so they belong to that work rather than being quietly
+dropped:
+
+- Gaze grow/shrink still smooth with the texture path active (row 4).
+- Switching back to `SetOverlayRaw` after handing SteamVR a texture does not
+  wedge the overlay (row 5) — this one matters for the toggle itself, and
+  matters much less once a conversion removes the toggle.
+- The dashboard and notifications are unaffected (rows 6–7).
+
+Converting the rest is its own piece of work with its own regression matrix.
+Open questions it will have to answer that this spike deliberately did not:
+whether `SetOverlayTexture` needs reissuing on every write at all (this spike
+reissues it, matching what desktop-mirror overlays do, and did not test
+writing in place alone); whether the dashboard's GDI+ renderer and the
+notification renderer can feed the same texture shape; whether one D3D11
+device is shared across all overlays or each owns one; and what happens on
+GPU device loss, which the current code treats as a permanent fall back to
+`SetOverlayRaw`.
+
+## Every overlay moved onto `SetOverlayTexture` — works on regular overlays, NOT on the dashboard
+
+### Scope
+
+The spike proved the mechanism on one regular overlay (chat). This rolls it
+across all four surfaces and answers the four questions the spike deliberately
+left open.
+
+- **One shared Direct3D 11 device** (`D3D11OverlayDevice`) for the whole
+  worker, with **per-overlay textures**. The surfaces genuinely differ in size
+  — 512×768 chat, 1400×900 dashboard, 512×256 test overlay — but a device is a
+  heavyweight object with no isolation benefit between four overlays in the
+  same process uploading at human rates.
+- **One routing seam** (`OverlayTextureUploader`) per overlay, so every surface
+  makes the same decision the same way instead of four copies of it. It owns
+  that overlay's texture, picks the texture path when a device is available and
+  `SetOverlayRaw` when it is not, and survives the transition in both
+  directions.
+- **`SetOverlayRaw` is kept, not deleted.** It is what runs when no device is
+  available and it stays the control for any future comparison.
+- **The dashboard's PNG-to-disk path is gone.** `VrDashboardRenderer`'s eleven
+  page renderers now return a `RenderedPanel` of straight-alpha RGBA instead of
+  a file path; `NextDashboardImagePath`, `_imageSequence` and the
+  `_oldImagesCleaned` cleanup machinery are removed, along with the dead
+  `imagePath` that used to travel tray → worker on the `showDashboard` command
+  and was never read at the far end.
+- **The dashboard thumbnail deliberately stays on `SetOverlayFromFile`.** It is
+  a genuinely file-based one-time load of the static app icon, guarded by
+  `_dashboardThumbnailInitialized`. Its old "fall back to the current page
+  image" branch is gone rather than kept — that branch was the bug someone had
+  already fixed once, and with no page on disk there is nothing to fall back to
+  anyway. A missing icon file now simply leaves the thumbnail unset.
+- **No buttons, no `SetOverlayInputMethod` on chat or notifications, no
+  reposition handle.** That is the next phase and it should land on this
+  substrate once this matrix has passed.
+- **No layout, page flow or visual design changed.** `VrDashboardLayout`'s
+  rectangles and `IndexAt` hit testing are untouched. This is a
+  texture-delivery change; anything that looks different afterwards other than
+  the blink being gone is a regression.
+
+### The four open questions
+
+**1. Does `SetOverlayTexture` need reissuing on every write?** **Not yet
+answered — it needs the headset.** Reissuing is what the spike actually
+proved, so it is the default (`OverlayTextureUploader.ReissueTextureEveryWrite`
+starts true) and the probe turns it *off*, which fails safe: the worst case is
+a texture that stops updating, not a broken overlay. Row 8 below decides it.
+The property carries a comment telling anyone who finds it that removing it
+means rerunning that row.
+
+**2. One shared device.** Done, as above.
+
+**3. Device loss is recoverable, not permanent.** Done. A failed write drops
+that surface to `SetOverlayRaw` immediately and reports the loss; the device is
+then retried on the same backoff schedule `StreamerBotEventStream` uses for its
+WebSocket — 1s, 2s, 5s, 10s, then 30s forever — and every overlay returns to
+the texture path on the next repaint after it comes back. Both transitions are
+logged, once per transition rather than per frame. A fresh texture is never
+assumed to have been handed over, which is the mistake that would otherwise
+leave a recovered overlay frozen on its last frame with no error anywhere.
+
+**4. `SetOverlayRaw` kept as the fallback.** Done, as above.
+
+### Does a dashboard overlay handle behave like a regular one?
+
+**Not yet confirmed — this is the one genuinely unverified assumption in the
+conversion, and row 1 below is deliberately first because of it.**
+
+The argument for it is that `openvr.h` draws no distinction:
+`SetOverlayTexture` takes a `VROverlayHandle_t`, and the handle
+`CreateDashboardOverlay` returns is one. But the spike only ever used a handle
+from `CreateOverlay`, so that is an argument rather than a test. If the
+dashboard behaves differently, that changes the shape of this work and should
+be reported rather than worked around.
+
+### Verified without a headset
+
+- Both projects build clean, zero warnings, Debug and Release.
+- Both self-test suites pass, including on the packaged single-file build
+  (published to a scratch directory — see the note under Preparation).
+- `dotnet format --verify-no-changes` passes for both projects.
+- **`TestOverlayTextureCopyRespectsAnOverWideRowPitch`** drives the row copy
+  against a destination pitch 12 bytes wider than the row and asserts both that
+  every row landed at the right offset and that nothing was written into the
+  padding. A single block copy passes a same-pitch test and shears the image on
+  every machine whose driver pads rows.
+- **`TestOverlaySourceFormatsConvertToTheSameRgba`** converts one known
+  half-transparent colour through both source formats and asserts they agree.
+  GDI+ `Format32bppArgb` is straight alpha and gets a channel swap only; WPF
+  `Pbgra32` is premultiplied and gets the un-premultiply as well. Applying the
+  WPF conversion to GDI+ output divides by alpha a second time and washes the
+  colours out — invisible at full opacity, visible on exactly the
+  semi-transparent panel backgrounds both renderers use. The two conversions
+  are now separately named entry points on `OverlayPixelFormat` rather than a
+  pair of calls each caller assembles, so picking the wrong one is a harder
+  mistake to make.
+- **`TestOverlayUploadFallsBackOnDeviceLossAndRecovers`** drives the router
+  through a fake source: healthy device → texture path; failed write → raw path
+  plus exactly one device-loss report; unavailable device → still raw, and no
+  repeated loss reports piling up per frame; device returns → texture path
+  again, with a *new* pointer handed to SteamVR.
+- **`TestD3D11OverlayTextureRoundTripsRgbaWithoutSwappingChannels`** is the one
+  check needing a real GPU: a known pattern written and read back byte for
+  byte at a width of 37, deliberately not pitch-aligned. Confirmed to actually
+  execute on this machine rather than silently skip — a temporary probe that
+  threw when no device could be created still exited 0.
+- Existing dashboard render tests were rewritten from "load the PNG and check
+  its dimensions" to asserting the returned panel's size and buffer length
+  directly. The old check that two pages never reused an image path is replaced
+  by one that two different pages produce different pixels — the same concern,
+  asked in the terms that still exist.
+
+None of this shows the blink is gone anywhere but chat, or that a dashboard
+overlay handle accepts a texture at all. Only the matrix below does.
+
+### Preparation
+
+Publish (`scripts/Publish-Poc.ps1`) and launch
+`artifacts\publish\SteamVR2Bot.exe` — not `dotnet run`. **Close any running
+SteamVR2Bot first**: the publish overwrites the exe and fails while it is
+running. SteamVR running, both controllers on and tracked, **Show chat messages
+on your wrist** and **Show notification broadcasts in the headset** both on.
+
+Row 1 first, and stop if it fails.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Open the SteamVR dashboard → SteamVR2Bot | The shortcut list renders at all, correctly, and is not blank, torn or garbled — this is the check that a `CreateDashboardOverlay` handle accepts `SetOverlayTexture` like a regular one. **If this fails, stop and report; the rest of the matrix is moot** | **PASS, with a bug behind it** — the list rendered, so a `CreateDashboardOverlay` handle does accept `SetOverlayTexture`. But it did not appear until the first page change after the dashboard was opened; see the root cause below |
+| 2 | Click the **Tolerance** slider rapidly — the original blink reproduction | **The dashboard blink is gone.** This is the headline result of the conversion | **PASS — the dashboard blink is GONE.** User-confirmed in headset: "No blinking!" |
+| 3 | Inject a chat burst several times in quick succession (tray → Chat test harness) | No blink, as the spike already showed — confirms the shared-device refactor did not lose it | **PASS** — no blink on chat repaints |
+| 4 | Trigger a notification | Appears and fades exactly as before; the fade is smooth, not stepped | **PASS** — notifications appear and fade correctly. Burst behaviour was not conclusively observed ("it only showed one"); `NotificationPlayer` shows one at a time by design, so this is expected rather than a regression, but it was not isolated |
+| 5 | Check colours on all three surfaces — dashboard page, chat window, notification | Identical to before. Dashboard is the new one here: it is the third source format in play, and a wrong channel order reads as a deliberate palette rather than a defect. Washed-out or milky panel backgrounds mean the WPF un-premultiply is being applied to GDI+ output | **PASS** — user-confirmed: "Colours look fine" on dashboard, chat and notifications. No channel swap, no wash-out |
+| 6 | Run the full shortcut wizard: create a shortcut, edit it, delete it | Every page renders and every click lands where it did before — the layout and hit testing were not touched, so any drift here is a regression | **FAIL** — the wizard could not get past the gesture-type page: nothing responded except cancel. Root-caused below and fixed |
+| 7 | Look at the SteamVR taskbar strip at the bottom of the dashboard | Still the app icon, **not** the current page. The thumbnail deliberately stayed on `SetOverlayFromFile` | **PASS** — user-confirmed the app icon is still on the SteamVR taskbar, not the current page |
+| 8 | Tray → Chat test harness → uncheck **Reissue SetOverlayTexture every write**, then inject another burst | **Open question 1.** If the new messages appear, reissuing is unnecessary and the default should change. If the window freezes on its last frame, reissuing is required — recheck the box and record why | **ANSWERED: reissuing is REQUIRED.** Unchecking it broke chat entirely — "nothing comes through". `ReissueTextureEveryWrite` stays true and stays commented |
+| 9 | Look at and away from the chat window (spike row 4, never run) | Gaze grow/shrink still smooth; the window is not stuck, black or blank | **PASS** — gaze grow/shrink still smooth |
+| 10 | Put a controller to sleep, wake it, and check the chat window (spike row 4's companion) | The window reattaches and follows the hand again | **PASS** — the chat window reattaches after controller sleep/wake |
+| 11 | Fire an existing shortcut | The Streamer.bot action runs exactly once, no duplicates — the product contract, unaffected by this change | **PASS** — an existing shortcut still fires exactly once |
+| 12 | **Optional, tests device-loss recovery:** press `Ctrl`+`Shift`+`Win`+`B` to reset the graphics driver, then inject a chat burst and click the Tolerance slider | Overlays briefly fall back to `SetOverlayRaw` (blinking again, logged), then return to the blink-free path within ~30s without restarting the app. The log shows both transitions | **PASS** — driver reset recovered without restarting the app |
+
+### Result — blink gone everywhere; one real bug found and fixed
+
+**The dashboard blink is gone** (row 2, user-confirmed: "No blinking!"), and so
+is chat's. Colours are correct on all three surfaces. The taskbar thumbnail is
+still the app icon. Gaze, controller sleep/wake, shortcut firing and
+device-loss recovery all pass.
+
+**A `CreateDashboardOverlay` handle does accept `SetOverlayTexture`** exactly
+like a regular overlay handle — the open question from the conversion is
+answered yes. The dashboard's initial failure to appear was not the handle
+type; it was the bug below.
+
+**Open question 1 is answered: `SetOverlayTexture` must be reissued on every
+write.** Turning the reissue off stopped chat updating entirely — "nothing
+comes through". Writing the persistent texture in place is not enough on its
+own; SteamVR only ingests the contents at the `SetOverlayTexture` call.
+`OverlayTextureUploader.ReissueTextureEveryWrite` stays true, and its comment
+now records this rather than only the spike's silence on it.
+
+### The bug rows 1 and 6 were both caused by — missing GPU synchronisation
+
+Row 6 failed outright: the shortcut wizard would not get past the gesture-type
+page, and only cancel responded. Row 1 passed but only after the first page
+change. Both had one cause, and the activity log identified it precisely.
+
+`D3D11OverlayTexture.Write` mapped a staging texture, copied the rows in,
+`CopyResource`d into the shared texture and called `Flush`. **`Flush` submits
+the copy; it does not wait for it.** SteamVR's compositor reads the shared
+texture from its own device, so it was free to read *before* the copy landed —
+and did. Every surface displayed the **previous** frame.
+
+That is invisible on a surface that repaints continuously: chat at 10 Hz was
+simply 100 ms stale, which is why it looked perfect and reported no blink. It
+is glaring on one that repaints only when something changes. The dashboard
+showed the page you were on *before*, so:
+
+- The first page upload happened before the panel was ever opened, so the
+  compositor had nothing but an uninitialised texture — the panel came up
+  blank, and only filled in on the next page change (row 1).
+- Every click had to be made twice: the first advanced the page, the second was
+  aimed at what the stale texture was still showing (row 6).
+
+The log shows this plainly, and it is the reason the diagnosis is a fact rather
+than a theory — every tab click is doubled:
+
+```
+11:50:12.589 dashboard click: 538, 31.   → page: Settings.
+11:50:13.089 dashboard click: 539, 73.   → page: Settings.
+11:50:13.774 dashboard click: 316, 71.   → page: List.
+11:50:14.446 dashboard click: 291, 82.   → page: List.
+```
+
+And the wizard failure in the same terms: a click on **New shortcut** at
+y=821 opened the gesture-type page; 456 ms later a second click at y=824 —
+aimed at the *still-visible* List page — landed in the gesture-type page's
+back band and returned to List. The clicks that followed, at y≈490–690, were
+aimed at gesture-type options on a page that had already gone back.
+
+**Fix:** an Event query. `Write` now ends a query after the copy, flushes, and
+spins until the GPU reports the copy complete before the pointer is handed
+over, with a 500 ms timeout that is treated as device loss (falling back to the
+blinking-but-correct `SetOverlayRaw` beats showing an unknown frame forever).
+The wait costs well under a millisecond at these sizes.
+
+**Note on test coverage, deliberately:** the cross-device read-back self-test
+added alongside this fix proves the shared handle opens and the format survives,
+but it was **measured not to reproduce the race** — with the wait removed it
+still passes every time, because standing up a second device takes milliseconds
+and the copy has long since landed. Only a consumer reading immediately hits
+the window. A pass there is not evidence the wait is unnecessary, and both the
+test and the method carry that warning. Row 13 below is the real check.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 13 | Re-run rows 1, 2 and 6 on the rebuilt package | The dashboard panel is filled in **the moment it opens**, with no page change needed; every click registers **first time**; the full wizard completes create/edit/delete; still no blink | **FAIL** — unchanged. The panel was still blank until a chat message arrived, the wizard still would not progress, and the Settings tab stopped responding too |
+
+### The synchronisation fix was wrong — corrected diagnosis, 2026-07-30
+
+**The Event query did not fix it, so the "reads the previous frame" diagnosis
+above was wrong.** It is recorded rather than deleted because the reasoning was
+plausible and someone will otherwise reach for it again: a missing wait *is* a
+real class of bug, the doubled clicks in the log *are* real, and the fix is
+harmless and correct on its own terms — it simply was not the cause. The wait
+has been kept (submitting a copy without waiting for it is still wrong), but it
+is not what makes the dashboard work.
+
+The log ruled out everything else on the second run: `SetOverlayTexture`
+returned success on every dashboard page change, no upload ever fell back to
+`SetOverlayRaw`, no device loss was reported, and the page state machine
+advanced correctly — `GestureType` → `RecordInput` is right there in the log.
+Navigation was working. Only the picture was not.
+
+**What actually distinguishes the working surface from the broken one is
+how often it calls `SetOverlayTexture`.**
+
+| Surface | Calls `SetOverlayTexture` | Behaviour |
+|---|---|---|
+| Chat | ~10 Hz, continuously | Always correct |
+| Dashboard | Once per page change | Frozen on an old page |
+| Notification | Once per item, then holds while fading | "Only showed one" on a burst |
+| Test overlay | Exactly once, ever | Never re-checked |
+
+Row 8 already established that SteamVR takes the contents at the call rather
+than from the texture memory. What this run adds is that **one call is not
+reliably enough** — a surface has to keep calling for the picture to keep
+tracking. That also explains the very first symptom, which never fitted the
+staleness theory: the opening page is uploaded before the dashboard has ever
+been shown, so nothing re-presented it, and it stayed blank until unrelated
+overlay traffic started.
+
+**Fix:** `OverlayTextureUploader.TryReissue` re-hands SteamVR the same texture
+pointer — no render, no upload, no pixel touched — throttled to ~10 Hz, the
+rate chat was already proving works. The dashboard reissues while it is ticking,
+a notification while it is on screen, and the test overlay every tick.
+
+This is an **empirical fix for observed SteamVR behaviour, not a documented
+requirement.** It is written down that way in the code so nobody removes it as
+a redundant call. `TestOverlayTextureReissueHandsBackTheSamePointerAndThrottles`
+pins down the three properties it depends on (nothing before the first upload,
+same pointer after, throttled) but cannot show that SteamVR needs it — only
+row 14 can.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 14 | Re-run rows 1, 2 and 6 again on the rebuilt package | The dashboard panel is filled in the moment it opens with no chat message needed; every click registers first time; the full wizard completes create/edit/delete; the Settings tab responds; still no blink | **FAIL** — unchanged again |
+
+## The actual finding: `SetOverlayTexture` does not display on a dashboard overlay
+
+Three builds, three theories, two of them wrong. The reissue theory above is
+wrong as well, and is left in place for the same reason as the one before it —
+so nobody spends another headset session re-deriving it.
+
+**What is true:** a `CreateDashboardOverlay` handle **accepts**
+`SetOverlayTexture` — it returns success on every call, the log has no failure,
+no fallback and no device loss in any of the three sessions — and **never
+displays the result.** The panel keeps whatever it had. Everything downstream of
+that was a symptom: the blank panel at start-up, the "frozen" wizard, the
+doubled clicks, the unresponsive Settings tab. Page navigation was working the
+whole time; the log shows `List` → `GestureType` → `RecordInput` transitions
+happening correctly behind a picture that never changed.
+
+**What rules out every other explanation:**
+
+- Not the upload rate. **Notifications repaint exactly as rarely as the
+  dashboard** — once per item, then hold while fading — and they work. Forcing
+  the dashboard to re-hand its texture at chat's proven 10 Hz changed nothing.
+- Not synchronisation. An Event query that waits for the GPU copy to complete
+  before handing the pointer over changed nothing.
+- Not the pixels, the format, the row pitch or the size: the same renderer
+  output displays correctly the moment it goes through `SetOverlayRaw`.
+- Not an error being swallowed: `EnsureOverlaySuccess` throws on any non-zero
+  `EVROverlayError`, and nothing ever threw.
+
+The one remaining difference between the surface that works and the surface
+that does not is **the overlay type**.
+
+This is exactly the risk the conversion brief called out — "`SetOverlayTexture`
+should behave identically on a dashboard overlay handle, but that is
+unverified... if a dashboard overlay behaves differently, that changes the shape
+of this work and should be reported, not worked around quietly." It does behave
+differently. Reporting it.
+
+**Correction to row 2.** The "dashboard blink is gone" result recorded above is
+**invalid and should not be relied on**. A panel that never updates cannot
+blink. That row measured nothing. The chat result is unaffected — chat visibly
+updates, so its blink-free behaviour is real.
+
+### Where this leaves the conversion
+
+| Surface | Path | Blink |
+|---|---|---|
+| Chat | `SetOverlayTexture` | Gone — genuinely verified |
+| Notifications | `SetOverlayTexture` | Gone |
+| Test overlay | `SetOverlayTexture` | N/A, static |
+| **Dashboard** | **`SetOverlayRaw`** | **Still blinks** |
+
+The dashboard is back on `SetOverlayRaw` by default, which restores a working
+UI. It keeps the other half of the conversion: the PNG-encode, the disk write,
+the SteamVR file decode and the whole `_imageSequence`/`_oldImagesCleaned`
+cleanup path are still gone, so a page change is now a memory copy rather than
+an encode-write-decode round trip. That was worth doing on its own.
+
+A tray developer toggle — **Chat test harness → Dashboard via
+SetOverlayTexture** — flips it back so this finding can be re-checked after a
+SteamVR update without a rebuild.
+
+### If the dashboard blink is worth pursuing further
+
+Not attempted here, in rough order of cost:
+
+1. **`SetOverlayRenderingPid`.** `openvr.h` notes `SetOverlayTexture` "can only
+   be called by the overlay's creator or renderer process". The worker does
+   create the overlay, so this should already hold — but it is the only
+   documented precondition on the call and it has not been tested explicitly.
+2. **A regular overlay positioned as a dashboard replacement**, rather than a
+   `CreateDashboardOverlay` one. Regular overlays demonstrably work. This costs
+   the SteamVR taskbar integration and the dashboard's own input handling, which
+   is a large trade for a blink.
+3. **A keyed-mutex shared texture** (`SHARED_KEYEDMUTEX` rather than `SHARED`).
+   The correct cross-device sharing primitive, and it is not known whether
+   SteamVR's overlay path acquires it.
+
+`README.md` has been narrowed accordingly: the blink is recorded as a
+dashboard-only limitation, with chat and notifications stated as fixed and the
+dashboard-overlay behaviour named as the reason the last surface still has it.
+
+### Closed, 2026-07-30
+
+Rows 15–17 all pass. The split above is confirmed and reproducible: ticking the
+developer override freezes the dashboard on demand, and unticking recovers it.
+That makes this a characterised SteamVR behaviour with a working default rather
+than an open bug.
+
+**What shipped:** chat, notifications and the test overlay are blink-free on
+`SetOverlayTexture` with a shared Direct3D 11 device, per-overlay persistent
+textures, recoverable device loss and `SetOverlayRaw` as the fallback. The
+dashboard is on `SetOverlayRaw` and still blinks, but has lost the PNG encode,
+the disk write, the SteamVR file decode and the image-cleanup machinery — a
+page change is now a memory copy.
+
+**What is open:** the dashboard blink, with three untried leads listed above.
+Worth its own narrow experiment if it is ever worth pursuing; it should not be
+bundled into other work.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 15 | Open the dashboard, run the full wizard (create/edit/delete), use the Settings tab | Everything works exactly as it did before this conversion — the dashboard is back on the path it always used | **PASS** — user-confirmed: the VR UI shows up and works; the dashboard blink is back, as expected on the CPU path |
+| 16 | Send chat messages; trigger a notification | Still no blink on either — the half of the conversion that works is intact | **PASS** — user-confirmed: chat still has no blink |
+| 17 | Tray → Chat test harness → tick **Dashboard via SetOverlayTexture**, then click around the dashboard | The panel freezes again. Confirms the finding is about the overlay type and is reproducible on demand; untick to recover | **PASS** — user-confirmed: ticking the override freezes the VR UI on demand. The finding is reproducible, not a one-off |

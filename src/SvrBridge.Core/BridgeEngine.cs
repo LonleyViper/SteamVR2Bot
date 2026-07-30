@@ -342,6 +342,49 @@ public sealed class BridgeEngine
     }
 
     /// <summary>
+    /// Developer-only override: puts the SteamVR dashboard back on
+    /// <c>SetOverlayTexture</c> so the finding that a dashboard overlay handle
+    /// never displays one can be re-checked after a SteamVR update.
+    /// </summary>
+    /// <returns>False when no SteamVR session is running to switch.</returns>
+    public bool SetDashboardTexturePathEnabled(bool enabled)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.SetDashboardTexturePathEnabled(enabled);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Developer-only override: switches the chat window, notifications and
+    /// the VR test overlay between the default <c>SetOverlayRaw</c> path and
+    /// the persistent-texture path, together - see
+    /// <c>OverlayTextureUploader.TexturePathEnabled</c>. Unlike the dashboard
+    /// override this defaults false-to-true, not true-to-false: those three
+    /// surfaces ship with the texture path off until a developer opts in.
+    /// </summary>
+    /// <returns>False when no SteamVR session is running to switch.</returns>
+    public bool SetOverlayTexturePathEnabled(bool enabled)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.SetOverlayTexturePathEnabled(enabled);
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Hands the worker a fresh Twitch/BetterTTV/FrankerFaceZ/7TV emote name
     /// → image URL lookup, fetched once by the tray process from
     /// Streamer.bot's own <c>TwitchGetEmotes</c> request.
@@ -406,7 +449,6 @@ public sealed class BridgeEngine
 
     public async Task ShowDashboardAsync(
         AppConfig config,
-        string imagePath,
         IReadOnlyList<ShortcutConfig> shortcuts,
         IReadOnlyList<StreamerBotAction> actions,
         bool activate = true,
@@ -417,14 +459,14 @@ public sealed class BridgeEngine
         {
             if (_currentInput is not null)
             {
-                _currentInput.ShowDashboard(imagePath, shortcuts, actions, activate);
+                _currentInput.ShowDashboard(shortcuts, actions, activate);
                 PublishCreatedShortcuts(_currentInput);
                 return;
             }
 
             if (_dashboardInput is not null)
             {
-                _dashboardInput.ShowDashboard(imagePath, shortcuts, actions, activate);
+                _dashboardInput.ShowDashboard(shortcuts, actions, activate);
                 PublishCreatedShortcuts(_dashboardInput);
                 return;
             }
@@ -439,7 +481,7 @@ public sealed class BridgeEngine
             cancellationToken);
         try
         {
-            dashboardInput.ShowDashboard(imagePath, shortcuts, actions, activate);
+            dashboardInput.ShowDashboard(shortcuts, actions, activate);
             lock (_inputGate)
             {
                 _dashboardInput = dashboardInput;

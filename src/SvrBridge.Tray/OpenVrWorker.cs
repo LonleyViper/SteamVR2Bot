@@ -180,6 +180,23 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         SendCommand(new OpenVrWorkerCommand("emoteCatalog", EmoteCatalog: catalog));
 
     /// <summary>
+    /// Developer-only override: puts the SteamVR dashboard back on
+    /// <c>SetOverlayTexture</c>. Fire-and-forget - the worker logs which path
+    /// it is on, and the headset is the actual result.
+    /// </summary>
+    public void SetDashboardTexturePathEnabled(bool enabled) =>
+        SendCommand(new OpenVrWorkerCommand("dashboardTexturePath", Enabled: enabled));
+
+    /// <summary>
+    /// Developer-only override: switches the chat window, notifications and
+    /// the VR test overlay onto the persistent-texture path, together - off
+    /// by default. Fire-and-forget, for the same reason as
+    /// <see cref="SetDashboardTexturePathEnabled"/>.
+    /// </summary>
+    public void SetOverlayTexturePathEnabled(bool enabled) =>
+        SendCommand(new OpenVrWorkerCommand("overlayTexturePath", Enabled: enabled));
+
+    /// <summary>
     /// Fire-and-forget, for the same reason as <see cref="SetEmoteCatalog"/>:
     /// the caller (<c>TrayApplicationContext.SaveAndApplySettingsAsync</c>)
     /// only sends this when it has already decided a restart is unnecessary,
@@ -198,11 +215,7 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
     public void ApplyControlCommand(StreamerBotEventPayload payload) =>
         SendCommand(new OpenVrWorkerCommand("control", Payload: payload));
 
-    public void ShowDashboard(string imagePath)
-        => ShowDashboard(imagePath, [], []);
-
     public void ShowDashboard(
-        string imagePath,
         IReadOnlyList<ShortcutConfig> shortcuts,
         IReadOnlyList<StreamerBotAction> actions,
         bool activate = true)
@@ -221,7 +234,6 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
                 new OpenVrWorkerCommand(
                     "showDashboard",
                     requestId,
-                    imagePath,
                     shortcuts,
                     actions,
                     activate));
@@ -688,6 +700,21 @@ internal static class OpenVrWorker
             // here so it can be applied the moment chatOverlay is created,
             // rather than being silently lost.
             IReadOnlyDictionary<string, string>? latestEmoteCatalog = null;
+            // One Direct3D device for every overlay in this worker - the
+            // dashboard, chat, notifications and the test overlay. Created
+            // eagerly rather than on first upload so its own log line lands at
+            // start-up, where a machine with no usable GPU is worth noticing,
+            // rather than in the middle of the first chat burst. Textures stay
+            // per-overlay; only the device is shared.
+            using var textureDevice = new D3D11OverlayDevice(
+                message => Emit(new OpenVrWorkerMessage("log", Message: message)));
+
+            // Off unless a developer opts in from the tray menu - see the
+            // "overlayTexturePath" command below. Read by every overlay's
+            // TryCreate below, and re-applied to whichever of the three
+            // already exist so opting in also affects surfaces created before
+            // the toggle was flipped.
+            var overlayTexturePathEnabled = false;
 
             // Shared by the "notify"/"chat" command handlers (lazy, on first
             // message - unchanged from before Phase 4b) and the VR settings
@@ -703,13 +730,18 @@ internal static class OpenVrWorker
 
                 notificationOverlay = NotificationOverlay.TryCreate(
                     openVr,
+                    textureDevice,
                     notificationOverride.EffectiveAnchor,
                     notificationOpacity,
                     notificationSizeScale,
                     message => Emit(new OpenVrWorkerMessage("log", Message: message)));
-                if (notificationOverlay is not null && notificationOverride.Hidden)
+                if (notificationOverlay is not null)
                 {
-                    notificationOverlay.SetHidden(true);
+                    notificationOverlay.SetTexturePathEnabled(overlayTexturePathEnabled);
+                    if (notificationOverride.Hidden)
+                    {
+                        notificationOverlay.SetHidden(true);
+                    }
                 }
             }
 
@@ -722,6 +754,7 @@ internal static class OpenVrWorker
 
                 chatOverlay = ChatOverlay.TryCreate(
                     openVr,
+                    textureDevice,
                     chatOverride.EffectiveAnchor,
                     chatOpacity,
                     chatSizeScale,
@@ -730,6 +763,7 @@ internal static class OpenVrWorker
 
                 if (chatOverlay is not null)
                 {
+                    chatOverlay.SetTexturePathEnabled(overlayTexturePathEnabled);
                     if (chatOverride.Hidden)
                     {
                         chatOverlay.SetHidden(true);
@@ -748,6 +782,7 @@ internal static class OpenVrWorker
                     {
                         chatOverlay.SetEmoteCatalog(latestEmoteCatalog);
                     }
+
                 }
             }
 
@@ -885,6 +920,32 @@ internal static class OpenVrWorker
                         }
                     }
 
+                    if (command.Kind == "dashboardTexturePath")
+                    {
+                        // Developer-only override, for re-checking the
+                        // dashboard-overlay finding after a SteamVR update.
+                        dashboard?.SetTexturePathEnabled(command.Enabled);
+                    }
+
+                    if (command.Kind == "overlayTexturePath")
+                    {
+                        // Developer-only opt-in, off by default - see
+                        // overlayTexturePathEnabled above. Applied to
+                        // whichever of the three already exist; the rest pick
+                        // it up from that same variable when EnsureXOverlay
+                        // or the "testOverlay" command creates them.
+                        overlayTexturePathEnabled = command.Enabled;
+                        chatOverlay?.SetTexturePathEnabled(command.Enabled);
+                        notificationOverlay?.SetTexturePathEnabled(command.Enabled);
+                        testOverlay?.SetTexturePathEnabled(command.Enabled);
+                        Emit(
+                            new OpenVrWorkerMessage(
+                                "log",
+                                Message: command.Enabled
+                                    ? "Chat, notifications and the test overlay are using SetOverlayTexture (developer override)."
+                                    : "Chat, notifications and the test overlay are using SetOverlayRaw."));
+                    }
+
                     if (command.Kind == "applySettings" && command.VrSettings is { } desktopSettings)
                     {
                         // A desktop-made appearance/anchor/enable change,
@@ -1003,8 +1064,10 @@ internal static class OpenVrWorker
                             {
                                 testOverlay = VrTestOverlay.TryCreate(
                                     openVr,
+                                    textureDevice,
                                     message => Emit(
                                         new OpenVrWorkerMessage("log", Message: message)));
+                                testOverlay?.SetTexturePathEnabled(overlayTexturePathEnabled);
                             }
                             else
                             {
@@ -1050,6 +1113,7 @@ internal static class OpenVrWorker
 
                             dashboard = new VrDashboardController(
                                 openVr,
+                                textureDevice,
                                 command.Shortcuts ?? [],
                                 command.Actions ?? [],
                                 command.Activate,
@@ -1090,6 +1154,7 @@ internal static class OpenVrWorker
                     testOverlay?.Dispose();
                     notificationOverlay?.Dispose();
                     chatOverlay?.Dispose();
+                    dashboard?.Dispose();
                     Emit(new OpenVrWorkerMessage("quit"));
                     return 0;
                 }
@@ -1260,7 +1325,6 @@ internal static class OpenVrWorker
 internal sealed record OpenVrWorkerCommand(
     string Kind,
     string? RequestId = null,
-    string? ImagePath = null,
     IReadOnlyList<ShortcutConfig>? Shortcuts = null,
     IReadOnlyList<StreamerBotAction>? Actions = null,
     bool Activate = true,

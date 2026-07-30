@@ -37,4 +37,8 @@
     <None Include="..\SvrBridge\assets\SteamVR2Bot.png" Link="SteamVR2Bot.png" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\SvrBridge\appsettings.example.json" Link="appsettings.example.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+  </ItemGroup>
 </Project>

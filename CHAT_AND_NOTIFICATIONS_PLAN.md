@@ -8,8 +8,11 @@ Decisions taken up front:
   and no Unity — see §4.
 - The chat window is **wrist-anchored**, permanently present, and **scales up and
   fades in on gaze** rather than being hidden until summoned.
-- Rendering is **WPF `RenderTargetBitmap` → `SetOverlayRaw`**. No NuGet
-  dependencies; the project currently has zero and that appears deliberate.
+- Rendering is **WPF `RenderTargetBitmap`**, delivered to SteamVR through a
+  **persistent Direct3D 11 texture via `SetOverlayTexture`**. *Revised
+  2026-07-29 — see §3 Risk 2.* This supersedes the original `SetOverlayRaw`
+  decision and the original zero-NuGet constraint: **Vortice.Windows is an
+  accepted dependency.**
 - **Streamer.bot owns all platform integration and filtering.** This app holds no
   Twitch/YouTube/Kick knowledge and subscribes to a single event,
   `General.Custom`. See §5c.
@@ -123,8 +126,36 @@ per repaint is not viable.
 
 **Add `SetOverlayRaw(handle, void* buffer, uint width, uint height, uint bytesPerPixel)`**
 and pass `BitmapData.Scan0` from a `LockBits` on the existing GDI+ bitmap
-straight through. No file, no encode, no cleanup. This is the single most
-important addition in the whole plan.
+straight through. No file, no encode, no cleanup.
+
+### Revision, 2026-07-29 — `SetOverlayRaw` was not far enough
+
+`SetOverlayRaw` removed the disk write and PNG decode, but **both CPU upload
+paths visibly blink on every texture write** — chat on `SetOverlayRaw`, the
+dashboard on `SetOverlayFromFile`. An investigation recorded in
+`LIVE_TEST_RESULTS.md` established this was not application slowness (updates
+measure 15–32 ms) and not introduced by any phase of this work — the untouched
+Tolerance slider reproduces it — and concluded it was inherent SteamVR
+behaviour.
+
+**That conclusion was too broad, and a spike disproved it.** Both paths tested
+were the same mechanism: a CPU buffer handed to SteamVR, which allocates and
+uploads. Note that `SetOverlayRaw` takes *dimensions on every call*, implying
+SteamVR treats each write as a new texture. The untested family was
+`SetOverlayTexture` with a GPU texture, which desktop-mirror and video overlays
+use at video rates without blinking.
+
+The spike confirmed it: **a persistent Direct3D 11 texture written in place and
+delivered via `SetOverlayTexture` removes the blink.**
+
+Consequences:
+
+- **Vortice.Windows is now an accepted NuGet dependency.** The zero-package
+  state was a convention inferred from the csproj files, not a requirement, and
+  the blink was judged to cost more than the dependency.
+- WPF and GDI+ still do all the drawing. Only the delivery changed.
+- `SetOverlayRaw` remains as the fallback path when no D3D11 device is
+  available.
 
 ### Risk 3 — vtable indices are unforgiving
 

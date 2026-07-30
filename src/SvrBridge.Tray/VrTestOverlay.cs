@@ -27,6 +27,7 @@ internal sealed class VrTestOverlay : IDisposable
     private const int TextureHeight = 256;
 
     private readonly VrOverlaySurface _surface;
+    private readonly OverlayTextureUploader _uploader;
     private readonly Action<string> _log;
 
     // The index the transform is currently bound to. Kept only to notice when
@@ -35,9 +36,21 @@ internal sealed class VrTestOverlay : IDisposable
     private bool _warnedAboutMissingController;
     private bool _disposed;
 
-    private VrTestOverlay(VrOverlaySurface surface, Action<string> log)
+    private VrTestOverlay(
+        VrOverlaySurface surface,
+        IOverlayTextureSource textureSource,
+        Action<string> log)
     {
         _surface = surface;
+        _uploader = new OverlayTextureUploader(
+            new VrOverlaySurfaceUploadTarget(surface),
+            textureSource,
+            "The VR test overlay",
+            log)
+        {
+            // Default off - see ChatOverlay's identical gate for why.
+            TexturePathEnabled = false
+        };
         _log = log;
     }
 
@@ -46,7 +59,10 @@ internal sealed class VrTestOverlay : IDisposable
     /// this SteamVR version has no overlay interface, which is not worth
     /// failing the worker over.
     /// </summary>
-    public static VrTestOverlay? TryCreate(OpenVrInput openVr, Action<string> log)
+    public static VrTestOverlay? TryCreate(
+        OpenVrInput openVr,
+        IOverlayTextureSource textureSource,
+        Action<string> log)
     {
         if (!openVr.SupportsOverlaySurfaces)
         {
@@ -68,7 +84,7 @@ internal sealed class VrTestOverlay : IDisposable
         var surface = openVr.CreateOverlaySurface(OverlayKey, "SteamVR2Bot test overlay");
         try
         {
-            var overlay = new VrTestOverlay(surface, log);
+            var overlay = new VrTestOverlay(surface, textureSource, log);
             overlay.Paint();
             surface.SetWidthInMeters(0.25f);
             surface.SetAlpha(0.9f);
@@ -99,6 +115,13 @@ internal sealed class VrTestOverlay : IDisposable
     /// is the only way to survive it.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Developer-only: switches this surface between the default
+    /// <c>SetOverlayRaw</c> path and the persistent-texture path - see
+    /// <see cref="ChatOverlay.SetTexturePathEnabled"/> for the rationale.
+    /// </summary>
+    public void SetTexturePathEnabled(bool enabled) => _uploader.TexturePathEnabled = enabled;
+
     public void Tick(OpenVrInput openVr)
     {
         if (_disposed)
@@ -147,12 +170,17 @@ internal sealed class VrTestOverlay : IDisposable
 
         _disposed = true;
         _surface.Dispose();
+        // After the surface: SteamVR holds a reference to the texture until
+        // DestroyOverlay releases it.
+        _uploader.Dispose();
     }
 
     /// <summary>
     /// Fills one texture and hands the pixels straight to SteamVR - no PNG, no
-    /// disk, no decode. This is the path the chat window needs and the reason
-    /// <c>SetOverlayRaw</c> was added.
+    /// disk, no decode. Painted exactly once, at creation: nothing on this
+    /// panel changes, so it never sees the blink the repainting surfaces do -
+    /// but it goes through the same uploader as the rest so there is one
+    /// upload path in the app rather than one plus an exception.
     /// </summary>
     private void Paint()
     {
@@ -187,18 +215,17 @@ internal sealed class VrTestOverlay : IDisposable
                 centred);
         }
 
-        _surface.SetTexture(
-            ToRgba(bitmap),
-            TextureWidth,
-            TextureHeight);
+        _uploader.Upload(ToRgba(bitmap), TextureWidth, TextureHeight);
     }
 
     /// <summary>
-    /// GDI+ <c>Format32bppArgb</c> is BGRA in memory on little-endian Windows;
-    /// <c>SetOverlayRaw</c> wants RGBA. Without the swap the overlay renders
-    /// with red and blue exchanged, which looks like a plausible colour choice
-    /// rather than a bug - so it is worth stating why this calls
-    /// <see cref="OverlayPixelFormat.SwapRedAndBlue"/> below.
+    /// GDI+ <c>Format32bppArgb</c> is straight alpha, BGRA in memory on
+    /// little-endian Windows; every overlay upload path wants straight-alpha
+    /// RGBA. Without the swap the overlay renders with red and blue exchanged,
+    /// which looks like a plausible colour choice rather than a bug - so it is
+    /// worth stating why this calls
+    /// <see cref="OverlayPixelFormat.ConvertGdiBgra32ToRgba"/> below, and why
+    /// that is a swap only with no un-premultiply.
     /// </summary>
     private static byte[] ToRgba(Bitmap bitmap)
     {
@@ -219,7 +246,7 @@ internal sealed class VrTestOverlay : IDisposable
                     bitmap.Width * 4);
             }
 
-            OverlayPixelFormat.SwapRedAndBlue(pixels);
+            OverlayPixelFormat.ConvertGdiBgra32ToRgba(pixels);
             return pixels;
         }
         finally
