@@ -112,6 +112,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 CheckOnClick = true,
                 Checked = false
             };
+        // The open question the next phase's design depends on: does an
+        // overlay that accepts laser input swallow the trigger from a running
+        // VR game? Not a checkbox - it starts a bounded probe that ends by
+        // itself, because a positive result means the wearer's game input is
+        // broken and the tray menu is on a monitor they cannot see.
+        var chatInputProbe =
+            new ToolStripMenuItem("Probe chat laser input for 60s (developer)");
         chatTestHarness.DropDownItems.AddRange(
         [
             injectBurst,
@@ -121,7 +128,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             injectUnknownEmote,
             new ToolStripSeparator(),
             dashboardTexturePath,
-            overlayTexturePath
+            overlayTexturePath,
+            chatInputProbe
         ]);
         var exit = new ToolStripMenuItem("Exit");
 
@@ -153,6 +161,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             InjectDeveloperChatMessages([BuildUnknownEmoteChatMessage()], "Unknown-emote message");
         dashboardTexturePath.Click += (_, _) => ToggleDashboardTexturePath(dashboardTexturePath);
         overlayTexturePath.Click += (_, _) => ToggleOverlayTexturePath(overlayTexturePath);
+        chatInputProbe.Click += (_, _) => StartChatInputProbe();
         exit.Click += (_, _) => ExitApplication();
 
         menu.Items.AddRange(
@@ -1201,6 +1210,59 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 new BridgeActivity(
                     "openvr.test_overlay_failed",
                     $"The VR test overlay could not be shown: {exception.Message}",
+                    BridgeLogLevel.Warning));
+        }
+    }
+
+    /// <summary>
+    /// Starts the laser-input probe on the chat window: it accepts the SteamVR
+    /// laser pointer for 60 seconds and then stops by itself.
+    /// <para>
+    /// Answers the question the next phase needs - point a controller at the
+    /// chat window inside a running VR game and pull the trigger; does the
+    /// game still receive it, or does the overlay take it? Deliberately
+    /// self-limiting: if the overlay does take it, the wearer's game input is
+    /// broken until the probe ends, and they cannot reach this menu from
+    /// inside the headset.
+    /// </para>
+    /// </summary>
+    private void StartChatInputProbe()
+    {
+        if (!_settings.ChatEnabled)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "chat.input_probe_skipped",
+                    "The laser input probe was skipped: turn on chat in Settings first.",
+                    BridgeLogLevel.Warning));
+            return;
+        }
+
+        try
+        {
+            if (_engine.StartChatInputProbe())
+            {
+                OnActivity(
+                    new BridgeActivity(
+                        "chat.input_probe",
+                        "Laser input probe started on the chat window for 60 seconds. Point a "
+                        + "controller at it inside a running VR game and pull the trigger.",
+                        BridgeLogLevel.Info));
+                return;
+            }
+
+            OnActivity(
+                new BridgeActivity(
+                    "chat.input_probe_unavailable",
+                    "Start SteamVR and send a chat message before probing laser input.",
+                    BridgeLogLevel.Warning));
+        }
+        catch (Exception exception)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "chat.input_probe_failed",
+                    $"The laser input probe could not be started: {exception.Message}",
                     BridgeLogLevel.Warning));
         }
     }

@@ -180,6 +180,14 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         SendCommand(new OpenVrWorkerCommand("emoteCatalog", EmoteCatalog: catalog));
 
     /// <summary>
+    /// Developer-only probe: turns the chat window's laser input on for a
+    /// bounded window that ends by itself. Fire-and-forget - the log records
+    /// both ends of it, and the headset is the actual result.
+    /// </summary>
+    public void StartChatInputProbe() =>
+        SendCommand(new OpenVrWorkerCommand("chatInputProbe"));
+
+    /// <summary>
     /// Developer-only override: puts the SteamVR dashboard back on
     /// <c>SetOverlayTexture</c>. Fire-and-forget - the worker logs which path
     /// it is on, and the headset is the actual result.
@@ -918,6 +926,17 @@ internal static class OpenVrWorker
                                     "log",
                                     Message: $"A chat message could not be shown: {exception.Message}"));
                         }
+                    }
+
+                    if (command.Kind == "chatInputProbe")
+                    {
+                        // Environment.TickCount64, matching the clock Tick is
+                        // called with below - the probe's expiry compares the
+                        // two, so a different clock here would never expire it
+                        // or would expire it instantly.
+                        // Only meaningful once the chat window exists; there is
+                        // nothing to point a controller at before that.
+                        chatOverlay?.StartInputProbe(Environment.TickCount64);
                     }
 
                     if (command.Kind == "dashboardTexturePath")

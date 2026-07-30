@@ -151,13 +151,27 @@ Buttons, `SetOverlayInputMethod` on chat, and the reposition handle were
 deliberately excluded from this work so they would land on a converted, stable
 substrate. That substrate now exists for the regular overlays.
 
-One probe was scoped for this session and **not run**: temporarily enabling
-`SetOverlayInputMethod` on the chat overlay, getting into a VR game, and
-pointing a controller at the chat window to see whether the game still receives
-the trigger or the overlay consumes it. It needs a headset and a running game.
-The next phase's design depends on the answer, so it is worth doing first and
-on its own — note the existing memory that a global-priority action set already
-steals input from running games.
+The probe that answers the design question is **built and ready but not yet
+run**: does an overlay that accepts laser input swallow the trigger from a
+running VR game?
+
+Tray → **Chat test harness (developer)** → **Probe chat laser input for 60s**.
+It is a one-shot action, not a checkbox, and `ChatOverlay` turns it off again by
+itself after 60 seconds. That is deliberate: if the answer is "yes, it eats the
+trigger", the wearer is inside a game with broken input and the tray menu is on
+a monitor they cannot see, so a plain toggle would mean taking the headset off
+to undo. The expiry runs before the hidden/shown branches in `Tick`, so a
+`hide` control command cannot strand it on, and `Dispose` turns it off too.
+
+The five-row matrix is in `LIVE_TEST_RESULTS.md`. **Run row 1 first** — it is
+the control that separates this question from the already-known action-set
+priority behaviour, which independently takes grip/trigger/trackpad/menu from
+running games. Without it, a negative result is unattributable.
+
+What turns on the answer: if the game still gets the trigger, buttons can live
+on a persistent overlay. If not, interactive controls have to be gated behind
+something explicit — a summon gesture, or only while the dashboard is open —
+which is a materially different design.
 
 ## Untracked, deliberately
 

@@ -775,6 +775,11 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
             _overlay!.Value.SetOverlayWidthInMeters(handle, widthInMeters),
             "SetOverlayWidthInMeters");
 
+    void IVrOverlayApi.SetOverlayInputMethod(ulong handle, int inputMethod) =>
+        EnsureOverlaySuccess(
+            _overlay!.Value.SetOverlayInputMethod(handle, inputMethod),
+            "SetOverlayInputMethod");
+
     void IVrOverlayApi.ShowOverlay(ulong handle) =>
         EnsureOverlaySuccess(_overlay!.Value.ShowOverlay(handle), "ShowOverlay");
 

@@ -112,6 +112,9 @@ internal interface IVrOverlayApi
 
     void SetOverlayWidthInMeters(ulong handle, float widthInMeters);
 
+    /// <summary>0 is <c>None</c>, 1 is <c>Mouse</c> - the laser pointer.</summary>
+    void SetOverlayInputMethod(ulong handle, int inputMethod);
+
     void ShowOverlay(ulong handle);
 
     void HideOverlay(ulong handle);
@@ -245,6 +248,31 @@ public sealed class VrOverlaySurface : IDisposable
         }
 
         _api.SetOverlayTexture(_handle, nativeD3D11Texture);
+    }
+
+    /// <summary>
+    /// Turns the SteamVR laser pointer on or off for this overlay.
+    /// <para>
+    /// <b>This is not a feature, it is a probe, and it can take input away from
+    /// a running VR game.</b> Whether an overlay that accepts laser input
+    /// swallows the trigger from the game underneath it is the open question
+    /// the next phase's design depends on - see the probe in
+    /// <c>LIVE_TEST_RESULTS.md</c>. Nothing turns this on in normal operation,
+    /// and the one caller that does turns it off again on a timer precisely
+    /// because the failure mode is "the wearer cannot use their game".
+    /// </para>
+    /// <para>
+    /// Related and already known: this app's global-priority action set
+    /// already takes grip, trigger, trackpad and menu from a running game -
+    /// see the action-set priority note. That is a separate mechanism from
+    /// this one, and a result here has to be read against it rather than
+    /// confused with it.
+    /// </para>
+    /// </summary>
+    public void SetAcceptsLaserInput(bool accepts)
+    {
+        ThrowIfDisposed();
+        _api.SetOverlayInputMethod(_handle, accepts ? 1 : 0);
     }
 
     /// <summary>

@@ -89,6 +89,16 @@ public interface IOpenVrSession : IDisposable
     }
 
     /// <summary>
+    /// Developer-only probe: turns the SteamVR laser pointer on for the chat
+    /// window for a bounded window, to find out whether an overlay that
+    /// accepts laser input swallows the trigger from a running VR game. A
+    /// no-op by default, for the same reason as <see cref="ShowNotification"/>.
+    /// </summary>
+    void StartChatInputProbe()
+    {
+    }
+
+    /// <summary>
     /// Applies a Streamer.bot <c>control</c> payload - show/hide/clear/anchor
     /// on the session's overlay surfaces. A no-op by default, for the same
     /// reason as <see cref="ShowNotification"/>.

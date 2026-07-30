@@ -2146,3 +2146,71 @@ bundled into other work.
 | 15 | Open the dashboard, run the full wizard (create/edit/delete), use the Settings tab | Everything works exactly as it did before this conversion — the dashboard is back on the path it always used | **PASS** — user-confirmed: the VR UI shows up and works; the dashboard blink is back, as expected on the CPU path |
 | 16 | Send chat messages; trigger a notification | Still no blink on either — the half of the conversion that works is intact | **PASS** — user-confirmed: chat still has no blink |
 | 17 | Tray → Chat test harness → tick **Dashboard via SetOverlayTexture**, then click around the dashboard | The panel freezes again. Confirms the finding is about the overlay type and is reproducible on demand; untick to recover | **PASS** — user-confirmed: ticking the override freezes the VR UI on demand. The finding is reproducible, not a one-off |
+
+## Probe — does an overlay that accepts laser input steal the trigger from a running VR game? — not yet run
+
+### Why this is a probe and not a feature
+
+The next phase (buttons on the chat window, a reposition handle) needs to know
+whether turning on `SetOverlayInputMethod` costs the wearer their game input.
+Nothing in the shipping app enables it on a regular overlay; the dashboard has
+always had it, but the dashboard is only interactive while it is open, which is
+exactly when nothing else wants the trigger.
+
+**Read the result against the known action-set behaviour, not instead of it.**
+This app's global-priority action set already takes grip, trigger, trackpad and
+menu from a running game - that is a separate, already-documented mechanism.
+A "the game did not get it" result here has to be attributed to one or the
+other, so run the control row first.
+
+### How it is built, and why it ends by itself
+
+Tray → **Chat test harness (developer)** → **Probe chat laser input for 60s**.
+It is a one-shot action rather than a checkbox: it turns the SteamVR laser
+pointer on for the chat window, and `ChatOverlay` turns it off again 60 seconds
+later on its own.
+
+That is the whole design point. If the answer turns out to be "the overlay
+swallows the trigger", then the wearer is inside a VR game with broken input
+and the tray menu is on a monitor they cannot see. A plain toggle would require
+taking the headset off to undo. The expiry runs before the hidden/shown
+branches in `Tick`, so a `hide` control command cannot strand it on, and
+`Dispose` turns it off too.
+
+Not persisted, off at every launch, and the log records both ends of it.
+
+### Preparation
+
+Publish and launch `artifacts\publish\SteamVR2Bot.exe` (close any running
+instance first - the publish fails on a locked exe). Chat on, at least one chat
+message sent so the window exists. Start a real VR game that uses the trigger.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | **Control.** In the game, without starting the probe, pull the trigger normally, both while looking at the chat window and away from it | The game responds. Establishes the baseline, and separates this question from the known action-set priority behaviour - if the game already misses triggers here, stop: that is the action set, not the overlay | not run |
+| 2 | Start the probe from the tray, put the headset on, point a controller **away** from the chat window and pull the trigger | The game responds exactly as in row 1 - the probe should change nothing when the laser is not on the panel | not run |
+| 3 | Point the controller **at** the chat window and pull the trigger | **The question.** Does the game still receive it, or does the overlay consume it? | not run |
+| 4 | Wait for the 60 seconds to elapse without touching anything | The log records "the timer ran out, as designed", and the trigger behaves exactly as in row 1 again | not run |
+| 5 | Check the chat window still looks and behaves normally afterwards | Gaze grow/shrink, text updates and placement all unchanged - the probe touches input only | not run |
+
+### Result
+
+Not yet run.
+
+**If the game still gets the trigger** (rows 1 and 3 agree): buttons on the chat
+window are viable, and the next phase can put interactive controls on a
+persistent overlay without a mode switch.
+
+**If the overlay consumes it**: interactive controls need to be gated behind
+something explicit - a summon gesture, or only while the dashboard is open -
+rather than being live whenever the panel is. That is a materially different
+design, which is why this is worth answering before anything is built on it.
+
+### Not covered by an automated test, deliberately
+
+`ChatOverlay` needs a live `OpenVrInput` to construct and `IVrOverlayApi` is
+internal to `SvrBridge.Core`, so there is no seam a tray self-test could drive
+without widening visibility purely for a probe. The expiry is a single
+comparison against `Environment.TickCount64`, and the one real hazard - using a
+different clock in the worker's start command than `Tick` compares against -
+was caught by inspection before this shipped.

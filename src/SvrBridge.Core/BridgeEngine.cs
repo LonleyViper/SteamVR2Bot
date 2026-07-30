@@ -342,6 +342,27 @@ public sealed class BridgeEngine
     }
 
     /// <summary>
+    /// Developer-only probe: turns the SteamVR laser pointer on for the chat
+    /// window for a bounded window that ends by itself, to find out whether an
+    /// overlay that accepts laser input swallows the trigger from a running VR
+    /// game.
+    /// </summary>
+    /// <returns>False when no SteamVR session is running to probe.</returns>
+    public bool StartChatInputProbe()
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.StartChatInputProbe();
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Developer-only override: puts the SteamVR dashboard back on
     /// <c>SetOverlayTexture</c> so the finding that a dashboard overlay handle
     /// never displays one can be re-checked after a SteamVR update.

@@ -65,6 +65,21 @@ internal sealed class ChatOverlay : IDisposable
 
     private readonly OverlayTextureUploader _uploader;
 
+    /// <summary>
+    /// How long the laser-input probe stays on before turning itself off.
+    /// <para>
+    /// Bounded rather than a plain on/off switch because the thing being
+    /// probed is whether this overlay steals the trigger from a running VR
+    /// game. If it does, the wearer is mid-game with broken input and the tray
+    /// menu is on a monitor they cannot see - so the probe has to end on its
+    /// own. Long enough to look at the window and pull the trigger a few
+    /// times, short enough that a bad result is over quickly.
+    /// </para>
+    /// </summary>
+    private const long InputProbeDurationMs = 60_000;
+
+    private long? _inputProbeExpiresAtMs;
+
     private bool _hidden;
     private bool _shown = true;
     private readonly GazeScaleAnimation _gazeAnimation = new(SmallWidthMeters, SmallAlpha);
@@ -250,6 +265,11 @@ internal sealed class ChatOverlay : IDisposable
 
         _anchorTracker.Tick(openVr, _surface);
 
+        // Before the hidden/shown branches below, which both return early: a
+        // probe that is running must end on time whatever else the window is
+        // doing, including being hidden by a control command.
+        ExpireInputProbe(nowMs);
+
         if (_hidden)
         {
             if (_shown)
@@ -346,6 +366,58 @@ internal sealed class ChatOverlay : IDisposable
         return lengthSquared < 1e-6f ? -1f : direction.Z / MathF.Sqrt(lengthSquared);
     }
 
+    /// <summary>
+    /// Turns the SteamVR laser pointer on for the chat window for
+    /// <see cref="InputProbeDurationMs"/>, then off again by itself.
+    /// <para>
+    /// The one question the next phase's design depends on: pointing a
+    /// controller at this window and pulling the trigger while a VR game is
+    /// running - does the game still get the trigger, or does the overlay
+    /// swallow it? Developer-only, never persisted, off at every launch, and
+    /// self-limiting because a positive result means broken game input.
+    /// </para>
+    /// </summary>
+    public void StartInputProbe(long nowMs)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _surface.SetAcceptsLaserInput(true);
+        _inputProbeExpiresAtMs = nowMs + InputProbeDurationMs;
+        _log(
+            $"Laser input probe ON for the chat window for {InputProbeDurationMs / 1000} seconds. "
+            + "Point a controller at it in a running game and pull the trigger: does the game "
+            + "still get it? It turns itself off.");
+    }
+
+    /// <summary>
+    /// Ends the probe, whether because the timer ran out or because it was
+    /// switched off. Safe to call when no probe is running.
+    /// </summary>
+    public void StopInputProbe(bool expired = false)
+    {
+        if (_disposed || _inputProbeExpiresAtMs is null)
+        {
+            return;
+        }
+
+        _inputProbeExpiresAtMs = null;
+        _surface.SetAcceptsLaserInput(false);
+        _log(expired
+            ? "Laser input probe OFF for the chat window - the timer ran out, as designed."
+            : "Laser input probe OFF for the chat window.");
+    }
+
+    private void ExpireInputProbe(long nowMs)
+    {
+        if (_inputProbeExpiresAtMs is { } expiresAt && nowMs >= expiresAt)
+        {
+            StopInputProbe(expired: true);
+        }
+    }
+
     private void RepaintIfOwed(long nowMs)
     {
         var (snapshot, messagesVersion) = _messages.SnapshotWithVersion();
@@ -377,6 +449,22 @@ internal sealed class ChatOverlay : IDisposable
         if (_disposed)
         {
             return;
+        }
+
+        // Before _disposed is set, so it actually runs: leaving the laser
+        // pointer enabled on a surface that is about to be destroyed is
+        // harmless, but leaving it on across a worker restart that reuses the
+        // key would not be, and this costs nothing.
+        try
+        {
+            StopInputProbe();
+        }
+        catch (Exception)
+        {
+            // SteamVR may already have gone away, which is the common case
+            // during shutdown - the same reason VrOverlaySurface.Dispose
+            // swallows DestroyOverlay. Faulting here would mask whatever is
+            // actually tearing the session down.
         }
 
         _disposed = true;
