@@ -65,8 +65,7 @@ internal sealed class ChatOverlay : IDisposable
 
     private bool _hidden;
     private bool _shown = true;
-    private float _currentWidth = SmallWidthMeters;
-    private float _currentAlpha = SmallAlpha;
+    private readonly GazeScaleAnimation _gazeAnimation = new(SmallWidthMeters, SmallAlpha);
     private long? _lastAnimateMs;
     private bool _disposed;
 
@@ -258,13 +257,18 @@ internal sealed class ChatOverlay : IDisposable
 
         // Exponential ease towards the target rather than an instant jump,
         // so the transition reads as smooth motion - required by the manual
-        // "no flicker" check in the headset matrix.
-        var t = deltaMs <= 0 ? 1f : 1f - MathF.Exp(-deltaMs / SmoothingTimeConstantMs);
-        _currentWidth += (targetWidth - _currentWidth) * t;
-        _currentAlpha += (targetAlpha - _currentAlpha) * t;
+        // "no flicker" check in the headset matrix. The ease only asymptotes
+        // towards its target, so GazeScaleAnimation tracks convergence
+        // explicitly - once converged, Advance is a no-op and these two
+        // overlay calls are skipped rather than reissued forever at rest.
+        _gazeAnimation.SetTarget(targetWidth, targetAlpha);
+        if (!_gazeAnimation.Advance(deltaMs, SmoothingTimeConstantMs))
+        {
+            return;
+        }
 
-        _surface.SetWidthInMeters(_currentWidth);
-        _surface.SetAlpha(_currentAlpha);
+        _surface.SetWidthInMeters(_gazeAnimation.Width);
+        _surface.SetAlpha(_gazeAnimation.Alpha);
     }
 
     /// <summary>

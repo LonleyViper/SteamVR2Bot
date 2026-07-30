@@ -20,6 +20,7 @@ internal static class TraySelfTests
         TestChatRingBufferEviction();
         TestChatRepaintThrottleCoalescesBurst();
         TestChatGazeHysteresisNoOscillationAtBoundary();
+        TestGazeScaleAnimationConvergesAndStopsIssuingCalls();
         TestChatRenderWrapsLongUnbrokenString();
         TestChatRenderHandlesEmptyUsernameAndColour();
         TestChatRenderStylesEmoteTokensDistinctly();
@@ -1264,6 +1265,60 @@ internal static class TraySelfTests
         Assert(
             !hysteresis.Update(exitCosine - 0.01f),
             "Gaze hysteresis never exited once the gaze moved clearly past the exit boundary.");
+    }
+
+    /// <summary>
+    /// Proves the gaze-scale ease reaches an explicit converged state and, once
+    /// there, stops issuing the calls that would drive
+    /// <c>SetOverlayWidthInMeters</c>/<c>SetOverlayAlpha</c> - the bug behind
+    /// the dashboard/chat prompt's Part A: exponential easing only asymptotes
+    /// towards its target, so without this convergence check those two overlay
+    /// calls would fire on every tick, forever, even at rest. Also proves
+    /// re-asserting the same target every tick (exactly what
+    /// <see cref="ChatOverlay.AnimateGaze"/> does, since it recomputes the
+    /// target from the gaze verdict on every call) does not itself re-open a
+    /// converged animation, and that a genuine target change does.
+    /// </summary>
+    private static void TestGazeScaleAnimationConvergesAndStopsIssuingCalls()
+    {
+        var animation = new SvrBridge.Core.GazeScaleAnimation(0.12f, 0.35f);
+        Assert(animation.IsConverged, "A freshly created gaze animation was not already converged at its own initial value.");
+        Assert(!animation.Advance(10f, 150f), "A converged gaze animation issued a call with no target change.");
+
+        animation.SetTarget(0.32f, 0.95f);
+        Assert(!animation.IsConverged, "Setting a new target did not leave the converged state.");
+
+        var advanceCalls = 0;
+        for (var tick = 0; tick < 1000 && !animation.IsConverged; tick++)
+        {
+            // Re-assert the same target every tick, exactly as AnimateGaze
+            // does from the gaze verdict, to prove that alone cannot prevent
+            // convergence.
+            animation.SetTarget(0.32f, 0.95f);
+            if (animation.Advance(10f, 150f))
+            {
+                advanceCalls++;
+            }
+        }
+
+        Assert(animation.IsConverged, "The gaze animation never converged within 10 seconds of simulated ticks.");
+        Assert(advanceCalls > 0, "The gaze animation converged without ever issuing a call, which would mean it never actually moved.");
+        Assert(
+            animation.Width == 0.32f && animation.Alpha == 0.95f,
+            "The gaze animation did not snap exactly to its target once converged.");
+
+        for (var tick = 0; tick < 50; tick++)
+        {
+            animation.SetTarget(0.32f, 0.95f);
+            Assert(
+                !animation.Advance(10f, 150f),
+                "A converged gaze animation issued a call even though its target had not changed - "
+                + "steady state must be zero overlay calls per tick.");
+        }
+
+        animation.SetTarget(0.12f, 0.35f);
+        Assert(!animation.IsConverged, "Changing the target after convergence did not re-open the animation.");
+        Assert(animation.Advance(10f, 150f), "A freshly re-opened gaze animation issued no call on its first tick.");
     }
 
     /// <summary>
