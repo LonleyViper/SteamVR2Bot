@@ -33,6 +33,13 @@ public enum OverlayAnchorHand
 /// an unproven offset invented for the occasion.
 /// </para>
 /// <para>
+/// Since Phase 5 those two transforms are the <b>defaults</b> rather than the
+/// only values: the chat window's offset is user-owned, dragged by hand in the
+/// headset and persisted per anchor mode - see <see cref="OverlayPlacement"/>.
+/// <see cref="Offset"/> remains what a surface with no saved placement of its
+/// own uses, which is still every surface but chat.
+/// </para>
+/// <para>
 /// World-lock - an anchor with no tracked device at all, placed once in the
 /// room - is a deliberate deferral, not a missing case here. It needs
 /// <c>SetOverlayTransformAbsolute</c> (a different OpenVR call the
@@ -67,7 +74,11 @@ public readonly record struct OverlayAnchor(OverlayAnchorMode Mode, OverlayAncho
 
     public static readonly OverlayAnchor Head = new(OverlayAnchorMode.Head, OverlayAnchorHand.Left);
 
-    /// <summary>The canonical, hardware-proven offset for this anchor's mode.</summary>
+    /// <summary>
+    /// The canonical, hardware-proven offset for this anchor's mode - the
+    /// default a surface uses when it has no user-placed
+    /// <see cref="OverlayPlacement"/> of its own.
+    /// </summary>
     public VrOverlayTransform Offset => Mode == OverlayAnchorMode.Head ? HeadOffset : ControllerOffset;
 }
 
@@ -92,18 +103,46 @@ public sealed class OverlayAnchorTracker
     private readonly string _surfaceName;
     private readonly Action<string> _log;
     private OverlayAnchor _anchor;
+    private OverlayPlacement _placement;
     private uint? _boundDeviceIndex;
     private bool _warnedAboutMissingController;
 
-    public OverlayAnchorTracker(string surfaceName, OverlayAnchor initialAnchor, Action<string> log)
+    /// <summary>
+    /// Set when the transform changed without the device index changing - a
+    /// hand drag, a reset, or a settings apply - so the next
+    /// <see cref="Tick"/> re-attaches without logging a re-attach the wearer
+    /// did not cause. Kept separate from <see cref="_boundDeviceIndex"/> for
+    /// exactly that reason: a drag re-attaches on every poll, and routing it
+    /// through the device-change path would fill the log at a hundred lines a
+    /// second.
+    /// </summary>
+    private bool _placementDirty;
+
+    public OverlayAnchorTracker(
+        string surfaceName,
+        OverlayAnchor initialAnchor,
+        Action<string> log,
+        OverlayPlacement? placement = null)
     {
         _surfaceName = surfaceName;
         _anchor = initialAnchor;
+        _placement = placement ?? OverlayPlacement.Default;
         _log = log;
     }
 
     /// <summary>The anchor currently in effect, including any transient override.</summary>
     public OverlayAnchor Anchor => _anchor;
+
+    /// <summary>The offsets currently in effect, one per anchor mode.</summary>
+    public OverlayPlacement Placement => _placement;
+
+    /// <summary>
+    /// The tracked device this surface is currently attached to, or null
+    /// before the first successful attach. Exposed so a grab can ask for that
+    /// device's pose - the panel's placement is expressed relative to it, so
+    /// moving the panel means knowing where it is.
+    /// </summary>
+    public uint? BoundDeviceIndex => _boundDeviceIndex;
 
     /// <summary>
     /// Changes which anchor to follow. A no-op when it is already the current
@@ -123,6 +162,23 @@ public sealed class OverlayAnchorTracker
         _boundDeviceIndex = null;
     }
 
+    /// <summary>
+    /// Changes where the surface sits relative to whichever device it follows
+    /// - a hand drag in progress, a reset, or a settings apply. A no-op when
+    /// the placement is unchanged, so this is safe to call every tick;
+    /// otherwise the next <see cref="Tick"/> re-attaches silently.
+    /// </summary>
+    public void SetPlacement(OverlayPlacement placement)
+    {
+        if (_placement.Equals(placement))
+        {
+            return;
+        }
+
+        _placement = placement;
+        _placementDirty = true;
+    }
+
     /// <summary>Re-resolves the device index and re-attaches the surface if it moved.</summary>
     public void Tick(OpenVrInput openVr, VrOverlaySurface surface)
     {
@@ -140,14 +196,19 @@ public sealed class OverlayAnchorTracker
         }
 
         _warnedAboutMissingController = false;
-        if (_boundDeviceIndex == deviceIndex.Value)
+        var deviceChanged = _boundDeviceIndex != deviceIndex.Value;
+        if (!deviceChanged && !_placementDirty)
         {
             return;
         }
 
-        surface.AttachToDevice(deviceIndex.Value, _anchor.Offset);
+        surface.AttachToDevice(deviceIndex.Value, _placement.ToTransform(_anchor.Mode));
         _boundDeviceIndex = deviceIndex.Value;
-        _log($"{_surfaceName} is following {DescribeAnchor()} (device {deviceIndex.Value}).");
+        _placementDirty = false;
+        if (deviceChanged)
+        {
+            _log($"{_surfaceName} is following {DescribeAnchor()} (device {deviceIndex.Value}).");
+        }
     }
 
     private uint? ResolveDeviceIndex(OpenVrInput openVr) =>

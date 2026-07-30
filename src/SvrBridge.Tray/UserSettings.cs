@@ -62,6 +62,16 @@ internal sealed record UserSettings
     /// <summary>Which hand <see cref="NotificationAnchorMode"/> follows in Controller mode.</summary>
     public OverlayAnchorHand NotificationAnchorHand { get; init; } = OverlayAnchorHand.Left;
 
+    /// <summary>
+    /// Where the chat window sits within its anchor, as last dragged by hand
+    /// in the headset - one offset per anchor mode. Defaults to
+    /// <see cref="OverlayPlacement.Default"/>, which is bit-for-bit the pair
+    /// of transforms Phases 1/2/3 proved on hardware, so a settings file
+    /// written before this field existed - and an install that has never
+    /// dragged anything - looks exactly as it always did.
+    /// </summary>
+    public OverlayPlacement ChatPlacement { get; init; } = OverlayPlacement.Default;
+
     public OverlayAnchor ChatAnchor => new(ChatAnchorMode, ChatAnchorHand);
 
     public OverlayAnchor NotificationAnchor => new(NotificationAnchorMode, NotificationAnchorHand);
@@ -83,6 +93,23 @@ internal sealed record UserSettings
 
     /// <summary>How readily the chat window's gaze detection triggers. See <see cref="Core.GazeSensitivity"/>.</summary>
     public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
+
+    /// <summary>
+    /// Whether the chat window grows and brightens when looked at. Off leaves
+    /// it at its configured size and opacity permanently; gaze is still
+    /// measured either way, since it is what gates the laser.
+    /// <para>
+    /// <b>Defaults to off, which deliberately breaks this file's usual
+    /// migration rule.</b> Every other setting here defaults to whatever the
+    /// app did before it existed, so an upgrade changes nothing. This one
+    /// does not: the animation was tried in the headset across a full phase
+    /// and found distracting to read against, and shipping a default that has
+    /// to be turned off before the window is comfortable is the wrong way
+    /// round. An install that has actually saved a preference keeps it - only
+    /// a file that predates the setting takes the new default.
+    /// </para>
+    /// </summary>
+    public bool ChatGazeScaleEnabled { get; init; }
 
     /// <summary>
     /// The notification panel's peak alpha while holding, 0.2-1.0. Defaults
@@ -156,12 +183,14 @@ internal sealed record UserSettings
                 CooldownMs = 250
             },
             ChatAnchor = ChatAnchor,
+            ChatPlacement = ChatPlacement,
             NotificationAnchor = NotificationAnchor,
             ChatEnabled = ChatEnabled,
             NotificationsEnabled = NotificationsEnabled,
             ChatOpacity = ChatOpacity,
             ChatSizeScale = ChatSizeScale,
             GazeSensitivity = GazeSensitivity,
+            ChatGazeScaleEnabled = ChatGazeScaleEnabled,
             NotificationOpacity = NotificationOpacity,
             NotificationSizeScale = NotificationSizeScale
         };
@@ -227,11 +256,13 @@ internal sealed class UserSettingsStore
             ChatEnabled = settings.ChatEnabled,
             ChatAnchorMode = settings.ChatAnchorMode,
             ChatAnchorHand = settings.ChatAnchorHand,
+            ChatPlacement = settings.ChatPlacement,
             NotificationAnchorMode = settings.NotificationAnchorMode,
             NotificationAnchorHand = settings.NotificationAnchorHand,
             ChatOpacity = settings.ChatOpacity,
             ChatSizeScale = settings.ChatSizeScale,
             GazeSensitivity = settings.GazeSensitivity,
+            ChatGazeScaleEnabled = settings.ChatGazeScaleEnabled,
             NotificationOpacity = settings.NotificationOpacity,
             NotificationSizeScale = settings.NotificationSizeScale
         };
@@ -299,6 +330,18 @@ internal sealed class UserSettingsStore
                 // already had - see the defaults on SavedSettings below.
                 ChatAnchorMode = saved.ChatAnchorMode,
                 ChatAnchorHand = saved.ChatAnchorHand,
+                // Absent from every settings file written before Phase 5,
+                // which is exactly the hardware-proven placement the chat
+                // window always had - see OverlayPlacement.Default.
+                //
+                // Sanitised rather than trusted, because "absent" is not the
+                // only way this arrives wrong. This field's shape changed once
+                // already, from three numbers per anchor mode to a full
+                // transform, and a file written before that reads back as an
+                // all-zero matrix - which is not absent, is not a
+                // deserialisation error, and collapses the chat window to
+                // nothing. See OverlayPlacement.Sanitised.
+                ChatPlacement = saved.ChatPlacement.Sanitised(),
                 NotificationAnchorMode = saved.NotificationAnchorMode,
                 NotificationAnchorHand = saved.NotificationAnchorHand,
                 // Absent from every settings file written before Phase 4b,
@@ -308,6 +351,7 @@ internal sealed class UserSettingsStore
                 ChatOpacity = saved.ChatOpacity,
                 ChatSizeScale = saved.ChatSizeScale,
                 GazeSensitivity = saved.GazeSensitivity,
+                ChatGazeScaleEnabled = saved.ChatGazeScaleEnabled,
                 NotificationOpacity = saved.NotificationOpacity,
                 NotificationSizeScale = saved.NotificationSizeScale
             };
@@ -394,11 +438,13 @@ internal sealed class UserSettingsStore
         public bool ChatEnabled { get; init; }
         public OverlayAnchorMode ChatAnchorMode { get; init; } = OverlayAnchorMode.Controller;
         public OverlayAnchorHand ChatAnchorHand { get; init; } = OverlayAnchorHand.Left;
+        public OverlayPlacement ChatPlacement { get; init; } = OverlayPlacement.Default;
         public OverlayAnchorMode NotificationAnchorMode { get; init; } = OverlayAnchorMode.Head;
         public OverlayAnchorHand NotificationAnchorHand { get; init; } = OverlayAnchorHand.Left;
         public double ChatOpacity { get; init; } = 0.95;
         public double ChatSizeScale { get; init; } = 1.0;
         public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
+        public bool ChatGazeScaleEnabled { get; init; }
         public double NotificationOpacity { get; init; } = 1.0;
         public double NotificationSizeScale { get; init; } = 1.0;
     }

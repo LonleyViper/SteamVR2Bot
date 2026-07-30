@@ -66,6 +66,96 @@ public readonly record struct VrOverlayTransform(
     }
 
     /// <summary>
+    /// The inverse of a <b>rigid</b> transform - one whose rotation block is
+    /// orthonormal, which every tracked-device pose and every composition of
+    /// them is.
+    /// <para>
+    /// Deliberately not a general matrix inverse. For a rigid transform the
+    /// answer is the transposed rotation and the negated, re-rotated
+    /// translation, which is exact, allocation-free and cannot be
+    /// ill-conditioned - where a general inverse would need a determinant that
+    /// is always 1 here anyway. It is named for the precondition so nobody
+    /// reaches for it on a matrix carrying scale or shear, where it silently
+    /// returns the wrong answer rather than failing.
+    /// </para>
+    /// </summary>
+    public VrOverlayTransform InverseRigid() => new(
+        M00, M10, M20, -((M00 * M03) + (M10 * M13) + (M20 * M23)),
+        M01, M11, M21, -((M01 * M03) + (M11 * M13) + (M21 * M23)),
+        M02, M12, M22, -((M02 * M03) + (M12 * M13) + (M22 * M23)));
+
+    /// <summary>
+    /// Whether this is a transform SteamVR can actually place a panel with:
+    /// every element finite, <b>and</b> a rotation block that is really a
+    /// rotation.
+    /// <para>
+    /// The finiteness half catches a pose read during a tracking dropout. The
+    /// orthonormality half catches something subtler and, on the evidence,
+    /// more likely: a value that is structurally present but meaningless. An
+    /// all-zero matrix is finite, deserialises without complaint from JSON
+    /// that simply had different property names, and is accepted by SteamVR
+    /// without an error - it collapses the overlay quad to nothing, so the
+    /// panel does not move or misdraw, it silently ceases to exist. That is
+    /// exactly what a settings file written before this type changed shape
+    /// produced, and no amount of "did an exception happen" tells you so.
+    /// </para>
+    /// <para>
+    /// The tolerance is loose because the legitimate values here are tracked
+    /// device poses composed with inverses of tracked device poses, which
+    /// accumulate real float error; it only has to be tight enough to reject
+    /// garbage, and zero is not a close call.
+    /// </para>
+    /// </summary>
+    public bool IsUsable()
+    {
+        if (!ToFloats().All(float.IsFinite))
+        {
+            return false;
+        }
+
+        const float tolerance = 0.01f;
+        return IsUnit(M00, M01, M02)
+               && IsUnit(M10, M11, M12)
+               && IsUnit(M20, M21, M22)
+               && IsPerpendicular(M00, M01, M02, M10, M11, M12)
+               && IsPerpendicular(M00, M01, M02, M20, M21, M22)
+               && IsPerpendicular(M10, M11, M12, M20, M21, M22);
+
+        static bool IsUnit(float x, float y, float z) =>
+            MathF.Abs(MathF.Sqrt((x * x) + (y * y) + (z * z)) - 1f) <= tolerance;
+
+        static bool IsPerpendicular(
+            float ax, float ay, float az,
+            float bx, float by, float bz) =>
+            MathF.Abs((ax * bx) + (ay * by) + (az * bz)) <= tolerance;
+    }
+
+    /// <summary>
+    /// This transform with its translation column brought inside
+    /// <paramref name="limitMeters"/> on every axis, rotation untouched.
+    /// </summary>
+    public VrOverlayTransform WithTranslationClamped(float limitMeters) => this with
+    {
+        M03 = Math.Clamp(M03, -limitMeters, limitMeters),
+        M13 = Math.Clamp(M13, -limitMeters, limitMeters),
+        M23 = Math.Clamp(M23, -limitMeters, limitMeters)
+    };
+
+    /// <summary>The twelve elements in declaration order - for persistence and validation, not arithmetic.</summary>
+    public float[] ToFloats() =>
+    [
+        M00, M01, M02, M03,
+        M10, M11, M12, M13,
+        M20, M21, M22, M23
+    ];
+
+    /// <summary>Rebuilds one from twelve elements at <paramref name="offset"/> - the inverse of <see cref="ToFloats"/>.</summary>
+    public static VrOverlayTransform FromFloats(IReadOnlyList<float> values, int offset) => new(
+        values[offset], values[offset + 1], values[offset + 2], values[offset + 3],
+        values[offset + 4], values[offset + 5], values[offset + 6], values[offset + 7],
+        values[offset + 8], values[offset + 9], values[offset + 10], values[offset + 11]);
+
+    /// <summary>
     /// Composition, read right to left as usual: <c>a * b</c> applies b first.
     /// The implied fourth row is (0, 0, 0, 1), so this is an ordinary 4x4
     /// multiply with the constant row elided.
@@ -84,6 +174,46 @@ public readonly record struct VrOverlayTransform(
         (a.M20 * b.M02) + (a.M21 * b.M12) + (a.M22 * b.M22),
         (a.M20 * b.M03) + (a.M21 * b.M13) + (a.M22 * b.M23) + a.M23);
 }
+
+/// <summary>Which laser-pointer event SteamVR delivered to an overlay.</summary>
+public enum OverlayMouseEventKind
+{
+    /// <summary>The pointer moved across the panel.</summary>
+    Move,
+
+    /// <summary>The trigger went down while pointing at the panel.</summary>
+    ButtonDown,
+
+    /// <summary>The trigger came back up.</summary>
+    ButtonUp,
+
+    /// <summary>The laser left the panel entirely.</summary>
+    FocusLeave
+}
+
+/// <summary>
+/// One laser-pointer event on an overlay.
+/// <para>
+/// <see cref="X"/> and <see cref="Y"/> are in whatever space
+/// <see cref="VrOverlaySurface.SetMouseScale"/> established, <b>exactly as
+/// SteamVR reported them</b> - which puts the origin at the bottom-left, the
+/// opposite of every panel this app draws. Flipping is left to the caller,
+/// which is the only layer that knows the panel's height; see
+/// <c>ChatOverlay</c>, and the same flip the dashboard already applies in
+/// <c>OpenVrInput.TryGetDashboardInteraction</c>.
+/// </para>
+/// <para>
+/// <see cref="DeviceIndex"/> is the controller that generated the event, which
+/// is how a caller tells which hand is doing the pointing. It can be
+/// <c>k_unTrackedDeviceIndexInvalid</c>, so callers must have an answer for
+/// "no hand resolved".
+/// </para>
+/// </summary>
+public readonly record struct OverlayMouseEvent(
+    OverlayMouseEventKind Kind,
+    float X,
+    float Y,
+    uint DeviceIndex);
 
 /// <summary>
 /// The overlay calls <see cref="VrOverlaySurface"/> needs, separated from the
@@ -114,6 +244,29 @@ internal interface IVrOverlayApi
 
     /// <summary>0 is <c>None</c>, 1 is <c>Mouse</c> - the laser pointer.</summary>
     void SetOverlayInputMethod(ulong handle, int inputMethod);
+
+    /// <summary>
+    /// One <c>VROverlayFlags</c> value, passed as the bit constant
+    /// <c>openvr.h</c> defines it as - see the existing
+    /// <c>SendVRDiscreteScrollEvents</c> (<c>1 &lt;&lt; 6</c>) call on the
+    /// dashboard.
+    /// </summary>
+    void SetOverlayFlag(ulong handle, int flag, bool enabled);
+
+    /// <summary>
+    /// The coordinate space overlay mouse events are reported in. Setting it
+    /// to the panel's own pixel size is what lets a hit test compare an event
+    /// straight against the rectangle table the renderer drew from.
+    /// </summary>
+    void SetOverlayMouseScale(ulong handle, float width, float height);
+
+    /// <summary>
+    /// Drains this overlay's event queue, appending every laser-pointer event
+    /// to <paramref name="into"/> and discarding the rest. Appends rather than
+    /// returning a new list so a caller polling every tick can reuse one
+    /// buffer.
+    /// </summary>
+    void PollOverlayMouseEvents(ulong handle, List<OverlayMouseEvent> into);
 
     void ShowOverlay(ulong handle);
 
@@ -273,6 +426,75 @@ public sealed class VrOverlaySurface : IDisposable
     {
         ThrowIfDisposed();
         _api.SetOverlayInputMethod(_handle, accepts ? 1 : 0);
+    }
+
+    /// <summary>
+    /// <c>VROverlayFlags_MakeOverlaysInteractiveIfVisible</c>, whose value
+    /// <c>openvr.h</c> gives as <c>1 &lt;&lt; 16</c>.
+    /// <para>
+    /// <b>This is the switch that actually turns the laser on, and
+    /// <see cref="SetAcceptsLaserInput"/> is not.</b> The header is explicit
+    /// about the division of labour: "if this is set and the overlay's input
+    /// method is not none, the system-wide laser mouse mode will be activated
+    /// whenever this overlay is visible." An input method on its own only
+    /// declares that this overlay would accept mouse events if any were being
+    /// generated; outside the dashboard, none are. Phase 5's first headset run
+    /// failed on exactly that gap - the move handle never received a click
+    /// because SteamVR was never pointing anything at it.
+    /// </para>
+    /// <para>
+    /// <b>System-wide, and that word is the whole risk.</b> This does not make
+    /// one overlay interactive - it puts SteamVR into laser mouse mode for as
+    /// long as this overlay is visible, which for a permanently-present wrist
+    /// panel would mean always, in every game. So it is toggled with the same
+    /// gaze gate as the input method rather than set once at creation. See
+    /// <c>ChatOverlay.SetInputEnabled</c>, which is the only caller and drives
+    /// both together.
+    /// </para>
+    /// </summary>
+    public void SetMakesOverlaysInteractive(bool interactive)
+    {
+        ThrowIfDisposed();
+        _api.SetOverlayFlag(_handle, 1 << 16, interactive);
+    }
+
+    /// <summary>
+    /// Declares the coordinate space this overlay's mouse events arrive in.
+    /// Set it to the texture's own pixel dimensions and an event's x/y can be
+    /// hit-tested directly against the rectangles the renderer drew from - the
+    /// property that stops a laser click landing on a different control than
+    /// the one being pointed at.
+    /// </summary>
+    public void SetMouseScale(float width, float height)
+    {
+        ThrowIfDisposed();
+        if (!float.IsFinite(width) || !float.IsFinite(height) || width <= 0f || height <= 0f)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(width),
+                $"{width}x{height}",
+                "An overlay mouse scale must be positive in both axes.");
+        }
+
+        _api.SetOverlayMouseScale(_handle, width, height);
+    }
+
+    /// <summary>
+    /// Drains this overlay's own event queue into <paramref name="into"/>,
+    /// which is cleared first.
+    /// <para>
+    /// Per-overlay, not the system queue: draining here cannot swallow input
+    /// destined for anything else, which is the same reason
+    /// <c>OpenVrInput.IsQuitRequested</c> can drain the system queue without
+    /// starving the dashboard.
+    /// </para>
+    /// </summary>
+    public void PollMouseEvents(List<OverlayMouseEvent> into)
+    {
+        ArgumentNullException.ThrowIfNull(into);
+        ThrowIfDisposed();
+        into.Clear();
+        _api.PollOverlayMouseEvents(_handle, into);
     }
 
     /// <summary>

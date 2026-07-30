@@ -9,7 +9,15 @@ public readonly record struct NotificationContent(string Title, string Text, str
 /// <see cref="SvrBridge.Core.ChatRingBuffer"/>, so the render thread never
 /// has to take that buffer's own lock.
 /// </summary>
-public readonly record struct ChatContent(IReadOnlyList<SvrBridge.Core.StreamerBotEventPayload> Messages);
+/// <param name="HoveredButtonIndex">
+/// Which <see cref="ChatOverlayLayout.Buttons"/> entry the laser is currently
+/// over, or <see cref="ChatOverlayLayout.NoButton"/>. Defaulted so every
+/// caller that has no pointer - the notification path, and every self-test
+/// about text - stays unchanged.
+/// </param>
+public readonly record struct ChatContent(
+    IReadOnlyList<SvrBridge.Core.StreamerBotEventPayload> Messages,
+    int HoveredButtonIndex = ChatOverlayLayout.NoButton);
 
 /// <summary>One rendered texture, straight-alpha RGBA, ready for SteamVR.</summary>
 public sealed record RenderedPanel(byte[] Rgba, int Width, int Height);

@@ -674,6 +674,27 @@ internal sealed class VrDashboardController : IDisposable
             DashboardPage.Settings,
             () => VrDashboardRenderer.RenderSettings(_settings));
 
+    /// <summary>
+    /// Accepts a settings change this page did not make - today, only the
+    /// chat window's placement, which the wearer changes by dragging the
+    /// window itself rather than by pressing anything here.
+    /// <para>
+    /// Without this the page would keep showing the snapshot it was
+    /// constructed with, and its reset control would refuse to act on a window
+    /// it still believed was at the default. Repaints only while the settings
+    /// page is the one showing, so a drag mid-wizard cannot pull the wearer
+    /// off the page they are on.
+    /// </para>
+    /// </summary>
+    public void UpdateSettings(VrSettingsSnapshot settings)
+    {
+        _settings = settings;
+        if (_page == DashboardPage.Settings)
+        {
+            ShowSettings();
+        }
+    }
+
     private void HandleSettingsClick(float x, float y)
     {
         if (IsWithinRow(y, VrDashboardLayout.ChatControlsY, VrDashboardLayout.SettingsRowHeight))
@@ -703,7 +724,49 @@ internal sealed class VrDashboardController : IDisposable
         if (IsWithinRow(y, VrDashboardLayout.NotificationSlidersY, VrDashboardLayout.SettingsSliderRowHeight))
         {
             HandleSlidersClick(x, isChat: false);
+            return;
         }
+
+        if (IsWithinRow(y, VrDashboardLayout.ResetPlacementY, VrDashboardLayout.SettingsRowHeight))
+        {
+            HandleResetPlacementClick(x);
+        }
+    }
+
+    /// <summary>
+    /// Puts the chat window back where hardware testing put it. Routed through
+    /// <see cref="ApplySettingsChange"/> like every other control here, so it
+    /// applies live in the headset and persists in the same step - a wearer
+    /// who has lost the window needs to see it come back, not be told it will
+    /// next time.
+    /// </summary>
+    private void HandleResetPlacementClick(float x)
+    {
+        var toggle = VrDashboardLayout.GazeScaleToggle;
+        if (x >= toggle.Left && x <= toggle.Right)
+        {
+            _settings = _settings with { ChatGazeScaleEnabled = !_settings.ChatGazeScaleEnabled };
+            ApplySettingsChange();
+            return;
+        }
+
+        var bounds = VrDashboardLayout.ResetPlacement;
+        if (x < bounds.Left || x > bounds.Right)
+        {
+            return;
+        }
+
+        // Unconditional, deliberately. This first refused to act when the
+        // placement it held already looked like the default, which made the
+        // control silently dead whenever this page's copy of the settings had
+        // fallen behind a drag made in the headset - and the wearer pressing a
+        // recovery control that does nothing has no way to tell "already at
+        // the default" from "broken". Resetting to the default when already
+        // there is idempotent and costs one repaint, so there is nothing to
+        // buy by guessing.
+        _log("The chat window position was reset to its default from the VR settings page.");
+        _settings = _settings with { ChatPlacement = OverlayPlacement.Default };
+        ApplySettingsChange();
     }
 
     private static bool IsWithinRow(float y, int rowY, int rowHeight) => y >= rowY && y < rowY + rowHeight;

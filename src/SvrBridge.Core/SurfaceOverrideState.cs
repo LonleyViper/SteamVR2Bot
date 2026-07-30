@@ -95,4 +95,21 @@ public sealed class SurfaceOverrideState(OverlayAnchor savedDefault)
         _savedDefault = anchor;
         AnchorOverride = null;
     }
+
+    /// <summary>
+    /// Promotes whatever anchor is in effect right now to the saved default,
+    /// clearing any override - the effect of the wearer dragging the panel by
+    /// hand to a new spot.
+    /// <para>
+    /// A hand drag is as explicit a user edit as changing the anchor control
+    /// on the VR settings page, so it takes the same side of the §B5 rule: an
+    /// explicit edit wins over an active Streamer.bot override. It differs
+    /// only in which anchor it adopts. A settings edit names one; a drag names
+    /// none, but places the panel against whichever anchor the wearer could
+    /// actually see it on - so that anchor, override or not, is the one they
+    /// chose. Leaving the override in place would let a later <c>reset</c>
+    /// silently move a hand-placed panel to a different device.
+    /// </para>
+    /// </summary>
+    public void AdoptEffectiveAnchorAsSavedDefault() => SetSavedDefaultAnchor(EffectiveAnchor);
 }

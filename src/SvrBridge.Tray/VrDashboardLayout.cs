@@ -72,6 +72,37 @@ internal static class VrDashboardLayout
     public const int SettingsRowHeight = 80;
     public const int SettingsSliderRowHeight = 90;
 
+    /// <summary>
+    /// Below the notification sliders (which end at 740) and above where a
+    /// bottom bar would sit if this page had one - it does not, because every
+    /// change here applies and saves immediately.
+    /// </summary>
+    public const int ResetPlacementY = 770;
+
+    /// <summary>
+    /// Puts the chat window's hand-dragged offset back to the placement Phase
+    /// 1/3 proved on hardware.
+    /// <para>
+    /// The one control on this page for a setting the wearer changes by
+    /// grabbing the window itself rather than by pressing anything here - and
+    /// the reason it has to exist. A window dragged somewhere it cannot be
+    /// pointed at can no longer be dragged back, and reaching for the desktop
+    /// app to fix a placement chosen in VR is exactly the loop this phase
+    /// removes.
+    /// </para>
+    /// </summary>
+    public static readonly Rectangle ResetPlacement =
+        new(60, ResetPlacementY, 560, SettingsRowHeight);
+
+    /// <summary>
+    /// Turns the grow-and-brighten-on-gaze animation off, for a wearer who
+    /// finds a window that changes size while they read it more distracting
+    /// than useful. Sits at the same x as the two surface toggles above it, so
+    /// the three read as one column of on/off controls.
+    /// </summary>
+    public static readonly Rectangle GazeScaleToggle =
+        new(1090, ResetPlacementY, 250, SettingsRowHeight);
+
     /// <summary>On/off toggle for the chat window.</summary>
     public static readonly Rectangle ChatToggle = new(1090, ChatControlsY, 250, SettingsRowHeight);
 

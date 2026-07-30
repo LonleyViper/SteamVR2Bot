@@ -24,6 +24,7 @@ internal sealed class MainForm : Form
     private readonly TrackBar _chatOpacity = new();
     private readonly TrackBar _chatSizeScale = new();
     private readonly ComboBox _gazeSensitivity = new();
+    private readonly CheckBox _chatGazeScale = new();
     private readonly TrackBar _notificationOpacity = new();
     private readonly TrackBar _notificationSizeScale = new();
     private readonly Button _add = new();
@@ -38,6 +39,18 @@ internal sealed class MainForm : Form
     private readonly TextBox _activity = new();
     private readonly List<ShortcutConfig> _shortcutItems = [];
     private IReadOnlyList<StreamerBotAction> _actions = [];
+
+    /// <summary>
+    /// Carried through untouched by <see cref="ReadSettings"/>, which builds a
+    /// whole <see cref="UserSettings"/> from the form's controls - so a
+    /// setting with no control here would be silently reset to its default by
+    /// the next desktop save. The chat window's placement has no desktop
+    /// control by design: it is chosen by dragging the window in the headset,
+    /// and the reset back to the proven default lives on the VR settings page
+    /// beside it, where a wearer who has put it somewhere unreachable can
+    /// actually get at it.
+    /// </summary>
+    private OverlayPlacement _chatPlacement = OverlayPlacement.Default;
     private bool _allowClose;
     private bool _applyingSettings;
 
@@ -90,11 +103,13 @@ internal sealed class MainForm : Form
             ChatEnabled = _chat.Checked,
             ChatAnchorMode = SelectedAnchorMode(_chatAnchorMode),
             ChatAnchorHand = SelectedAnchorHand(_chatAnchorHand),
+            ChatPlacement = _chatPlacement,
             NotificationAnchorMode = SelectedAnchorMode(_notificationAnchorMode),
             NotificationAnchorHand = SelectedAnchorHand(_notificationAnchorHand),
             ChatOpacity = OpacityFromSlider(_chatOpacity),
             ChatSizeScale = SizeScaleFromSlider(_chatSizeScale),
             GazeSensitivity = (GazeSensitivity)Math.Clamp(_gazeSensitivity.SelectedIndex, 0, 2),
+            ChatGazeScaleEnabled = _chatGazeScale.Checked,
             NotificationOpacity = OpacityFromSlider(_notificationOpacity),
             NotificationSizeScale = SizeScaleFromSlider(_notificationSizeScale)
         };
@@ -138,11 +153,13 @@ internal sealed class MainForm : Form
             _chat.Checked = settings.ChatEnabled;
             ApplyAnchorMode(_chatAnchorMode, settings.ChatAnchorMode);
             ApplyAnchorHand(_chatAnchorHand, settings.ChatAnchorHand);
+            _chatPlacement = settings.ChatPlacement;
             ApplyAnchorMode(_notificationAnchorMode, settings.NotificationAnchorMode);
             ApplyAnchorHand(_notificationAnchorHand, settings.NotificationAnchorHand);
             ApplyOpacityToSlider(_chatOpacity, settings.ChatOpacity);
             ApplySizeScaleToSlider(_chatSizeScale, settings.ChatSizeScale);
             _gazeSensitivity.SelectedIndex = (int)settings.GazeSensitivity;
+            _chatGazeScale.Checked = settings.ChatGazeScaleEnabled;
             ApplyOpacityToSlider(_notificationOpacity, settings.NotificationOpacity);
             ApplySizeScaleToSlider(_notificationSizeScale, settings.NotificationSizeScale);
             _shortcutItems.Clear();
@@ -496,6 +513,7 @@ internal sealed class MainForm : Form
         panel.Controls.Add(SliderRow("Opacity:", _chatOpacity));
         panel.Controls.Add(SliderRow("Size:", _chatSizeScale));
         panel.Controls.Add(GazeSensitivityRow());
+        panel.Controls.Add(GazeScaleToggle());
 
         ConfigureButton(_findActions, "Refresh Streamer.bot actions", false);
         _findActions.Click += (_, _) => FindActionsRequested?.Invoke();
@@ -589,6 +607,21 @@ internal sealed class MainForm : Form
         });
         row.Controls.Add(slider);
         return row;
+    }
+
+    /// <summary>
+    /// Off leaves the chat window at its configured size and opacity instead
+    /// of growing it on gaze. Gaze is still measured either way - it is what
+    /// decides whether the window accepts the laser pointer - so this is
+    /// purely about whether the window changes size while you read it.
+    /// </summary>
+    private Control GazeScaleToggle()
+    {
+        _chatGazeScale.Text = "Grow and brighten the window when you look at it";
+        _chatGazeScale.AutoSize = true;
+        _chatGazeScale.Margin = new Padding(40, 0, 0, 10);
+        _chatGazeScale.CheckedChanged += (_, _) => NotifySettingsChanged();
+        return _chatGazeScale;
     }
 
     private Control GazeSensitivityRow()

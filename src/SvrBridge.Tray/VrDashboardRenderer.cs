@@ -381,7 +381,64 @@ internal static class VrDashboardRenderer
                 "Size",
                 $"{Math.Round(settings.NotificationSizeScale * 100)}%",
                 (float)Math.Clamp((settings.NotificationSizeScale - 0.5) / 1.5, 0, 1));
+
+            DrawResetPlacement(graphics, fonts, brushes, settings);
         });
+    }
+
+    /// <summary>
+    /// The chat window's placement reset, drawn disabled while the placement
+    /// already is the default - there is nothing to undo then, and a button
+    /// that looks pressable but does nothing reads as broken. See
+    /// <see cref="VrDashboardLayout.ResetPlacement"/> for why it exists at all.
+    /// </summary>
+    private static void DrawResetPlacement(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        VrSettingsSnapshot settings)
+    {
+        var placement = settings.ChatPlacement;
+        // Always drawn live. A recovery control that greys itself out based on
+        // this page's own copy of the settings is a control that looks broken
+        // exactly when the wearer most needs it - after a drag this page may
+        // not have heard about yet.
+        var moved = !placement.Equals(OverlayPlacement.Default);
+        var bounds = VrDashboardLayout.ResetPlacement;
+        DrawRoundedRectangle(graphics, brushes.Card, bounds, 14);
+        DrawCenteredText(
+            graphics,
+            "Reset chat window position",
+            fonts.Body,
+            brushes.White,
+            bounds);
+        graphics.DrawString(
+            moved
+                ? "Moved by hand. Grab the handle with the laser to move it again."
+                : "At its default position.",
+            fonts.Body,
+            brushes.Muted,
+            bounds.Right + 20,
+            bounds.Top + 4);
+        graphics.DrawString(
+            "Grow on gaze",
+            fonts.Body,
+            brushes.Muted,
+            bounds.Right + 20,
+            bounds.Top + 44);
+
+        var toggle = VrDashboardLayout.GazeScaleToggle;
+        DrawRoundedRectangle(
+            graphics,
+            settings.ChatGazeScaleEnabled ? brushes.Green : brushes.Disabled,
+            toggle,
+            14);
+        DrawCenteredText(
+            graphics,
+            settings.ChatGazeScaleEnabled ? "On" : "Off",
+            fonts.Heading,
+            brushes.White,
+            toggle);
     }
 
     public static RenderedPanel RenderTolerancePicker(ChordMode mode, int valueMs)

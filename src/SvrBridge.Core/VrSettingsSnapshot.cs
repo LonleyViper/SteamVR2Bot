@@ -27,12 +27,22 @@ public enum GazeSensitivity
 /// the VR page and the desktop page can never disagree about what a setting
 /// means or what its default is.
 /// </summary>
+/// <param name="ChatPlacement">
+/// The chat window's hand-placed offsets, one per anchor mode. Unlike every
+/// other field here it is usually changed by dragging the window in the
+/// headset rather than by a control on the settings page - the page's only
+/// control for it is the reset back to
+/// <see cref="OverlayPlacement.Default"/>, which exists because a window
+/// dragged somewhere unreachable cannot be dragged back.
+/// </param>
 public sealed record VrSettingsSnapshot(
     bool ChatEnabled,
     OverlayAnchor ChatAnchor,
+    OverlayPlacement ChatPlacement,
     double ChatOpacity,
     double ChatSizeScale,
     GazeSensitivity GazeSensitivity,
+    bool ChatGazeScaleEnabled,
     bool NotificationsEnabled,
     OverlayAnchor NotificationAnchor,
     double NotificationOpacity,

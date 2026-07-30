@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace SvrBridge.Tray;
 
 internal static class TraySelfTests
@@ -31,9 +33,22 @@ internal static class TraySelfTests
         TestChatRenderEmbedsMultipleBadges();
         TestChatRingBufferThreadSafeConcurrentAccess();
         TestOverlayAnchorOffsetsMatchProvenTransforms();
+        TestOverlayPlacementDefaultMatchesProvenTransforms();
+        TestRigidInverseRoundTrips();
+        TestPanelViewMeasuresTheWindowRatherThanItsAnchor();
+        TestPanelVisibilityGateHidesTurnedAwayAndDistantPanels();
+        TestDegeneratePlacementFallsBackInsteadOfVanishing();
+        TestOverlayDragCarriesRotationAsWellAsPosition();
+        TestOverlayPlacementArgumentRoundTrip();
+        TestChatHandleHitTestMatchesTheDrawnRectangle();
+        TestChatHoverRepaintsOncePerRectangleCrossed();
+        TestChatInputIsRejectedOutsideTheGazedState();
+        TestOnlyTheHandleStartsAndEndsAGrab();
+        TestHandPlacedOffsetClearsAStreamerBotOverride();
         TestSurfaceOverrideStateAppliesAndResetsControlCommands();
         TestChatDeveloperInjectorProducesExpectedMessages();
         TestChatCommandJsonRoundTripPreservesBadgesAndEmotes();
+        TestChatPlacementSurvivesTheWorkerMessageChannel();
         TestRequiresRuntimeRestartDistinguishesLiveAppliableChanges();
         TestOverlayTextureCopyRespectsAnOverWideRowPitch();
         TestOverlaySourceFormatsConvertToTheSameRgba();
@@ -81,8 +96,18 @@ internal static class TraySelfTests
                 ChatOpacity = 0.8,
                 ChatSizeScale = 1.2,
                 GazeSensitivity = SvrBridge.Core.GazeSensitivity.Tight,
+                // Non-default, so a dropped field cannot pass by accident.
+                ChatGazeScaleEnabled = true,
                 NotificationOpacity = 0.7,
-                NotificationSizeScale = 0.6
+                NotificationSizeScale = 0.6,
+                // Deliberately not the default in either mode: a placement
+                // that happened to equal OverlayPlacement.Default would
+                // round-trip even if the field were never written at all.
+                ChatPlacement = new SvrBridge.Core.OverlayPlacement(
+                    SvrBridge.Core.VrOverlayTransform.Translation(0.03f, 0.11f, -0.19f)
+                    * SvrBridge.Core.VrOverlayTransform.RotationY(0.4f),
+                    SvrBridge.Core.VrOverlayTransform.Translation(-0.05f, -0.2f, -0.8f)
+                    * SvrBridge.Core.VrOverlayTransform.RotationZ(-0.25f))
             };
 
             store.Save(expected);
@@ -113,9 +138,13 @@ internal static class TraySelfTests
                 actual.ChatOpacity == expected.ChatOpacity
                 && actual.ChatSizeScale == expected.ChatSizeScale
                 && actual.GazeSensitivity == expected.GazeSensitivity
+                && actual.ChatGazeScaleEnabled == expected.ChatGazeScaleEnabled
                 && actual.NotificationOpacity == expected.NotificationOpacity
                 && actual.NotificationSizeScale == expected.NotificationSizeScale,
                 "The Phase 4b appearance/gaze settings did not round-trip.");
+            Assert(
+                actual.ChatPlacement.Equals(expected.ChatPlacement),
+                "A hand-dragged chat window position did not survive a save and load.");
 
             UserSettingsStore.ValidateForSave(
                 expected with
@@ -186,6 +215,45 @@ internal static class TraySelfTests
                 && upgraded.NotificationOpacity == 1.0
                 && upgraded.NotificationSizeScale == 1.0,
                 "A settings file written before Phase 4b did not default to today's hardcoded appearance.");
+            // Deliberately the opposite of this file's usual migration rule -
+            // see UserSettings.ChatGazeScaleEnabled for why the grow-on-gaze
+            // animation is the one setting an upgrade is allowed to change.
+            Assert(
+                !upgraded.ChatGazeScaleEnabled,
+                "The grow-on-gaze animation no longer defaults to off.");
+            Assert(
+                upgraded.ChatPlacement.Equals(SvrBridge.Core.OverlayPlacement.Default),
+                "A settings file written before Phase 5 did not default to the hardware-proven chat placement.");
+
+            // The file this field's own shape change left behind: present,
+            // well-formed JSON, and all zeros, because the properties it was
+            // written with no longer exist. It must load as the proven
+            // placement - a zero transform collapses the chat window to
+            // nothing, with no error anywhere to say so.
+            File.WriteAllText(
+                Path.Combine(testDirectory, "settings.json"),
+                """
+                {
+                  "StreamerBotAddress": "ws://127.0.0.1:8080/1",
+                  "ProtectedPassword": "",
+                  "ChatEnabled": true,
+                  "ChatPlacement": {
+                    "ControllerOffset": {
+                      "M00": 0, "M01": 0, "M02": 0, "M03": 0,
+                      "M10": 0, "M11": 0, "M12": 0, "M13": 0,
+                      "M20": 0, "M21": 0, "M22": 0, "M23": 0
+                    },
+                    "HeadOffset": {
+                      "M00": 0, "M01": 0, "M02": 0, "M03": 0,
+                      "M10": 0, "M11": 0, "M12": 0, "M13": 0,
+                      "M20": 0, "M21": 0, "M22": 0, "M23": 0
+                    }
+                  }
+                }
+                """);
+            Assert(
+                store.Load().ChatPlacement.Equals(SvrBridge.Core.OverlayPlacement.Default),
+                "A zeroed saved placement loaded as-is, which puts no chat window in the headset at all.");
 
             AssertThrows(
                 () => UserSettingsStore.Validate(
@@ -547,7 +615,9 @@ internal static class TraySelfTests
             .. VrDashboardLayout.ChatAnchorHand,
             .. VrDashboardLayout.NotificationAnchorMode,
             .. VrDashboardLayout.NotificationAnchorHand,
-            .. VrDashboardLayout.GazeSensitivity
+            .. VrDashboardLayout.GazeSensitivity,
+            VrDashboardLayout.ResetPlacement,
+            VrDashboardLayout.GazeScaleToggle
         ];
         foreach (var control in allControls)
         {
@@ -558,6 +628,25 @@ internal static class TraySelfTests
                 && control.Right <= 1400,
                 "A settings-page control falls outside the canvas or under the tab strip.");
         }
+
+        // The reset control was added below the notification sliders. A
+        // Y-band dispatch cannot tell two rows apart if they touch, and this
+        // page has no bottom bar to bound it from below.
+        Assert(
+            VrDashboardLayout.ResetPlacement.Top
+            >= VrDashboardLayout.NotificationSlidersY + VrDashboardLayout.SettingsSliderRowHeight,
+            "The chat placement reset overlaps the notification slider row.");
+
+        // The reset button and the grow-on-gaze toggle share the bottom row,
+        // so a Y-band dispatch alone cannot tell them apart - they must not
+        // overlap along X either, exactly like the surface rows above.
+        Assert(
+            !VrDashboardLayout.ResetPlacement.IntersectsWith(VrDashboardLayout.GazeScaleToggle),
+            "The placement reset and the grow-on-gaze toggle overlap.");
+        Assert(
+            VrDashboardLayout.GazeScaleToggle.Left == VrDashboardLayout.ChatToggle.Left
+            && VrDashboardLayout.GazeScaleToggle.Width == VrDashboardLayout.ChatToggle.Width,
+            "The grow-on-gaze toggle is not aligned with the column of on/off toggles above it.");
 
         // The List page's row count dropped from 6 to 5 to make room for the
         // tab strip - its last row must still clear the bottom bar.
@@ -760,6 +849,671 @@ internal static class TraySelfTests
     }
 
     /// <summary>
+    /// The reset control's whole promise: an install that has never dragged
+    /// the window, and one that has dragged it and pressed reset, both land on
+    /// the exact transform hardware testing validated - not an approximation
+    /// of it. Asserted as transform equality rather than by eye, because
+    /// <see cref="SvrBridge.Core.OverlayPlacement"/> reconstructs the tilt
+    /// from a constant rather than storing it, and a wrong sign there would be
+    /// invisible in a settings file and obvious only in a headset.
+    /// </summary>
+    private static void TestOverlayPlacementDefaultMatchesProvenTransforms()
+    {
+        var defaults = SvrBridge.Core.OverlayPlacement.Default;
+        Assert(
+            defaults.ToTransform(SvrBridge.Core.OverlayAnchorMode.Controller)
+                .Equals(SvrBridge.Core.OverlayAnchor.ControllerOffset),
+            "The default controller placement is no longer the proven wrist transform.");
+        Assert(
+            defaults.ToTransform(SvrBridge.Core.OverlayAnchorMode.Head)
+                .Equals(SvrBridge.Core.OverlayAnchor.HeadOffset),
+            "The default head placement is no longer the proven head transform.");
+
+        // Placing one mode must not disturb the other: the two are independent
+        // saved settings, and switching anchor mode has to land somewhere the
+        // wearer already chose for that mode.
+        var placed = SvrBridge.Core.VrOverlayTransform.Translation(0.2f, 0.3f, -0.4f)
+                     * SvrBridge.Core.VrOverlayTransform.RotationY(0.5f);
+        var moved = defaults.With(SvrBridge.Core.OverlayAnchorMode.Controller, placed);
+        Assert(
+            moved.HeadOffset.Equals(defaults.HeadOffset)
+            && moved.ControllerOffset.Equals(placed),
+            "Placing one anchor mode's offset changed the other mode's.");
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Default.Equals(defaults),
+            "Reset no longer restores the hardware-proven default exactly.");
+
+        // A tracking dropout can produce a NaN, and SteamVR accepts one without
+        // complaint - the panel simply vanishes to somewhere it can never be
+        // pointed at to drag it back.
+        var wild = defaults.With(
+            SvrBridge.Core.OverlayAnchorMode.Controller,
+            SvrBridge.Core.VrOverlayTransform.Translation(float.NaN, 0f, 0f));
+        Assert(
+            wild.ToTransform(SvrBridge.Core.OverlayAnchorMode.Controller)
+                .Equals(SvrBridge.Core.OverlayAnchor.ControllerOffset),
+            "A non-finite placement was applied instead of falling back to the proven default.");
+
+        var far = defaults.With(
+            SvrBridge.Core.OverlayAnchorMode.Head,
+            SvrBridge.Core.VrOverlayTransform.Translation(0f, 900f, -900f));
+        var clamped = far.ToTransform(SvrBridge.Core.OverlayAnchorMode.Head);
+        Assert(
+            clamped.M13 == SvrBridge.Core.OverlayPlacement.LimitMeters
+            && clamped.M23 == -SvrBridge.Core.OverlayPlacement.LimitMeters,
+            "An out-of-range placement was not brought back within reach.");
+    }
+
+    /// <summary>
+    /// A zero placement must never reach SteamVR, at any layer.
+    /// <para>
+    /// This is a regression test for a real failure, and for the reason it was
+    /// hard to spot. A settings file written before this field changed shape -
+    /// three numbers per anchor mode, rather than a full transform -
+    /// deserialises to an all-zero matrix. That is not absent, not a JSON
+    /// error, and not non-finite, so every check that existed at the time let
+    /// it through. SteamVR then accepts it without an error and collapses the
+    /// overlay quad to nothing: no exception, no log line, no misplaced panel,
+    /// just no chat window at all. The only defence is refusing a rotation
+    /// block that is not a rotation.
+    /// </para>
+    /// </summary>
+    private static void TestDegeneratePlacementFallsBackInsteadOfVanishing()
+    {
+        var zero = default(SvrBridge.Core.OverlayPlacement);
+        Assert(
+            !zero.ControllerOffset.IsUsable() && !zero.HeadOffset.IsUsable(),
+            "An all-zero transform was judged usable - it collapses the overlay to nothing.");
+
+        // The layer that keeps the panel on screen.
+        Assert(
+            zero.ToTransform(SvrBridge.Core.OverlayAnchorMode.Controller)
+                .Equals(SvrBridge.Core.OverlayAnchor.ControllerOffset)
+            && zero.ToTransform(SvrBridge.Core.OverlayAnchorMode.Head)
+                .Equals(SvrBridge.Core.OverlayAnchor.HeadOffset),
+            "A zero placement was handed to SteamVR instead of the proven default.");
+
+        // The layer that stops it being written back to disk as though the
+        // wearer had chosen it.
+        Assert(
+            zero.Sanitised().Equals(SvrBridge.Core.OverlayPlacement.Default),
+            "A zero placement survived sanitising.");
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Parse(zero.ToArgument())
+                .Equals(SvrBridge.Core.OverlayPlacement.Default),
+            "A zero placement survived the worker's command line.");
+
+        // One half bad, one half good - the shape a partially-written or
+        // hand-edited file takes. The good half must be kept.
+        var placed = SvrBridge.Core.VrOverlayTransform.Translation(0.2f, 0.1f, -0.3f)
+                     * SvrBridge.Core.VrOverlayTransform.RotationY(0.4f);
+        var half = new SvrBridge.Core.OverlayPlacement(placed, default);
+        Assert(
+            half.Sanitised().ControllerOffset.Equals(placed)
+            && half.Sanitised().HeadOffset.Equals(SvrBridge.Core.OverlayAnchor.HeadOffset),
+            "Sanitising one bad half discarded the good one.");
+
+        // A real dragged placement must not be mistaken for garbage: it is
+        // tracked poses composed with an inverse, so it carries float error.
+        var dragged = SvrBridge.Core.VrOverlayTransform.Translation(0.4f, -1.1f, 2.3f)
+                      * SvrBridge.Core.VrOverlayTransform.RotationX(0.6f)
+                      * SvrBridge.Core.VrOverlayTransform.RotationY(-1.2f)
+                      * SvrBridge.Core.VrOverlayTransform.RotationZ(0.3f);
+        Assert(
+            dragged.IsUsable() && (dragged * dragged.InverseRigid() * dragged).IsUsable(),
+            "A legitimately composed transform was rejected as degenerate.");
+    }
+
+    /// <summary>
+    /// Gaze must follow the <em>window</em>, not the device it hangs off.
+    /// <para>
+    /// The first version measured the direction to the anchor controller in a
+    /// yaw-only body frame, which was indistinguishable from measuring the
+    /// window while the window was welded 12 cm off the wrist - and wrong the
+    /// moment the wearer could drag it elsewhere. The reported symptom was
+    /// that the grow-and-shrink trigger "does not adjust with the
+    /// positioning", which is exactly this: the window moved and the thing
+    /// being measured did not.
+    /// </para>
+    /// </summary>
+    private static void TestPanelViewMeasuresTheWindowRatherThanItsAnchor()
+    {
+        // Head at the origin, looking down -Z, which is where OpenVR puts a
+        // device's forward axis.
+        var head = SvrBridge.Core.VrOverlayTransform.Identity;
+
+        var ahead = SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, -1f);
+        var aheadView = SvrBridge.Core.PanelView.From(head, ahead);
+        Assert(
+            Close(aheadView.GazeDot, 1f) && Close(aheadView.DistanceMeters, 1f),
+            $"A panel straight ahead measured as gaze {aheadView.GazeDot}, {aheadView.DistanceMeters} m.");
+
+        // Same distance, off to the side: looked away from, not at.
+        var beside = SvrBridge.Core.VrOverlayTransform.Translation(1f, 0f, 0f);
+        Assert(
+            Close(SvrBridge.Core.PanelView.From(head, beside).GazeDot, 0f),
+            "A panel at ninety degrees did not measure as being looked away from.");
+
+        // And behind.
+        var behind = SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, 1f);
+        Assert(
+            Close(SvrBridge.Core.PanelView.From(head, behind).GazeDot, -1f),
+            "A panel directly behind did not measure as being looked away from.");
+
+        // Pitch counts, unlike the yaw-only body frame this replaced: a panel
+        // low down is not being looked at by someone staring straight ahead.
+        var low = SvrBridge.Core.VrOverlayTransform.Translation(0f, -1f, -1f);
+        var lowDot = SvrBridge.Core.PanelView.From(head, low).GazeDot;
+        Assert(
+            lowDot > 0.6f && lowDot < 0.8f,
+            $"A panel 45 degrees below the eye line measured {lowDot}; pitch is being ignored.");
+
+        // Facing is a separate question from gaze. An overlay's texture faces
+        // its own +Z, so a panel placed in front of the wearer with no
+        // rotation already faces back at them.
+        Assert(
+            Close(aheadView.FacingDot, 1f),
+            "A panel placed in front of the wearer did not measure as facing them.");
+        var turnedAway = SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, -1f)
+                         * SvrBridge.Core.VrOverlayTransform.RotationY(MathF.PI);
+        Assert(
+            SvrBridge.Core.PanelView.From(head, turnedAway).FacingDot < -0.9f,
+            "A panel turned to face away was still measured as facing the wearer.");
+
+        // The two really are independent: this one is looked straight at and
+        // is edge-on, which is the case worth hiding.
+        var edgeOn = SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, -1f)
+                     * SvrBridge.Core.VrOverlayTransform.RotationY(MathF.PI / 2f);
+        var edgeView = SvrBridge.Core.PanelView.From(head, edgeOn);
+        Assert(
+            Close(edgeView.GazeDot, 1f) && MathF.Abs(edgeView.FacingDot) < 0.01f,
+            "An edge-on panel being stared at was not distinguished from one facing the wearer.");
+
+        // The proven wrist placement, on a level controller half a metre in
+        // front and below the head, must still read as facing the wearer -
+        // this is the case the -0.6 rad tilt exists for, and a sign error in
+        // the normal would hide the window at its own default placement.
+        var wrist = SvrBridge.Core.VrOverlayTransform.Translation(0.1f, -0.5f, -0.4f);
+        var wristPanel = wrist * SvrBridge.Core.OverlayAnchor.ControllerOffset;
+        Assert(
+            SvrBridge.Core.PanelView.From(head, wristPanel).FacingDot > 0.5f,
+            "The default wrist placement measured as facing away, which would hide it on sight.");
+    }
+
+    /// <summary>
+    /// The hide rules, including the hysteresis that stops a panel flickering
+    /// at either boundary and the asymmetry that stops it flickering at both
+    /// at once.
+    /// </summary>
+    private static void TestPanelVisibilityGateHidesTurnedAwayAndDistantPanels()
+    {
+        var gate = new SvrBridge.Core.PanelVisibilityGate();
+        Assert(gate.IsVisible, "A fresh visibility gate started hidden.");
+        Assert(gate.Update(1f, 0.5f), "A panel facing the wearer at arm's length was hidden.");
+
+        // Turned nearly edge-on: hidden.
+        Assert(!gate.Update(0.05f, 0.5f), "A panel turned away was not hidden.");
+
+        // Coming back needs more than just crossing the same line again, or
+        // pose noise at the boundary flickers it.
+        Assert(!gate.Update(0.25f, 0.5f), "A panel came back inside the hysteresis dead zone.");
+        Assert(gate.Update(0.5f, 0.5f), "A panel turned back towards the wearer stayed hidden.");
+
+        // Distance is the other rule, and it is generous - a deliberately
+        // placed arm's-length panel must survive it.
+        Assert(gate.Update(1f, 1.5f), "A panel 1.5 m away was hidden.");
+        Assert(!gate.Update(1f, 2.5f), "A panel 2.5 m away was not hidden.");
+        Assert(!gate.Update(1f, 1.9f), "A distant panel came back inside the hysteresis dead zone.");
+        Assert(gate.Update(1f, 1.5f), "A panel brought back within reach stayed hidden.");
+
+        // Either rule alone hides; coming back needs both to pass, so a panel
+        // that is both turned away and far off does not flicker back the
+        // instant one of them recovers.
+        Assert(!gate.Update(0.05f, 2.5f), "A panel failing both rules was not hidden.");
+        Assert(!gate.Update(1f, 2.5f), "A panel still too far away came back on facing alone.");
+        Assert(!gate.Update(0.05f, 0.5f), "A panel still turned away came back on distance alone.");
+        Assert(gate.Update(1f, 0.5f), "A panel that recovered on both rules stayed hidden.");
+
+        // Taking hold of the window overrules the gate outright - nothing
+        // being handled may be hidden out from under the person handling it.
+        gate.Update(0.05f, 2.5f);
+        Assert(!gate.IsVisible, "Could not set up the forced-visible case.");
+        gate.ForceVisible();
+        Assert(gate.IsVisible, "Forcing the panel visible did not.");
+    }
+
+    /// <summary>
+    /// The rigid-grab arithmetic, with no headset: a panel taken hold of and
+    /// carried by a controller keeps exactly its relationship to that
+    /// controller, through rotation as well as translation. The first version
+    /// of this drag could only translate, which the headset rejected - so
+    /// rotation is the property most worth pinning down here.
+    /// </summary>
+    private static void TestOverlayDragCarriesRotationAsWellAsPosition()
+    {
+        var anchorPose = SvrBridge.Core.VrOverlayTransform.Translation(0.1f, 1.2f, -0.3f)
+                         * SvrBridge.Core.VrOverlayTransform.RotationY(0.4f);
+        var pointerPose = SvrBridge.Core.VrOverlayTransform.Translation(0.5f, 1.1f, -0.6f)
+                          * SvrBridge.Core.VrOverlayTransform.RotationX(-0.2f);
+        var offset = SvrBridge.Core.OverlayPlacement.Default.ControllerOffset;
+
+        var drag = SvrBridge.Core.OverlayDrag.Begin(
+            SvrBridge.Core.OverlayAnchorMode.Controller,
+            offset,
+            anchorPose,
+            pointerPose);
+
+        // Nothing has moved yet, so the panel must not have moved either. This
+        // is the check that catches an inverted or transposed term: any sign
+        // error shows up as a panel that jumps the instant it is grabbed.
+        AssertClose(
+            drag.OffsetAt(anchorPose, pointerPose),
+            offset,
+            "Grabbing the panel without moving anything moved it.");
+
+        // Carry the pointing controller 30 cm right and turn the wrist. The
+        // panel is rigidly attached, so its world pose must be exactly the
+        // grab-time pose carried by the same movement.
+        var carry = SvrBridge.Core.VrOverlayTransform.Translation(0.3f, 0f, 0f)
+                    * SvrBridge.Core.VrOverlayTransform.RotationZ(0.7f);
+        var movedPointer = carry * pointerPose;
+        var expectedWorld = carry * (pointerPose * drag.PanelInPointer);
+        var actualWorld = anchorPose * drag.OffsetAt(anchorPose, movedPointer);
+        AssertClose(
+            actualWorld,
+            expectedWorld,
+            "A rigid grab did not carry the panel with the controller.");
+
+        // The rotation actually arrived. A translation-only drag leaves the
+        // panel's rotation block untouched, which is exactly the headset
+        // failure this replaced, and it would pass every check above.
+        var before = anchorPose * offset;
+        Assert(
+            !Close(actualWorld.M00, before.M00) || !Close(actualWorld.M01, before.M01),
+            "Turning the controller left the panel's orientation unchanged - the drag is translation-only.");
+
+        // Moving the anchor device must leave the panel where it is in the
+        // world: it is attached to that device and travels with it already, so
+        // a drag that also followed it would move the panel twice over.
+        var anchorCarry = SvrBridge.Core.VrOverlayTransform.Translation(0f, -0.2f, 0.4f);
+        var movedAnchor = anchorCarry * anchorPose;
+        var afterAnchorMove = movedAnchor * drag.OffsetAt(movedAnchor, pointerPose);
+        AssertClose(
+            afterAnchorMove,
+            pointerPose * drag.PanelInPointer,
+            "Moving the anchor hand during a drag dragged the panel with it.");
+    }
+
+    /// <summary>
+    /// <see cref="SvrBridge.Core.VrOverlayTransform.InverseRigid"/> is the one
+    /// piece of new arithmetic the grab rests on, and a transposed term in it
+    /// would present as a panel flying off on grab rather than as a wrong
+    /// number anywhere legible.
+    /// </summary>
+    private static void TestRigidInverseRoundTrips()
+    {
+        var transform = SvrBridge.Core.VrOverlayTransform.Translation(0.4f, -1.1f, 2.3f)
+                        * SvrBridge.Core.VrOverlayTransform.RotationX(0.6f)
+                        * SvrBridge.Core.VrOverlayTransform.RotationY(-1.2f)
+                        * SvrBridge.Core.VrOverlayTransform.RotationZ(0.3f);
+        AssertClose(
+            transform * transform.InverseRigid(),
+            SvrBridge.Core.VrOverlayTransform.Identity,
+            "A rigid transform composed with its own inverse is not the identity.");
+        AssertClose(
+            transform.InverseRigid() * transform,
+            SvrBridge.Core.VrOverlayTransform.Identity,
+            "A rigid inverse is not a left inverse.");
+        Assert(
+            !SvrBridge.Core.VrOverlayTransform.Translation(float.NaN, 0f, 0f).IsUsable()
+            && SvrBridge.Core.VrOverlayTransform.Identity.IsUsable(),
+            "A non-finite transform was not rejected.");
+    }
+
+    /// <summary>
+    /// The placement survives the one hop it makes as text - the OpenVR
+    /// worker's command line - and a worker spawned without the argument at
+    /// all falls back to the proven default rather than to the origin.
+    /// </summary>
+    private static void TestOverlayPlacementArgumentRoundTrip()
+    {
+        // Exact binary fractions, so this proves the round trip rather than
+        // the round-trip format's precision - "R" already covers that, and a
+        // failure here should mean a lost or reordered element.
+        var placement = new SvrBridge.Core.OverlayPlacement(
+            SvrBridge.Core.VrOverlayTransform.Translation(0.125f, -0.0625f, -0.375f)
+            * SvrBridge.Core.VrOverlayTransform.RotationY(0.5f),
+            SvrBridge.Core.VrOverlayTransform.Translation(-0.25f, 0.5f, -1.25f));
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Parse(placement.ToArgument()).Equals(placement),
+            "A chat placement did not survive the worker's command line.");
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Parse(null).Equals(SvrBridge.Core.OverlayPlacement.Default)
+            && SvrBridge.Core.OverlayPlacement.Parse("0.1,0.2").Equals(
+                SvrBridge.Core.OverlayPlacement.Default)
+            && SvrBridge.Core.OverlayPlacement.Parse(
+                    string.Join(",", Enumerable.Repeat("x", 24)))
+                .Equals(SvrBridge.Core.OverlayPlacement.Default),
+            "A missing or malformed placement argument did not fall back to the proven default.");
+
+        // A placement that arrives non-finite must not be accepted from the
+        // command line either - it would be applied before anything else got
+        // the chance to reject it.
+        var poisoned = string.Join(
+            ",",
+            SvrBridge.Core.VrOverlayTransform.Translation(float.NaN, 0f, 0f).ToFloats()
+                .Concat(SvrBridge.Core.OverlayAnchor.HeadOffset.ToFloats())
+                .Select(value => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)));
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Parse(poisoned)
+                .Equals(SvrBridge.Core.OverlayPlacement.Default),
+            "A non-finite placement argument was accepted.");
+    }
+
+    /// <summary>
+    /// The move handle hit-tests to the move handle and to nothing else - the
+    /// structural rule <see cref="ChatOverlayLayout"/> exists for. Every
+    /// corner and the centre resolve to it; every point outside resolves to
+    /// nothing, deliberately unlike the dashboard's button rows, where the
+    /// gaps belong to the nearest button.
+    /// </summary>
+    private static void TestChatHandleHitTestMatchesTheDrawnRectangle()
+    {
+        var buttons = ChatOverlayLayout.Buttons;
+        var handle = buttons[ChatOverlayLayout.MoveHandleIndex];
+
+        (float X, float Y)[] inside =
+        [
+            (handle.Left + (handle.Width / 2f), handle.Top + (handle.Height / 2f)),
+            (handle.Left, handle.Top),
+            (handle.Right - 1, handle.Top),
+            (handle.Left, handle.Bottom - 1),
+            (handle.Right - 1, handle.Bottom - 1)
+        ];
+        foreach (var (x, y) in inside)
+        {
+            Assert(
+                ChatOverlayLayout.IndexAt(buttons, x, y) == ChatOverlayLayout.MoveHandleIndex,
+                $"A point inside the move handle ({x}, {y}) did not hit it.");
+        }
+
+        (float X, float Y)[] outside =
+        [
+            (handle.Left - 1, handle.Top + 1),
+            (handle.Right, handle.Top + 1),
+            (handle.Left + 1, handle.Top - 1),
+            (handle.Left + 1, handle.Bottom),
+            (0, 0),
+            (ChatOverlayLayout.PanelWidth - 1, ChatOverlayLayout.PanelHeight - 1)
+        ];
+        foreach (var (x, y) in outside)
+        {
+            Assert(
+                ChatOverlayLayout.IndexAt(buttons, x, y) == ChatOverlayLayout.NoButton,
+                $"A point outside the move handle ({x}, {y}) hit it anyway.");
+        }
+
+        Assert(
+            handle.Right <= ChatOverlayLayout.PanelWidth
+            && handle.Bottom <= ChatOverlayLayout.PanelHeight
+            && handle.Left >= 0
+            && handle.Top >= 0,
+            "The move handle is partly off the panel, so part of it can never be clicked.");
+    }
+
+    /// <summary>
+    /// Counts repaints rather than inspecting the highlight, because the bug
+    /// this guards against is entirely one of frequency: a per-move repaint
+    /// highlights exactly the right control and still drags a 10 Hz panel
+    /// through hundreds of WPF renders a second. Asserting the highlight looks
+    /// right would pass either way - the same class of mistake as the gaze
+    /// animation that eased forever with correct values.
+    /// </summary>
+    private static void TestChatHoverRepaintsOncePerRectangleCrossed()
+    {
+        // Two rectangles, so "crossing into a second" is a real crossing
+        // rather than a trip through empty space. Production ships one today;
+        // the rule has to hold for the table as it grows.
+        Rectangle[] buttons = [new(400, 10, 60, 60), new(300, 10, 60, 60)];
+        var input = new ChatOverlayInput(buttons);
+        input.SetGazing(true);
+
+        Move(input, 410, 20);
+        Move(input, 430, 30);
+        Move(input, 450, 55);
+        Assert(
+            input.HoverRepaintCount == 1 && input.HoveredIndex == 0,
+            $"Moving within one control asked for {input.HoverRepaintCount} repaints instead of 1.");
+
+        Move(input, 320, 20);
+        Move(input, 340, 40);
+        Assert(
+            input.HoverRepaintCount == 2 && input.HoveredIndex == 1,
+            $"Crossing into a second control asked for {input.HoverRepaintCount} repaints instead of 2.");
+
+        Move(input, 100, 400);
+        Move(input, 120, 420);
+        Assert(
+            input.HoverRepaintCount == 3 && input.HoveredIndex == ChatOverlayLayout.NoButton,
+            $"Leaving the controls asked for {input.HoverRepaintCount} repaints instead of 3.");
+
+        // The laser leaving the panel is the same transition, reported by
+        // SteamVR rather than inferred from a coordinate - and it must not
+        // repaint again when hover is already nothing.
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.FocusLeave,
+                0,
+                0,
+                0));
+        Assert(
+            input.HoverRepaintCount == 3,
+            "Losing laser focus with nothing hovered asked for a repaint anyway.");
+
+        Assert(
+            input.TakeRepaintOwed() && !input.TakeRepaintOwed(),
+            "A single hover change was owed either no repaints or more than one.");
+    }
+
+    /// <summary>
+    /// §B2: input is accepted only while the window is in its gazed-at state,
+    /// so an accidental grab needs the wearer to be both looking at the window
+    /// and pointing at it. Losing gaze mid-drag abandons the drag rather than
+    /// leaving one running on a window that has shrunk away.
+    /// </summary>
+    private static void TestChatInputIsRejectedOutsideTheGazedState()
+    {
+        var handle = ChatOverlayLayout.Buttons[ChatOverlayLayout.MoveHandleIndex];
+        var centreX = handle.Left + (handle.Width / 2f);
+        var centreY = handle.Top + (handle.Height / 2f);
+        var input = new ChatOverlayInput();
+
+        Move(input, centreX, centreY);
+        Assert(
+            input.HoveredIndex == ChatOverlayLayout.NoButton && input.HoverRepaintCount == 0,
+            "The window highlighted a control while the wearer was not looking at it.");
+        Assert(
+            Press(input) == ChatInputOutcome.None && !input.IsHolding,
+            "A laser click started a drag while the wearer was not looking at the window.");
+
+        input.SetGazing(true);
+        Move(input, centreX, centreY);
+        Assert(
+            Press(input) == ChatInputOutcome.DragBegan && input.IsHolding,
+            "A laser click on the handle did not start a drag while gazing.");
+
+        input.SetGazing(false);
+        Assert(
+            !input.IsHolding && input.HoveredIndex == ChatOverlayLayout.NoButton,
+            "Looking away left a drag running on a window that had shrunk away.");
+
+        // The invariant ChatOverlay's per-tick reconcile depends on: every
+        // path that withdraws input also drops the hold, so "a live drag with
+        // no live hold" is always a state that can be detected and cancelled.
+        // A drag can only end through a release event, and a release event can
+        // only arrive while input is on - so a hold that outlived its input
+        // would strand the panel on the wearer's hand with no way to let go,
+        // which is exactly what shipped and had to be fixed.
+        foreach (var withdraw in new (string Name, Action<ChatOverlayInput> Act)[]
+                 {
+                     ("looking away", i => i.SetGazing(false)),
+                     ("the laser leaving the panel", i => i.Handle(
+                         new SvrBridge.Core.OverlayMouseEvent(
+                             SvrBridge.Core.OverlayMouseEventKind.FocusLeave,
+                             0,
+                             0,
+                             0))),
+                     ("an explicit cancel", i => i.CancelDrag())
+                 })
+        {
+            var held = new ChatOverlayInput();
+            held.SetGazing(true);
+            Move(held, centreX, centreY);
+            Assert(
+                Press(held) == ChatInputOutcome.DragBegan && held.IsHolding,
+                $"Could not set up the {withdraw.Name} case.");
+
+            withdraw.Act(held);
+            Assert(
+                !held.IsHolding,
+                $"After {withdraw.Name} the handle was still held, so the drag could never be released.");
+        }
+    }
+
+    /// <summary>
+    /// The grab and release signalling, which is all the router owns now that
+    /// the drag arithmetic lives in <see cref="SvrBridge.Core.OverlayDrag"/>:
+    /// only the handle starts a grab, and a release is only reported for a
+    /// grab that was actually started.
+    /// </summary>
+    private static void TestOnlyTheHandleStartsAndEndsAGrab()
+    {
+        var handle = ChatOverlayLayout.Buttons[ChatOverlayLayout.MoveHandleIndex];
+        var centreX = handle.Left + (handle.Width / 2f);
+        var centreY = handle.Top + (handle.Height / 2f);
+        var input = new ChatOverlayInput();
+        input.SetGazing(true);
+
+        // Chat text, not a control: this is where most of the panel is, and
+        // grabbing the window every time the wearer points at a message would
+        // make it unreadable.
+        Move(input, 40, 700);
+        Assert(
+            Press(input) == ChatInputOutcome.None && !input.IsHolding,
+            "A laser click on the chat text started a grab.");
+        Assert(
+            Release(input) == ChatInputOutcome.None,
+            "A release with nothing held was reported as the end of a drag.");
+
+        Move(input, centreX, centreY);
+        Assert(
+            Press(input) == ChatInputOutcome.DragBegan && input.IsHolding,
+            "A laser click on the move handle did not start a grab.");
+        Assert(
+            Release(input) == ChatInputOutcome.DragEnded && !input.IsHolding,
+            "Releasing the trigger did not end the grab.");
+        Assert(
+            Release(input) == ChatInputOutcome.None,
+            "A second release reported a second drag ending.");
+
+        // Losing laser focus mid-grab has to let go: the wearer has pointed
+        // away, and a panel that kept following would be being dragged by a
+        // laser that is no longer on it.
+        Move(input, centreX, centreY);
+        Press(input);
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.FocusLeave,
+                0,
+                0,
+                0));
+        Assert(!input.IsHolding, "The laser leaving the panel left the handle held.");
+    }
+
+    /// <summary>
+    /// §B5's rule, applied to a hand drag: placing the window by hand is an
+    /// explicit user edit, so it wins over an active Streamer.bot anchor
+    /// override rather than leaving one in force that a later <c>reset</c>
+    /// could use to move a hand-placed window somewhere else.
+    /// </summary>
+    private static void TestHandPlacedOffsetClearsAStreamerBotOverride()
+    {
+        var savedDefault = new SvrBridge.Core.OverlayAnchor(
+            SvrBridge.Core.OverlayAnchorMode.Controller,
+            SvrBridge.Core.OverlayAnchorHand.Left);
+        var state = new SvrBridge.Core.SurfaceOverrideState(savedDefault);
+        state.Apply(
+            new SvrBridge.Core.StreamerBotEventPayload
+            {
+                Command = "anchor",
+                RequestedAnchorMode = SvrBridge.Core.OverlayAnchorMode.Head
+            });
+        Assert(
+            state.AnchorOverride is not null
+            && state.EffectiveAnchor.Mode == SvrBridge.Core.OverlayAnchorMode.Head,
+            "The anchor control command under test did not take effect.");
+
+        // The wearer drags the window while it is on the headset anchor.
+        state.AdoptEffectiveAnchorAsSavedDefault();
+        Assert(
+            state.AnchorOverride is null
+            && state.SavedDefault.Mode == SvrBridge.Core.OverlayAnchorMode.Head,
+            "A hand-placed window left the Streamer.bot anchor override in force.");
+
+        state.Apply(new SvrBridge.Core.StreamerBotEventPayload { Command = "reset" });
+        Assert(
+            state.EffectiveAnchor.Mode == SvrBridge.Core.OverlayAnchorMode.Head,
+            "A later reset moved the hand-placed window off the anchor it was placed on.");
+    }
+
+    private static void Move(ChatOverlayInput input, float x, float y) =>
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.Move,
+                x,
+                y,
+                0));
+
+    private static ChatInputOutcome Press(ChatOverlayInput input) =>
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.ButtonDown,
+                0,
+                0,
+                0));
+
+    private static ChatInputOutcome Release(ChatOverlayInput input) =>
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.ButtonUp,
+                0,
+                0,
+                0));
+
+    private static bool Close(float actual, float expected) => MathF.Abs(actual - expected) < 1e-4f;
+
+    /// <summary>
+    /// Element-wise transform comparison. Composing four rotations and an
+    /// inverse accumulates float error well past what exact equality tolerates,
+    /// and an exact check here would fail for reasons that say nothing about
+    /// whether the grab is right.
+    /// </summary>
+    private static void AssertClose(
+        SvrBridge.Core.VrOverlayTransform actual,
+        SvrBridge.Core.VrOverlayTransform expected,
+        string message)
+    {
+        var actualValues = actual.ToFloats();
+        var expectedValues = expected.ToFloats();
+        for (var index = 0; index < actualValues.Length; index++)
+        {
+            Assert(
+                Close(actualValues[index], expectedValues[index]),
+                $"{message} (element {index}: {actualValues[index]} vs {expectedValues[index]})");
+        }
+    }
+
+    /// <summary>
     /// Covers the control-command semantics from §B3 of the Phase 4 plan
     /// without OpenVR: each command applies the expected override,
     /// <c>reset</c> restores the saved default, and an unrecognised command
@@ -936,6 +1690,64 @@ internal static class TraySelfTests
             receivedEmote is not null
             && receivedEmote.EmoteNames.SequenceEqual(unknownEmote.EmoteNames),
             "The chat command's emote names did not survive the worker command channel's JSON round trip.");
+    }
+
+    /// <summary>
+    /// A hand-dragged placement crosses the worker message channel as JSON on
+    /// its way back to the tray for saving. A record struct with a
+    /// parameterless constructor that silently deserialised to zeros would put
+    /// the chat window at the controller's own origin, inside the wearer's
+    /// hand, on the first VR settings change - a failure that looks nothing
+    /// like a serialisation bug from the headset.
+    /// </summary>
+    private static void TestChatPlacementSurvivesTheWorkerMessageChannel()
+    {
+        var options = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+        };
+        var receiveOptions = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+        };
+
+        var placement = new SvrBridge.Core.OverlayPlacement(
+            SvrBridge.Core.VrOverlayTransform.Translation(0.07f, 0.13f, -0.21f)
+            * SvrBridge.Core.VrOverlayTransform.RotationX(0.3f),
+            SvrBridge.Core.VrOverlayTransform.Translation(-0.02f, -0.3f, -0.9f));
+        var settings = new SvrBridge.Core.VrSettingsSnapshot(
+            true,
+            new SvrBridge.Core.OverlayAnchor(
+                SvrBridge.Core.OverlayAnchorMode.Controller,
+                SvrBridge.Core.OverlayAnchorHand.Right),
+            placement,
+            0.8,
+            1.2,
+            SvrBridge.Core.GazeSensitivity.Tight,
+            // Deliberately true: the default is false, so a field dropped in
+            // transit would still round-trip if this matched the default.
+            true,
+            true,
+            SvrBridge.Core.OverlayAnchor.Head,
+            0.7,
+            0.6);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: settings),
+            options);
+        var received = System.Text.Json.JsonSerializer
+            .Deserialize<OpenVrWorkerMessage>(json, receiveOptions)
+            ?.VrSettingsChanged;
+
+        Assert(
+            received is not null && received.ChatPlacement.Equals(placement),
+            "A hand-dragged chat placement did not survive the worker message channel.");
+        Assert(
+            received!.ChatAnchor.Equals(settings.ChatAnchor)
+            && received.GazeSensitivity == settings.GazeSensitivity
+            && received.ChatGazeScaleEnabled,
+            "The rest of the VR settings snapshot did not survive the worker message channel.");
     }
 
     /// <summary>
