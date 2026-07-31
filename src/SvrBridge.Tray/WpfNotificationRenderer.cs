@@ -7,6 +7,11 @@ using System.Windows.Media.Imaging;
 // need a name of their own here.
 using WpfColor = System.Windows.Media.Color;
 using WpfFontFamily = System.Windows.Media.FontFamily;
+// Same collision again for the three types the icon row needs: WinForms has
+// its own HorizontalAlignment, Orientation and Image in scope project-wide.
+using WpfHorizontalAlignment = System.Windows.HorizontalAlignment;
+using WpfOrientation = System.Windows.Controls.Orientation;
+using WpfImage = System.Windows.Controls.Image;
 
 namespace SvrBridge.Tray;
 
@@ -80,12 +85,26 @@ internal sealed class WpfNotificationRenderer : IVrPanelRenderer<NotificationCon
 
     private RenderedPanel RenderOnDispatcherThread(NotificationContent content)
     {
-        var panel = BuildPanel(content);
-        var pixels = WpfOverlayPixelPipeline.RenderToRgba(panel, PanelWidth, PanelHeight);
-        return new RenderedPanel(pixels, PanelWidth, PanelHeight);
+        var width = SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelWidth;
+        var height = SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelHeight;
+        if (content.PanelWidth > 0 && content.PanelHeight > 0)
+        {
+            width = Math.Clamp(
+                content.PanelWidth,
+                SvrBridge.Core.NotificationAppearanceSettings.MinimumPanelDimension,
+                SvrBridge.Core.NotificationAppearanceSettings.MaximumPanelDimension);
+            height = Math.Clamp(
+                content.PanelHeight,
+                SvrBridge.Core.NotificationAppearanceSettings.MinimumPanelDimension,
+                SvrBridge.Core.NotificationAppearanceSettings.MaximumPanelDimension);
+        }
+
+        var panel = BuildPanel(content, width, height);
+        var pixels = WpfOverlayPixelPipeline.RenderToRgba(panel, width, height);
+        return new RenderedPanel(pixels, width, height);
     }
 
-    private Border BuildPanel(NotificationContent content)
+    private Border BuildPanel(NotificationContent content, int panelWidth, int panelHeight)
     {
         var accent = WpfColourParsing.TryParse(content.AccentHex) ?? DefaultAccent;
         var background = WpfColourParsing.TryParse(content.BackgroundHex) ?? DefaultBackgroundColor;
@@ -96,7 +115,25 @@ internal sealed class WpfNotificationRenderer : IVrPanelRenderer<NotificationCon
             ? WpfColor.FromArgb(220, customText.R, customText.G, customText.B)
             : DefaultBody;
 
-        var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        const double padding = 30;
+        var icon = SourceIconImage.TryResolve(content.Source);
+        var iconSize = Math.Min(96, Math.Max(40, panelHeight * 0.34));
+        var textWidth = panelWidth - (padding * 2) - (icon is null ? 0 : iconSize + 24);
+
+        var stack = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = WpfHorizontalAlignment.Center,
+            // MaxWidth, deliberately not Width. Text wraps against this, so
+            // wrapping is decided once and does not shift as the Viewbox
+            // scales - but the block's own desired size stays that of its
+            // actual content, which is what lets short text be scaled UP.
+            // A fixed Width would make every block the full panel width and
+            // the Viewbox would always find a scale of 1, so "New follower!"
+            // would sit at its natural size in a large empty panel - which is
+            // the thing this is meant to avoid.
+            MaxWidth = Math.Max(80, textWidth)
+        };
         if (!string.IsNullOrWhiteSpace(content.Title))
         {
             stack.Children.Add(
@@ -107,21 +144,28 @@ internal sealed class WpfNotificationRenderer : IVrPanelRenderer<NotificationCon
                     FontSize = 32,
                     FontWeight = FontWeights.Bold,
                     Foreground = new SolidColorBrush(titleColor),
-                    TextWrapping = TextWrapping.NoWrap,
-                    TextTrimming = TextTrimming.CharacterEllipsis
+                    // Wraps rather than ellipsing: the panel now grows its
+                    // text to fit rather than cutting it off, so there is
+                    // nothing to gain from trimming a long headline away.
+                    TextWrapping = TextWrapping.Wrap,
+                    TextAlignment = TextAlignment.Center
                 });
         }
 
-        stack.Children.Add(
-            new TextBlock
-            {
-                Text = content.Text,
-                FontFamily = new WpfFontFamily("Segoe UI"),
-                FontSize = 22,
-                Foreground = new SolidColorBrush(bodyColor),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 10, 0, 0)
-            });
+        if (!string.IsNullOrWhiteSpace(content.Text))
+        {
+            stack.Children.Add(
+                new TextBlock
+                {
+                    Text = content.Text,
+                    FontFamily = new WpfFontFamily("Segoe UI"),
+                    FontSize = 22,
+                    Foreground = new SolidColorBrush(bodyColor),
+                    TextWrapping = TextWrapping.Wrap,
+                    TextAlignment = TextAlignment.Center,
+                    Margin = new Thickness(0, 10, 0, 0)
+                });
+        }
 
         var template = TryGetTemplateImage(content.TemplatePath);
 
@@ -134,7 +178,48 @@ internal sealed class WpfNotificationRenderer : IVrPanelRenderer<NotificationCon
         // Legibility over a bad template is now entirely the wearer's own
         // choice of text colour and background opacity, the same as it
         // always was for the flat-colour case.
-        FrameworkElement contentPanel = stack;
+        // Grows short text to fill the panel and shrinks long text to fit it,
+        // in one mechanism. StretchDirection.Both is the whole point: without
+        // it a two-word alert would sit tiny in the middle of a large panel,
+        // which is what "expands to fill as needed" is asking to avoid. The
+        // stack's fixed Width above is what text wraps against, so wrapping
+        // is decided before scaling rather than fighting it.
+        FrameworkElement contentPanel = new Viewbox
+        {
+            Child = stack,
+            Stretch = Stretch.Uniform,
+            StretchDirection = StretchDirection.Both,
+            HorizontalAlignment = WpfHorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        if (icon is not null)
+        {
+            // A Grid, not a horizontal StackPanel. A StackPanel measures its
+            // children with infinite width along its own axis, which leaves a
+            // Viewbox with no width to fit into - it then sizes itself to the
+            // unconstrained content and pushes everything else out of the
+            // panel. Rendered, that looked like one enormous clipped word.
+            // A star column gives the Viewbox a real width to scale against.
+            var row = new Grid();
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var iconElement = new WpfImage
+            {
+                Source = icon,
+                Width = iconSize,
+                Height = iconSize,
+                Stretch = Stretch.Uniform,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 24, 0)
+            };
+            Grid.SetColumn(iconElement, 0);
+            Grid.SetColumn(contentPanel, 1);
+            row.Children.Add(iconElement);
+            row.Children.Add(contentPanel);
+            contentPanel = row;
+        }
 
         // Opacity lives on the brush, not baked into the colour's alpha
         // channel, so the same value applies uniformly whether the
@@ -149,8 +234,8 @@ internal sealed class WpfNotificationRenderer : IVrPanelRenderer<NotificationCon
 
         return new Border
         {
-            Width = PanelWidth,
-            Height = PanelHeight,
+            Width = panelWidth,
+            Height = panelHeight,
             // Stretch=Uniform is WPF's own fit-with-letterbox: it scales the
             // template down (never up past its own resolution) to fit inside
             // the panel while preserving its aspect ratio, centring the
@@ -171,7 +256,7 @@ internal sealed class WpfNotificationRenderer : IVrPanelRenderer<NotificationCon
             // "nothing added on top of a template" rule the scrim follows.
             BorderBrush = template is null ? new SolidColorBrush(accent) : System.Windows.Media.Brushes.Transparent,
             BorderThickness = template is null ? new Thickness(0, 0, 0, 6) : new Thickness(0),
-            Padding = new Thickness(30),
+            Padding = new Thickness(padding),
             Child = contentPanel
         };
     }

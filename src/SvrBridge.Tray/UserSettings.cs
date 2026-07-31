@@ -176,8 +176,23 @@ internal sealed record UserSettings
     public double NotificationBackgroundOpacity { get; init; } =
         NotificationAppearanceSettings.DefaultBackgroundOpacity;
 
-    /// <summary>Rounds the notification panel's corners, in pixels of a 900x260 panel. 0 (the default) is the original square-cornered panel.</summary>
+    /// <summary>Rounds the notification panel's corners, in pixels of the configured panel size. 0 (the default) is the original square-cornered panel.</summary>
     public double NotificationCornerRadiusPixels { get; init; }
+
+    /// <summary>
+    /// The notification panel's texture size in pixels. Defaults to the
+    /// 900x260 every live headset test to date was run at, so an upgrade
+    /// changes nothing. The overlay's physical size in the headset is still
+    /// <see cref="NotificationSizeScale"/>'s job - this is resolution and
+    /// aspect ratio, which is what decides how much text fits and what shape
+    /// the panel is.
+    /// </summary>
+    public int NotificationPanelWidth { get; init; } =
+        NotificationAppearanceSettings.DefaultPanelWidth;
+
+    /// <inheritdoc cref="NotificationPanelWidth"/>
+    public int NotificationPanelHeight { get; init; } =
+        NotificationAppearanceSettings.DefaultPanelHeight;
 
     /// <summary>
     /// "Source.Type" keys (e.g. <c>"Twitch.Follow"</c>) the wearer has
@@ -211,7 +226,9 @@ internal sealed record UserSettings
             NotificationSlideEdge,
             NotificationTemplatePath,
             NotificationBackgroundOpacity,
-            NotificationCornerRadiusPixels);
+            NotificationCornerRadiusPixels,
+            NotificationPanelWidth,
+            NotificationPanelHeight);
 
     /// <summary>Bundles the "Source.Type" keys and per-event overrides §B2's toggles maintain into the one value the event stream takes.</summary>
     public NotificationEventSettings NotificationEvents =>
@@ -377,6 +394,8 @@ internal sealed class UserSettingsStore
             NotificationTemplatePath = settings.NotificationTemplatePath,
             NotificationBackgroundOpacity = settings.NotificationBackgroundOpacity,
             NotificationCornerRadiusPixels = settings.NotificationCornerRadiusPixels,
+            NotificationPanelWidth = settings.NotificationPanelWidth,
+            NotificationPanelHeight = settings.NotificationPanelHeight,
             EnabledEvents = settings.EnabledEvents,
             EventTemplates = settings.EventTemplates,
             ShowTestEvents = settings.ShowTestEvents
@@ -488,6 +507,13 @@ internal sealed class UserSettingsStore
                 // this app already had.
                 NotificationBackgroundOpacity = saved.NotificationBackgroundOpacity,
                 NotificationCornerRadiusPixels = saved.NotificationCornerRadiusPixels,
+                // Zero in a settings file written before the panel size was
+                // configurable, which NotificationAppearanceSettings.Safe*
+                // reads back as the proven default rather than as a panel
+                // with no area - System.Text.Json cannot tell an older shape
+                // from a legitimate zero, so the reader has to.
+                NotificationPanelWidth = saved.NotificationPanelWidth,
+                NotificationPanelHeight = saved.NotificationPanelHeight,
                 // Absent from every settings file written before Phase 7,
                 // which is exactly today's behaviour per §B2's migration
                 // rule: nothing beyond General.Custom is enabled.
@@ -599,6 +625,8 @@ internal sealed class UserSettingsStore
         public double NotificationBackgroundOpacity { get; init; } =
             NotificationAppearanceSettings.DefaultBackgroundOpacity;
         public double NotificationCornerRadiusPixels { get; init; }
+        public int NotificationPanelWidth { get; init; }
+        public int NotificationPanelHeight { get; init; }
         public IReadOnlyList<string>? EnabledEvents { get; init; }
         public IReadOnlyDictionary<string, string>? EventTemplates { get; init; }
         public bool ShowTestEvents { get; init; } = true;

@@ -64,6 +64,7 @@ internal static class TraySelfTests
         TestSourceIconResourceFindsEveryEmbeddedIcon();
         TestNotificationEventPickerStaysBoundedAtARealCatalogSize();
         TestNotificationEventPickerRoundTripsAndKeepsUnreportedEvents();
+        TestNotificationRendersAtTheConfiguredSizeWithItsIcon();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -2049,7 +2050,9 @@ internal static class TraySelfTests
             SvrBridge.Core.NotificationSlideEdge.Right,
             "C:\\some\\template.png",
             0.33,
-            22);
+            22,
+            1234,
+            567);
         var snapshot = new SvrBridge.Core.VrSettingsSnapshot(
             true,
             new SvrBridge.Core.OverlayAnchor(SvrBridge.Core.OverlayAnchorMode.Head, SvrBridge.Core.OverlayAnchorHand.Right),
@@ -2093,6 +2096,50 @@ internal static class TraySelfTests
         Assert(
             updated.NotificationAppearance == appearance,
             "NotificationAppearance was not merged - every Phase 7 appearance field would revert on restart.");
+        Assert(
+            updated.NotificationPanelWidth == 1234 && updated.NotificationPanelHeight == 567,
+            "The configured panel size was not merged, so a resized panel would revert on restart.");
+
+        TestPanelSizeReadsAnOlderSettingsFileAsTheProvenDefault();
+    }
+
+    /// <summary>
+    /// A settings file written before the panel size was configurable
+    /// deserialises those fields to zero, and zero is not a panel - it is a
+    /// texture with no area. System.Text.Json cannot tell "written by an
+    /// older shape" from "legitimately zero", so the type has to recognise
+    /// its own invalid values, which is what
+    /// <see cref="SvrBridge.Core.NotificationAppearanceSettings.SafePanelWidth"/>
+    /// is for.
+    /// </summary>
+    private static void TestPanelSizeReadsAnOlderSettingsFileAsTheProvenDefault()
+    {
+        var upgraded = SvrBridge.Core.NotificationAppearanceSettings.Default with
+        {
+            PanelWidthPixels = 0,
+            PanelHeightPixels = 0
+        };
+        Assert(
+            upgraded.SafePanelWidth == SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelWidth
+            && upgraded.SafePanelHeight == SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelHeight,
+            "A settings file predating the panel size did not fall back to the proven default, so an "
+            + "upgrading user would get a zero-area notification.");
+
+        var absurd = SvrBridge.Core.NotificationAppearanceSettings.Default with
+        {
+            PanelWidthPixels = 999999,
+            PanelHeightPixels = 1
+        };
+        Assert(
+            absurd.SafePanelWidth == SvrBridge.Core.NotificationAppearanceSettings.MaximumPanelDimension
+            && absurd.SafePanelHeight == SvrBridge.Core.NotificationAppearanceSettings.MinimumPanelDimension,
+            "An out-of-range panel size was not clamped - this texture is re-uploaded every animation "
+            + "frame, so an unbounded value costs real per-frame bandwidth.");
+
+        Assert(
+            SvrBridge.Core.NotificationAppearanceSettings.Default.SafePanelWidth == 900
+            && SvrBridge.Core.NotificationAppearanceSettings.Default.SafePanelHeight == 260,
+            "The default panel size changed from the 900x260 every live headset test to date was run at.");
     }
 
     /// <summary>
@@ -2482,6 +2529,121 @@ internal static class TraySelfTests
     /// full-resolution photo for a 900x260 panel; a template already under
     /// the cap must not be upscaled.
     /// </summary>
+    /// <summary>
+    /// The panel honours its configured pixel size, draws the source's icon
+    /// when one ships, and grows short text rather than leaving it small in a
+    /// large panel.
+    /// <para>
+    /// Asserted on the rendered pixels rather than on the WPF tree, because
+    /// what matters is what reaches the overlay. Ink coverage - how many
+    /// pixels differ from the flat background - is the measurable stand-in
+    /// for "the text got bigger": the same two words in a panel of the same
+    /// size must cover materially more of it once they are allowed to scale
+    /// up, and an icon must add ink on the side of the panel it sits on.
+    /// </para>
+    /// </summary>
+    private static void TestNotificationRendersAtTheConfiguredSizeWithItsIcon()
+    {
+        using var renderer = new WpfNotificationRenderer();
+
+        var custom = renderer.Render(
+            new NotificationContent("Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 640, 400));
+        Assert(
+            custom.Width == 640 && custom.Height == 400,
+            $"The panel ignored its configured pixel size - rendered {custom.Width}x{custom.Height}.");
+        Assert(
+            custom.Rgba.Length == 640 * 400 * 4,
+            "The rendered buffer did not match the configured panel size.");
+
+        var defaulted = renderer.Render(
+            new NotificationContent("Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0));
+        Assert(
+            defaulted.Width == SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelWidth
+            && defaulted.Height == SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelHeight,
+            "A caller that named no panel size did not get the proven default.");
+
+        // Out of range on the way in, clamped rather than trusted - the same
+        // texture is re-uploaded every animation frame.
+        var absurd = renderer.Render(
+            new NotificationContent("x", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 99999, 10));
+        Assert(
+            absurd.Width == SvrBridge.Core.NotificationAppearanceSettings.MaximumPanelDimension
+            && absurd.Height == SvrBridge.Core.NotificationAppearanceSettings.MinimumPanelDimension,
+            "The renderer did not clamp an out-of-range panel size.");
+
+        // Two words in a wide panel: with the Viewbox scaling them up they
+        // have to cover far more of it than they would at a fixed 32pt.
+        var shortText = renderer.Render(
+            new NotificationContent("Hi", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 900, 260));
+        var longText = renderer.Render(
+            new NotificationContent(
+                "Ashling — Follow",
+                "A much longer accompanying message that has to wrap across several lines to fit "
+                + "inside a panel of this size at all, which is exactly when scaling down matters.",
+                "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 900, 260));
+        Assert(
+            InkCoverage(shortText) > 0.02,
+            "Two words in a 900x260 panel covered almost none of it - the text is not being scaled up "
+            + "to fill the box.");
+        Assert(
+            InkCoverage(longText) > 0.02,
+            "A long message rendered almost no ink, so it was not scaled down to fit either.");
+
+        // An icon has to add ink where there was none. Skipped rather than
+        // failed when this build ships no icons at all, since shipping none
+        // is a valid state - the coloured chip is the desktop fallback and a
+        // notification simply has no icon.
+        var anySource = System.Reflection.Assembly.GetExecutingAssembly()
+            .GetManifestResourceNames()
+            .Where(name => name.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            .Select(name => Path.GetFileNameWithoutExtension(name).Split('.').Last())
+            .FirstOrDefault();
+        if (anySource is not null)
+        {
+            var withIcon = renderer.Render(
+                new NotificationContent(
+                    "Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, anySource, 900, 260));
+            var withoutIcon = renderer.Render(
+                new NotificationContent(
+                    "Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 900, 260));
+            Assert(
+                InkCoverage(withIcon) > InkCoverage(withoutIcon),
+                $"Drawing the \"{anySource}\" icon did not add any ink, so no icon reached the panel.");
+            Assert(
+                InkCoverage(renderer.Render(
+                    new NotificationContent(
+                        "Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0,
+                        "NoSuchPlatform", 900, 260)))
+                == InkCoverage(withoutIcon),
+                "An unknown source changed the panel, so it did not fall through to drawing no icon.");
+        }
+    }
+
+    /// <summary>
+    /// The fraction of a rendered panel whose pixels differ from its
+    /// top-left corner - a proxy for "how much was drawn on it". Compared
+    /// between renders rather than against an absolute figure, since the
+    /// exact number depends on font rasterisation.
+    /// </summary>
+    private static double InkCoverage(RenderedPanel panel)
+    {
+        var backgroundR = panel.Rgba[0];
+        var backgroundG = panel.Rgba[1];
+        var backgroundB = panel.Rgba[2];
+        var differing = 0;
+        for (var index = 0; index + 3 < panel.Rgba.Length; index += 4)
+        {
+            if (Math.Abs(panel.Rgba[index] - backgroundR) > 12
+                || Math.Abs(panel.Rgba[index + 1] - backgroundG) > 12
+                || Math.Abs(panel.Rgba[index + 2] - backgroundB) > 12)
+            {
+                differing++;
+            }
+        }
+
+        return differing / (double)(panel.Width * panel.Height);
+    }
+
     private static void TestNotificationTemplateLoaderDownscalesAnOversizedImage()
     {
         var oversizedPath = Path.Combine(Path.GetTempPath(), $"svr-bridge-oversized-{Guid.NewGuid():N}.png");

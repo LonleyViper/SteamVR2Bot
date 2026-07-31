@@ -66,6 +66,11 @@ internal sealed class NotificationOverlay : IDisposable
     private string _templatePath = "";
     private double _backgroundOpacity = NotificationAppearanceSettings.DefaultBackgroundOpacity;
     private double _cornerRadiusPixels;
+    private int _panelWidth = NotificationAppearanceSettings.DefaultPanelWidth;
+    private int _panelHeight = NotificationAppearanceSettings.DefaultPanelHeight;
+
+    /// <summary>The source of the last notification actually shown, so the positioning frame can preview this wearer's own platform icon without this file naming any platform.</summary>
+    private string _lastNotificationSource = "";
 
     private OverlayPlacement _placement;
 
@@ -301,7 +306,36 @@ internal sealed class NotificationOverlay : IDisposable
         _templatePath = appearance.TemplatePath;
         _backgroundOpacity = Math.Clamp(appearance.BackgroundOpacity, 0d, 1d);
         _cornerRadiusPixels = Math.Max(0d, appearance.CornerRadiusPixels);
+        // Read through the Safe* properties, which turn the zero a settings
+        // file predating these fields deserialises to back into the proven
+        // default rather than a panel with no area.
+        _panelWidth = appearance.SafePanelWidth;
+        _panelHeight = appearance.SafePanelHeight;
+        // The laser's coordinate space is the texture's, so a resized panel
+        // has to re-scale it or grabbing the positioning frame lands in the
+        // wrong place - a mismatch that is invisible until somebody tries to
+        // drag it.
+        TrySetMouseScale();
         _transitionAnimator.Reset();
+    }
+
+    /// <summary>
+    /// Points the laser's coordinate space at the current texture size.
+    /// Failure is not fatal and not new - some SteamVR versions have no
+    /// mouse-scale entry point, which costs hand-positioning and nothing
+    /// else, exactly as it does at construction.
+    /// </summary>
+    private void TrySetMouseScale()
+    {
+        try
+        {
+            _surface.SetMouseScale(_panelWidth, _panelHeight);
+        }
+        catch (Exception)
+        {
+            // Already reported once at construction; a repeat on every
+            // appearance change would be noise.
+        }
     }
 
     /// <summary>
@@ -427,7 +461,15 @@ internal sealed class NotificationOverlay : IDisposable
                     _textHex,
                     payload.Image,
                     _backgroundOpacity,
-                    _cornerRadiusPixels));
+                    _cornerRadiusPixels,
+                    payload.Source,
+                    _panelWidth,
+                    _panelHeight));
+            if (!string.IsNullOrWhiteSpace(payload.Source))
+            {
+                _lastNotificationSource = payload.Source;
+            }
+
             _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
             if (!_shown)
             {
@@ -477,7 +519,16 @@ internal sealed class NotificationOverlay : IDisposable
                 _textHex,
                 _templatePath,
                 _backgroundOpacity,
-                _cornerRadiusPixels));
+                _cornerRadiusPixels,
+                // Whichever source last actually sent something, so the frame
+                // looks like this wearer's own alerts - and no icon at all
+                // until one has. Naming a platform here would be a hardcoded
+                // platform name in production code for the sake of a preview;
+                // the panel's bounds do not depend on the icon either way, so
+                // there is nothing to position differently.
+                _lastNotificationSource,
+                _panelWidth,
+                _panelHeight));
         _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
         _surface.SetAlpha((float)_opacity);
         _surface.SetWidthInMeters(WidthInMeters * (float)_sizeScale);

@@ -179,8 +179,44 @@ public sealed record NotificationAppearanceSettings(
     NotificationSlideEdge SlideEdge,
     string TemplatePath,
     double BackgroundOpacity,
-    double CornerRadiusPixels)
+    double CornerRadiusPixels,
+    int PanelWidthPixels = NotificationAppearanceSettings.DefaultPanelWidth,
+    int PanelHeightPixels = NotificationAppearanceSettings.DefaultPanelHeight)
 {
+    /// <summary>The panel's pixel size before it was configurable - the migration default, and what every live headset test to date was run at.</summary>
+    public const int DefaultPanelWidth = 900;
+
+    /// <inheritdoc cref="DefaultPanelWidth"/>
+    public const int DefaultPanelHeight = 260;
+
+    /// <summary>
+    /// Bounds for the configurable panel size. The lower bound is where text
+    /// stops being readable at any sane distance; the upper is a texture this
+    /// app re-uploads on every animation frame, so an unbounded value would
+    /// let a typo cost real per-frame bandwidth rather than just looking odd.
+    /// </summary>
+    public const int MinimumPanelDimension = 200;
+
+    /// <inheritdoc cref="MinimumPanelDimension"/>
+    public const int MaximumPanelDimension = 2048;
+
+    /// <summary>
+    /// The panel's pixel size, clamped and with a zero or negative value -
+    /// which is what a settings file written before these fields existed
+    /// deserialises to - read as "use the proven default" rather than as a
+    /// panel with no area. System.Text.Json cannot tell an older shape from a
+    /// legitimate zero, so the type has to recognise its own invalid values.
+    /// </summary>
+    public int SafePanelWidth => SafeDimension(PanelWidthPixels, DefaultPanelWidth);
+
+    /// <inheritdoc cref="SafePanelWidth"/>
+    public int SafePanelHeight => SafeDimension(PanelHeightPixels, DefaultPanelHeight);
+
+    private static int SafeDimension(int value, int fallback) =>
+        value <= 0
+            ? fallback
+            : Math.Clamp(value, MinimumPanelDimension, MaximumPanelDimension);
+
     /// <summary>
     /// Exactly the panel's alpha before this setting existed -
     /// <c>WpfNotificationRenderer</c> hardcoded 235/255 for its background
@@ -199,5 +235,7 @@ public sealed record NotificationAppearanceSettings(
         NotificationSlideEdge.Bottom,
         "",
         DefaultBackgroundOpacity,
-        0);
+        0,
+        DefaultPanelWidth,
+        DefaultPanelHeight);
 }

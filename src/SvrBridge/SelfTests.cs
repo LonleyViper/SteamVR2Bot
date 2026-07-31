@@ -1503,19 +1503,41 @@ internal static class SelfTests
             received.Payload.Target == StreamerBotEventTarget.Notification,
             "A directly-subscribed enabled event did not produce a notification payload.");
 
-        // The generic default has to name whoever the event is about and the
-        // event readably, without knowing which field this particular event
-        // puts its actor in - here it is targetUser.name, and the payload
-        // carries no plain "user" at all.
+        // The headline is the Title; Text carries whatever the viewer
+        // themselves typed, and a follow carries nothing, so it stays empty
+        // rather than repeating the headline.
         Assert(
-            received.Payload.Text.Contains("Ashling"),
-            $"The generic template did not name the actor from the payload - got \"{received.Payload.Text}\".");
+            received.Payload.Title.Contains("Ashling"),
+            $"The generic template did not name the actor from the payload - got \"{received.Payload.Title}\".");
         Assert(
-            received.Payload.Text.Contains("Follow"),
-            $"The generic template did not name the event - got \"{received.Payload.Text}\".");
+            received.Payload.Title.Contains("Follow"),
+            $"The generic template did not name the event - got \"{received.Payload.Title}\".");
         Assert(
-            !received.Payload.Text.Contains("Someone"),
+            !received.Payload.Title.Contains("Someone"),
             "The generic template fell back to its literal even though the payload named an actor.");
+        Assert(
+            received.Payload.Text.Length == 0,
+            $"An event carrying no message of its own still filled the message line - got \"{received.Payload.Text}\".");
+        Assert(
+            received.Payload.Source == "Twitch",
+            "The event's source did not reach the payload, so the notification could not show its icon.");
+
+        // A cheer's note and a donation's message are the part worth reading,
+        // and they get their own line under the headline rather than being
+        // folded into it. Twitch.Cheer documents the field as "text".
+        await SendEventAsync(
+            socket,
+            "Twitch",
+            "Follow",
+            new { targetUser = new { name = "Ashling" }, text = "have some bits!", bits = 500, isTest = false },
+            timeout.Token);
+        var withMessage = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            withMessage.Payload.Text == "have some bits!",
+            $"The viewer's own message did not reach its own line - got \"{withMessage.Payload.Text}\".");
+        Assert(
+            withMessage.Payload.Title.Contains("Ashling"),
+            "The headline was lost once the payload also carried a message.");
 
         // Twitch documents systemMessage on Sub/ReSub/GiftSub: a whole
         // sentence it wrote itself. It must win over anything assembled here,
@@ -1534,10 +1556,10 @@ internal static class SelfTests
             timeout.Token);
         var withSystemMessage = await stream.Events.ReadAsync(timeout.Token);
         Assert(
-            withSystemMessage.Payload.Text
+            withSystemMessage.Payload.Title
             == "Viper subscribed at Tier 1. They've subscribed for 3 months!",
             "The platform's own written-out sentence did not win over this app's assembled wording - "
-            + $"got \"{withSystemMessage.Payload.Text}\".");
+            + $"got \"{withSystemMessage.Payload.Title}\".");
 
         await SendEventAsync(
             socket,
@@ -1547,7 +1569,7 @@ internal static class SelfTests
             timeout.Token);
         var blankSystemMessage = await stream.Events.ReadAsync(timeout.Token);
         Assert(
-            blankSystemMessage.Payload.Text.Contains("Ashling"),
+            blankSystemMessage.Payload.Title.Contains("Ashling"),
             "A present-but-blank systemMessage produced an empty notification instead of falling "
             + "through to the generic wording.");
 

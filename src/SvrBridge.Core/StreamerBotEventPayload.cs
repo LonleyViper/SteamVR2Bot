@@ -105,6 +105,15 @@ public sealed record StreamerBotEventPayload
     public string Image { get; init; } = "";
 
     /// <summary>
+    /// Which Streamer.bot source this came from - "Twitch", "Kick", whatever
+    /// <c>GetEvents</c> reported - so the notification can show that
+    /// platform's icon beside the text. Empty for a hand-authored
+    /// <c>General.Custom</c> payload, which is this app's own contract rather
+    /// than any platform's, and empty means simply "no icon".
+    /// </summary>
+    public string Source { get; init; } = "";
+
+    /// <summary>
     /// The exact substrings of <see cref="Text"/> a platform identified as
     /// emotes, e.g. <c>["Kappa", "PogChamp"]</c>. The renderer looks each one
     /// up in its own emote image cache and embeds the real image when one is

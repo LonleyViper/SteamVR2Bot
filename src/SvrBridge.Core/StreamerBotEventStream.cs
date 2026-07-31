@@ -120,6 +120,20 @@ public sealed record NotificationEventSettings(
     /// </summary>
     public const string SystemMessageField = "systemMessage";
 
+    /// <summary>
+    /// Where an event keeps whatever the viewer actually typed alongside it -
+    /// the note on a cheer, the message with a donation.
+    /// <para>
+    /// Drawn under the headline rather than folded into it, because it is
+    /// somebody's own words and deserves its own line. <c>Twitch.Cheer</c>
+    /// documents it as <c>text</c> (beside <c>bits</c>); tip and donation
+    /// integrations more often use <c>message</c>, and a few use
+    /// <c>comment</c> - so all three are tried, in that order, and an event
+    /// carrying none of them simply has no second line.
+    /// </para>
+    /// </summary>
+    public const string MessageTemplate = "{text|message|comment}";
+
     /// <summary>No extra events enabled - exactly today's behaviour, for a caller that has not opted into any.</summary>
     public static readonly NotificationEventSettings None = new(
         [],
@@ -943,10 +957,23 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
                 $"{eventLabel} payload: {data.GetRawText()}",
                 BridgeLogLevel.Debug));
 
+        // The viewer's own words, when they left any, go on their own line
+        // under the headline rather than being folded into it - a cheer's
+        // note and a donation's message are the part worth reading. A custom
+        // template is left alone: someone who wrote their own wording has
+        // already said what they want shown, and appending to it would
+        // override that.
+        var message = custom is null
+            ? StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.MessageTemplate, data, source, type)
+            : "";
+
         payload = new StreamerBotEventPayload
         {
             Target = StreamerBotEventTarget.Notification,
-            Text = text
+            Source = source,
+            Title = text,
+            Text = message
         };
         rejection = "";
         return true;

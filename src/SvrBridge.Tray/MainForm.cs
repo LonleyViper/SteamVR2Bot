@@ -44,6 +44,8 @@ internal sealed class MainForm : Form
     private readonly Button _clearTemplatePath = new();
     private readonly TrackBar _notificationBackgroundOpacity = new();
     private readonly NumericUpDown _notificationCornerRadius = new();
+    private readonly NumericUpDown _notificationPanelWidth = new();
+    private readonly NumericUpDown _notificationPanelHeight = new();
 
     // §B2 - direct event subscription. Opt-in, not "subscribe to
     // everything": Streamer.bot exposes no way to ask which events currently
@@ -163,6 +165,8 @@ internal sealed class MainForm : Form
             NotificationTemplatePath = _notificationTemplatePath.Text.Trim(),
             NotificationBackgroundOpacity = _notificationBackgroundOpacity.Value / 100.0,
             NotificationCornerRadiusPixels = (double)_notificationCornerRadius.Value,
+            NotificationPanelWidth = (int)_notificationPanelWidth.Value,
+            NotificationPanelHeight = (int)_notificationPanelHeight.Value,
             EnabledEvents = _eventPicker.EnabledKeys,
             EventTemplates = new Dictionary<string, string>(_eventTemplates, StringComparer.OrdinalIgnoreCase),
             ShowTestEvents = _showTestEvents.Checked
@@ -234,6 +238,17 @@ internal sealed class MainForm : Form
                 settings.NotificationCornerRadiusPixels,
                 (double)_notificationCornerRadius.Minimum,
                 (double)_notificationCornerRadius.Maximum);
+            // Through the appearance record's Safe* properties, so a settings
+            // file written before the panel size existed shows the proven
+            // default here rather than the zero it deserialised to.
+            _notificationPanelWidth.Value = Math.Clamp(
+                settings.NotificationAppearance.SafePanelWidth,
+                _notificationPanelWidth.Minimum,
+                _notificationPanelWidth.Maximum);
+            _notificationPanelHeight.Value = Math.Clamp(
+                settings.NotificationAppearance.SafePanelHeight,
+                _notificationPanelHeight.Minimum,
+                _notificationPanelHeight.Maximum);
             _showTestEvents.Checked = settings.ShowTestEvents;
             _eventPicker.SetEnabledKeys(settings.EnabledEvents);
             _eventTemplates.Clear();
@@ -879,6 +894,15 @@ internal sealed class MainForm : Form
         _notificationCornerRadius.Width = 80;
         _notificationCornerRadius.ValueChanged += (_, _) => NotifySettingsChanged();
 
+        foreach (var size in (NumericUpDown[])[_notificationPanelWidth, _notificationPanelHeight])
+        {
+            size.Minimum = NotificationAppearanceSettings.MinimumPanelDimension;
+            size.Maximum = NotificationAppearanceSettings.MaximumPanelDimension;
+            size.Increment = 20;
+            size.Width = 80;
+            size.ValueChanged += (_, _) => NotifySettingsChanged();
+        }
+
         _notificationDurationSeconds.Minimum = 0.5m;
         _notificationDurationSeconds.Maximum = 60m;
         _notificationDurationSeconds.Increment = 0.5m;
@@ -930,6 +954,11 @@ internal sealed class MainForm : Form
             ColourRow("Text colour:", _notificationTextColour, _pickTextColour),
             ColourRow("Accent colour:", _notificationAccentColour, _pickAccentColour),
             SettingRow("Background opacity:", _notificationBackgroundOpacity),
+            SettingRow(
+                "Panel size (pixels):",
+                _notificationPanelWidth,
+                PanelSizeByLabel(),
+                _notificationPanelHeight),
             SettingRow("Corner radius (pixels):", _notificationCornerRadius),
             SettingRow("Default duration (seconds):", _notificationDurationSeconds),
             SettingRow("Transition:", _notificationTransition, SlideFromLabel(), _notificationSlideEdge),
@@ -948,6 +977,16 @@ internal sealed class MainForm : Form
         Width = 76,
         Height = RowControlHeight,
         TextAlign = ContentAlignment.MiddleLeft
+    };
+
+    /// <summary>The "x" between the panel's width and height - an inline separator, not a labelled setting of its own.</summary>
+    private static Label PanelSizeByLabel() => new()
+    {
+        Text = "×",
+        AutoSize = false,
+        Width = 16,
+        Height = RowControlHeight,
+        TextAlign = ContentAlignment.MiddleCenter
     };
 
     /// <summary>One "label + hex textbox + pick…" row, shared by the three notification colour settings.</summary>

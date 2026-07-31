@@ -25,7 +25,10 @@ public readonly record struct NotificationContent(
     string TextHex = "",
     string TemplatePath = "",
     double BackgroundOpacity = SvrBridge.Core.NotificationAppearanceSettings.DefaultBackgroundOpacity,
-    double CornerRadiusPixels = 0);
+    double CornerRadiusPixels = 0,
+    string Source = "",
+    int PanelWidth = SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelWidth,
+    int PanelHeight = SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelHeight);
 
 /// <summary>
 /// The messages to draw for one chat repaint, oldest first, newest last - a

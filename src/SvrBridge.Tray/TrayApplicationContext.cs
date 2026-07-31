@@ -1103,7 +1103,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             NotificationSlideEdge = snapshot.NotificationAppearance.SlideEdge,
             NotificationTemplatePath = snapshot.NotificationAppearance.TemplatePath,
             NotificationBackgroundOpacity = snapshot.NotificationAppearance.BackgroundOpacity,
-            NotificationCornerRadiusPixels = snapshot.NotificationAppearance.CornerRadiusPixels
+            NotificationCornerRadiusPixels = snapshot.NotificationAppearance.CornerRadiusPixels,
+            NotificationPanelWidth = snapshot.NotificationAppearance.SafePanelWidth,
+            NotificationPanelHeight = snapshot.NotificationAppearance.SafePanelHeight
         };
 
     private async void FindStreamerBotActions() =>
