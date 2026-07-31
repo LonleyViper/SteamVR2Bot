@@ -937,6 +937,34 @@ internal static class SelfTests
             StreamerBotEventSearch.Search(catalog, "raid").Matches[0].Type == "Raid",
             "Stripping a plural \"s\" narrowed a query that was never plural.");
 
+        // The one deliberate exception to "no hardcoded event names": a
+        // search-only synonym table, because Twitch's bits arrive as Cheer
+        // and being told "no results" for "bits" is indistinguishable from
+        // the feature being broken. It only ever widens a search - see
+        // StreamerBotEventSearch.SynonymGroups.
+        var bits = StreamerBotEventSearch.Search(catalog, "bits");
+        Assert(
+            bits.Matches[0] is { Source: "Twitch", Type: "Cheer" },
+            "Searching \"bits\" did not lead with the event Streamer.bot actually calls Cheer.");
+        Assert(
+            IndexOfKey(bits.Matches, "Twitch.Cheer") < IndexOfKey(bits.Matches, "Twitch.BitsBadgeTier"),
+            "An exact synonym match did not outrank a weaker direct match on the literal word.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "host").Matches.Any(entry => entry.Type == "Raid"),
+            "A synonym group did not connect the word searched to the word Streamer.bot uses.");
+
+        // The rule the exception must not break: a synonym can reorder
+        // results, never gate them. A direct name match always wins.
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "cheer").Matches[0] is { Type: "Cheer" }
+            && StreamerBotEventSearch.Search(catalog, "raid").Matches[0].Type == "Raid"
+            && StreamerBotEventSearch.Search(catalog, "follow").Matches[0].Type == "Follow",
+            "The synonym table displaced a direct name match from the top of the results.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "somethinghappened").Matches
+                .Any(entry => entry.Source == "Zorblatt"),
+            "A source outside the synonym table stopped being findable, which is the thing it must never do.");
+
         Assert(
             StreamerBotEventSearch.Search(catalog, "nothingmatchesthis").MatchCount == 0,
             "A query matching nothing still produced results.");

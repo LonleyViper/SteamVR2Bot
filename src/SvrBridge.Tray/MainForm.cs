@@ -584,6 +584,19 @@ internal sealed class MainForm : Form
         return panel;
     }
 
+    // --- Settings page layout ---
+    // Every setting row puts its label in a column of this fixed width, so
+    // the controls beside them line up down the page. The previous layout
+    // gave each row its own AutoSize label, which meant the control after it
+    // started at a different x on every single row - three "Pick…" buttons in
+    // a column of three landed in three different places. A fixed column is
+    // the whole fix; nothing here is cleverer than that.
+    private const int LabelColumnWidth = 300;
+    private const int RowControlHeight = 26;
+
+    /// <summary>The page's own left edge for section bodies, so every section indents identically.</summary>
+    private const int SectionBodyIndent = 14;
+
     private Control CreateSettingsPage()
     {
         var panel = new FlowLayoutPanel
@@ -594,120 +607,233 @@ internal sealed class MainForm : Form
             AutoScroll = true,
             Padding = new Padding(14)
         };
-        panel.Controls.Add(FieldLabel("Streamer.bot WebSocket address"));
-        _address.Width = 620;
-        _address.PlaceholderText = "ws://127.0.0.1:8080/1";
-        panel.Controls.Add(_address);
-        panel.Controls.Add(FieldLabel("Password (only if Streamer.bot requires one)"));
-        _password.Width = 620;
-        _password.UseSystemPasswordChar = true;
-        panel.Controls.Add(_password);
-        _showPassword.Text = "Show password";
-        _showPassword.CheckedChanged += (_, _) =>
-            _password.UseSystemPasswordChar = !_showPassword.Checked;
-        panel.Controls.Add(_showPassword);
 
-        _eventStream.Text = "Listen for Streamer.bot chat and events (preview)";
-        _eventStream.AutoSize = true;
-        _eventStream.Margin = new Padding(0, 14, 0, 0);
-        _eventStream.CheckedChanged += (_, _) => NotifySettingsChanged();
-        panel.Controls.Add(_eventStream);
-        panel.Controls.Add(new Label
-        {
-            Text = "Streamer.bot actions can broadcast messages to this app with the "
-                   + "“WebsocketBroadcastJson” sub-action. Turn this on to see them arrive "
-                   + "on the Activity tab.",
-            AutoSize = true,
-            MaximumSize = new Size(650, 0),
-            ForeColor = Color.FromArgb(92, 101, 112),
-            Margin = new Padding(20, 0, 0, 2)
-        });
-        _eventStreamState.AutoSize = true;
-        _eventStreamState.ForeColor = Color.FromArgb(92, 101, 112);
-        _eventStreamState.Margin = new Padding(20, 0, 0, 6);
-        _eventStreamState.Text = "Not listening.";
-        panel.Controls.Add(_eventStreamState);
-
-        _notifications.Text = "Show notification broadcasts in the headset (preview)";
-        _notifications.AutoSize = true;
-        _notifications.Margin = new Padding(20, 6, 0, 0);
-        _notifications.CheckedChanged += (_, _) => NotifySettingsChanged();
-        panel.Controls.Add(_notifications);
-        panel.Controls.Add(new Label
-        {
-            Text = "Payloads with “target”: “notification” draw a panel "
-                   + "in VR for a few seconds. Requires the event feed above to be turned on.",
-            AutoSize = true,
-            MaximumSize = new Size(650, 0),
-            ForeColor = Color.FromArgb(92, 101, 112),
-            Margin = new Padding(40, 0, 0, 6)
-        });
-        panel.Controls.Add(
-            AnchorRow("Anchor:", _notificationAnchorMode, _notificationAnchorHand));
-        panel.Controls.Add(SliderRow("Opacity:", _notificationOpacity));
-        panel.Controls.Add(SliderRow("Size:", _notificationSizeScale));
-
-        _chat.Text = "Show chat messages on your wrist (preview)";
-        _chat.AutoSize = true;
-        _chat.Margin = new Padding(20, 6, 0, 0);
-        _chat.CheckedChanged += (_, _) => NotifySettingsChanged();
-        panel.Controls.Add(_chat);
-        panel.Controls.Add(new Label
-        {
-            Text = "Your Twitch chat appears in a window that "
-                   + "grows and brightens when you look at it - no Streamer.bot action needed. "
-                   + "Payloads with “target”: “chat” from your own actions appear there too. "
-                   + "Requires the event feed above to be turned on.",
-            AutoSize = true,
-            MaximumSize = new Size(650, 0),
-            ForeColor = Color.FromArgb(92, 101, 112),
-            Margin = new Padding(40, 0, 0, 6)
-        });
-        panel.Controls.Add(AnchorRow("Anchor:", _chatAnchorMode, _chatAnchorHand));
-        panel.Controls.Add(SliderRow("Opacity:", _chatOpacity));
-        panel.Controls.Add(SliderRow("Size:", _chatSizeScale));
-        panel.Controls.Add(GazeSensitivityRow());
-        panel.Controls.Add(GazeScaleToggle());
-
+        panel.Controls.Add(ConnectionSection());
+        panel.Controls.Add(NotificationsSection());
         panel.Controls.Add(NotificationAppearanceSection());
         panel.Controls.Add(NotificationEventsSection());
+        panel.Controls.Add(ChatSection());
+        panel.Controls.Add(ControllerSection());
 
-        ConfigureButton(_findActions, "Refresh Streamer.bot actions", false);
-        _findActions.Click += (_, _) => FindActionsRequested?.Invoke();
-        panel.Controls.Add(_findActions);
         panel.Controls.Add(new Label
         {
-            Text = "Controller",
-            Font = new Font(Font, FontStyle.Bold),
+            Text = "SteamVR2Bot stays available in SteamVR and runs your shortcuts whenever this app "
+                   + "is open. Changes save automatically.",
             AutoSize = true,
-            Margin = new Padding(0, 20, 0, 4)
+            MaximumSize = new Size(650, 0),
+            ForeColor = MutedForeColour,
+            Margin = new Padding(0, 18, 0, 0)
         });
+        return panel;
+    }
+
+    /// <summary>Where and how to reach Streamer.bot, and whether to listen to it at all.</summary>
+    private Control ConnectionSection()
+    {
+        _address.Width = 420;
+        _address.PlaceholderText = "ws://127.0.0.1:8080/1";
+        _password.Width = 420;
+        _password.UseSystemPasswordChar = true;
+        _showPassword.Text = "Show";
+        _showPassword.AutoSize = true;
+        _showPassword.CheckedChanged += (_, _) =>
+            _password.UseSystemPasswordChar = !_showPassword.Checked;
+
+        _eventStream.Text = "Listen for Streamer.bot chat and events";
+        _eventStream.AutoSize = true;
+        _eventStream.CheckedChanged += (_, _) => NotifySettingsChanged();
+        _eventStreamState.AutoSize = true;
+        _eventStreamState.ForeColor = MutedForeColour;
+        _eventStreamState.Text = "Not listening.";
+
+        return Section(
+            "Streamer.bot connection",
+            "Everything below needs this connection. Streamer.bot actions can also broadcast "
+            + "straight to this app with the “WebsocketBroadcastJson” sub-action.",
+            SettingRow("WebSocket address:", _address),
+            SettingRow("Password (if required):", _password, _showPassword),
+            Indented(_eventStream),
+            Indented(_eventStreamState));
+    }
+
+    /// <summary>Whether headset notifications appear at all, and where.</summary>
+    private Control NotificationsSection()
+    {
+        _notifications.Text = "Show notifications in the headset";
+        _notifications.AutoSize = true;
+        _notifications.CheckedChanged += (_, _) => NotifySettingsChanged();
+
+        return Section(
+            "Notifications",
+            "A panel appears in VR for a few seconds. Position it by hand from the VR "
+            + "dashboard's Notifications tab.",
+            Indented(_notifications),
+            AnchorRow("Anchor:", _notificationAnchorMode, _notificationAnchorHand),
+            SliderRow("Opacity:", _notificationOpacity),
+            SliderRow("Size:", _notificationSizeScale));
+    }
+
+    /// <summary>The wrist chat window and its gaze behaviour.</summary>
+    private Control ChatSection()
+    {
+        _chat.Text = "Show chat messages on your wrist";
+        _chat.AutoSize = true;
+        _chat.CheckedChanged += (_, _) => NotifySettingsChanged();
+
+        _gazeSensitivity.DropDownStyle = ComboBoxStyle.DropDownList;
+        _gazeSensitivity.Items.AddRange(["Relaxed", "Normal", "Tight"]);
+        _gazeSensitivity.Width = 130;
+        _gazeSensitivity.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
+
+        // Off leaves the window at its configured size and opacity instead of
+        // growing it on gaze. Gaze is still measured either way - it is what
+        // decides whether the window accepts the laser pointer - so this is
+        // purely about whether the window changes size while you read it.
+        _chatGazeScale.Text = "Grow and brighten the window when you look at it";
+        _chatGazeScale.AutoSize = true;
+        _chatGazeScale.CheckedChanged += (_, _) => NotifySettingsChanged();
+
+        return Section(
+            "Chat window",
+            "Your Twitch chat appears in a window on your wrist - no Streamer.bot action needed. "
+            + "Grab it with the laser from the VR dashboard's Chat tab to place it.",
+            Indented(_chat),
+            AnchorRow("Anchor:", _chatAnchorMode, _chatAnchorHand),
+            SliderRow("Opacity:", _chatOpacity),
+            SliderRow("Size:", _chatSizeScale),
+            SettingRow("Gaze sensitivity:", _gazeSensitivity),
+            Indented(_chatGazeScale));
+    }
+
+    /// <summary>Controller status and the SteamVR repair/binding buttons.</summary>
+    private Control ControllerSection()
+    {
         _controllerFamily.AutoSize = true;
         _controllerFamily.Text = "Waiting for active VR controllers";
         _bindingDetail.AutoSize = true;
-        _bindingDetail.ForeColor = Color.FromArgb(92, 101, 112);
-        panel.Controls.Add(_controllerFamily);
-        panel.Controls.Add(_bindingDetail);
+        _bindingDetail.ForeColor = MutedForeColour;
 
-        var setupRow = new FlowLayoutPanel { AutoSize = true };
+        ConfigureButton(_findActions, "Refresh Streamer.bot actions", false);
+        _findActions.Click += (_, _) => FindActionsRequested?.Invoke();
         ConfigureButton(_setUpSteamVr, "Repair SteamVR setup", false);
         ConfigureButton(_changeBindings, "SteamVR input bindings", false);
         ConfigureButton(_vrDashboard, "Open SteamVR dashboard", true);
         _setUpSteamVr.Click += (_, _) => SteamVrSetupRequested?.Invoke();
         _changeBindings.Click += (_, _) => BindingsRequested?.Invoke();
         _vrDashboard.Click += (_, _) => DashboardRequested?.Invoke();
-        setupRow.Controls.AddRange([_setUpSteamVr, _changeBindings, _vrDashboard]);
-        panel.Controls.Add(setupRow);
 
-        panel.Controls.Add(new Label
+        var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 6, 0, 0) };
+        buttons.Controls.AddRange([_findActions, _setUpSteamVr, _changeBindings, _vrDashboard]);
+
+        return Section(
+            "Controller and SteamVR",
+            null,
+            Indented(_controllerFamily),
+            Indented(_bindingDetail),
+            Indented(buttons));
+    }
+
+    /// <summary>The grey this page uses for every explanatory line, so "secondary text" is one decision rather than sixteen copies of an RGB triple.</summary>
+    private static readonly Color MutedForeColour = Color.FromArgb(92, 101, 112);
+
+    private static readonly Color SectionRuleColour = Color.FromArgb(226, 230, 235);
+
+    /// <summary>
+    /// One titled group of settings, with an optional line of explanation and
+    /// a hairline above it. Sections exist because this page had grown to
+    /// hold the connection, notifications, their appearance, the alert
+    /// picker, chat and the controller in one undifferentiated column, where
+    /// the only thing separating "background opacity" from "SteamVR input
+    /// bindings" was how far you had scrolled.
+    /// </summary>
+    private Control Section(string title, string? description, params Control[] body)
+    {
+        var section = new FlowLayoutPanel
         {
-            Text = "SteamVR2Bot stays available in SteamVR and runs your shortcuts whenever this app is open. Changes save automatically.",
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
             AutoSize = true,
-            MaximumSize = new Size(650, 0),
-            ForeColor = Color.FromArgb(92, 101, 112),
-            Margin = new Padding(0, 18, 0, 0)
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 0, 0, 18)
+        };
+
+        section.Controls.Add(new Panel
+        {
+            Height = 1,
+            Width = 660,
+            BackColor = SectionRuleColour,
+            Margin = new Padding(0, 0, 0, 10)
         });
-        return panel;
+        section.Controls.Add(new Label
+        {
+            Text = title,
+            Font = new Font("Segoe UI", 11F, FontStyle.Bold),
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, description is null ? 8 : 2)
+        });
+        if (description is not null)
+        {
+            section.Controls.Add(new Label
+            {
+                Text = description,
+                AutoSize = true,
+                MaximumSize = new Size(640, 0),
+                ForeColor = MutedForeColour,
+                Margin = new Padding(0, 0, 0, 10)
+            });
+        }
+
+        foreach (var control in body)
+        {
+            section.Controls.Add(control);
+        }
+
+        return section;
+    }
+
+    /// <summary>
+    /// One setting: its label in a fixed-width column, then its controls.
+    /// <para>
+    /// The fixed column is the entire point. Every row used to size its own
+    /// label, so the control after it began at whatever x that label happened
+    /// to end at - which is why three colour rows put their three identical
+    /// "Pick…" buttons in three different places. Nothing here is cleverer
+    /// than giving them all the same column to start from.
+    /// </para>
+    /// </summary>
+    private static Control SettingRow(string label, params Control[] controls)
+    {
+        var row = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Margin = new Padding(SectionBodyIndent, 0, 0, 8)
+        };
+        row.Controls.Add(new Label
+        {
+            Text = label,
+            AutoSize = false,
+            Width = LabelColumnWidth,
+            Height = RowControlHeight,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0, 0, 8, 0)
+        });
+
+        foreach (var control in controls)
+        {
+            control.Margin = new Padding(0, 0, 8, 0);
+            row.Controls.Add(control);
+        }
+
+        return row;
+    }
+
+    /// <summary>A control that has no label column of its own - a checkbox, a status line - lined up with the labels above and below it.</summary>
+    private static Control Indented(Control control)
+    {
+        control.Margin = new Padding(SectionBodyIndent, 0, 0, 8);
+        return control;
     }
 
     /// <summary>A "Controller / Headset" mode combo plus a "Left / Right" hand combo, the latter only meaningful in Controller mode.</summary>
@@ -715,31 +841,17 @@ internal sealed class MainForm : Form
     {
         modeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         modeCombo.Items.AddRange(["Controller", "Headset"]);
-        modeCombo.Width = 110;
+        modeCombo.Width = 120;
         handCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         handCombo.Items.AddRange(["Left hand", "Right hand"]);
-        handCombo.Width = 110;
+        handCombo.Width = 120;
         modeCombo.SelectedIndexChanged += (_, _) =>
         {
             handCombo.Enabled = modeCombo.SelectedIndex != 1;
             NotifySettingsChanged();
         };
         handCombo.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
-
-        var row = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Margin = new Padding(40, 0, 0, 10)
-        };
-        row.Controls.Add(new Label
-        {
-            Text = label,
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        row.Controls.Add(modeCombo);
-        row.Controls.Add(handCombo);
-        return row;
+        return SettingRow(label, modeCombo, handCombo);
     }
 
     /// <summary>A single 0-100 TrackBar row for an opacity or size setting, labelled and change-notifying.</summary>
@@ -750,161 +862,44 @@ internal sealed class MainForm : Form
         slider.TickFrequency = 10;
         slider.Width = 260;
         slider.ValueChanged += (_, _) => NotifySettingsChanged();
-
-        var row = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Margin = new Padding(40, 0, 0, 10)
-        };
-        row.Controls.Add(new Label
-        {
-            Text = label,
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        row.Controls.Add(slider);
-        return row;
-    }
-
-    /// <summary>
-    /// Off leaves the chat window at its configured size and opacity instead
-    /// of growing it on gaze. Gaze is still measured either way - it is what
-    /// decides whether the window accepts the laser pointer - so this is
-    /// purely about whether the window changes size while you read it.
-    /// </summary>
-    private Control GazeScaleToggle()
-    {
-        _chatGazeScale.Text = "Grow and brighten the window when you look at it";
-        _chatGazeScale.AutoSize = true;
-        _chatGazeScale.Margin = new Padding(40, 0, 0, 10);
-        _chatGazeScale.CheckedChanged += (_, _) => NotifySettingsChanged();
-        return _chatGazeScale;
-    }
-
-    private Control GazeSensitivityRow()
-    {
-        _gazeSensitivity.DropDownStyle = ComboBoxStyle.DropDownList;
-        _gazeSensitivity.Items.AddRange(["Relaxed", "Normal", "Tight"]);
-        _gazeSensitivity.Width = 130;
-        _gazeSensitivity.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
-
-        var row = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Margin = new Padding(40, 0, 0, 10)
-        };
-        row.Controls.Add(new Label
-        {
-            Text = "Gaze sensitivity:",
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        row.Controls.Add(_gazeSensitivity);
-        return row;
+        return SettingRow(label, slider);
     }
 
     /// <summary>§B3/§B4/§B5 of the Phase 7 plan: colours, duration, transition and an optional PNG template.</summary>
     private Control NotificationAppearanceSection()
     {
-        var section = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            AutoSize = true,
-            Margin = new Padding(20, 10, 0, 10)
-        };
-        section.Controls.Add(new Label
-        {
-            Text = "Notification appearance",
-            Font = new Font(Font, FontStyle.Bold),
-            AutoSize = true,
-            Margin = new Padding(0, 0, 0, 6)
-        });
-
-        section.Controls.Add(
-            ColourRow("Background:", _notificationBackgroundColour, _pickBackgroundColour));
-        section.Controls.Add(ColourRow("Text:", _notificationTextColour, _pickTextColour));
-        section.Controls.Add(
-            ColourRow(
-                "Accent (a payload's own “accent” still wins):",
-                _notificationAccentColour,
-                _pickAccentColour));
-
         _notificationBackgroundOpacity.Minimum = 0;
         _notificationBackgroundOpacity.Maximum = 100;
         _notificationBackgroundOpacity.TickFrequency = 10;
-        _notificationBackgroundOpacity.Width = 220;
+        _notificationBackgroundOpacity.Width = 260;
         _notificationBackgroundOpacity.ValueChanged += (_, _) => NotifySettingsChanged();
-        var backgroundOpacityRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
-        backgroundOpacityRow.Controls.Add(new Label
-        {
-            Text = "Background opacity:",
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        backgroundOpacityRow.Controls.Add(_notificationBackgroundOpacity);
-        section.Controls.Add(backgroundOpacityRow);
 
         _notificationCornerRadius.Minimum = 0;
         _notificationCornerRadius.Maximum = 60;
         _notificationCornerRadius.Width = 80;
         _notificationCornerRadius.ValueChanged += (_, _) => NotifySettingsChanged();
-        var cornerRadiusRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
-        cornerRadiusRow.Controls.Add(new Label
-        {
-            Text = "Corner radius (pixels of a 900x260 panel):",
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        cornerRadiusRow.Controls.Add(_notificationCornerRadius);
-        section.Controls.Add(cornerRadiusRow);
 
         _notificationDurationSeconds.Minimum = 0.5m;
         _notificationDurationSeconds.Maximum = 60m;
         _notificationDurationSeconds.Increment = 0.5m;
         _notificationDurationSeconds.DecimalPlaces = 1;
-        _notificationDurationSeconds.Width = 90;
+        _notificationDurationSeconds.Width = 80;
         _notificationDurationSeconds.ValueChanged += (_, _) => NotifySettingsChanged();
-        var durationRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
-        durationRow.Controls.Add(new Label
-        {
-            Text = "Default duration (seconds, a payload's own “duration” still wins):",
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        durationRow.Controls.Add(_notificationDurationSeconds);
-        section.Controls.Add(durationRow);
 
         _notificationTransition.DropDownStyle = ComboBoxStyle.DropDownList;
         _notificationTransition.Items.AddRange(["Fade", "Slide", "Scale pop"]);
-        _notificationTransition.Width = 130;
+        _notificationTransition.Width = 120;
         _notificationSlideEdge.DropDownStyle = ComboBoxStyle.DropDownList;
         _notificationSlideEdge.Items.AddRange(["Top", "Bottom", "Left", "Right"]);
-        _notificationSlideEdge.Width = 110;
+        _notificationSlideEdge.Width = 100;
         _notificationTransition.SelectedIndexChanged += (_, _) =>
         {
             RefreshSlideEdgeEnabled();
             NotifySettingsChanged();
         };
         _notificationSlideEdge.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
-        var transitionRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
-        transitionRow.Controls.Add(new Label
-        {
-            Text = "Transition:",
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        transitionRow.Controls.Add(_notificationTransition);
-        transitionRow.Controls.Add(new Label
-        {
-            Text = "Slide from:",
-            AutoSize = true,
-            Margin = new Padding(14, 6, 8, 0)
-        });
-        transitionRow.Controls.Add(_notificationSlideEdge);
-        section.Controls.Add(transitionRow);
 
-        _notificationTemplatePath.Width = 420;
+        _notificationTemplatePath.Width = 340;
         _notificationTemplatePath.TextChanged += (_, _) => NotifySettingsChanged();
         ConfigureButton(_browseTemplatePath, "Browse…", false);
         _browseTemplatePath.Click += (_, _) =>
@@ -926,20 +921,34 @@ internal sealed class MainForm : Form
             _notificationTemplatePath.Text = "";
             NotifySettingsChanged();
         };
-        var templateRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
-        templateRow.Controls.Add(new Label
-        {
-            Text = "Background PNG template (optional):",
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        templateRow.Controls.Add(_notificationTemplatePath);
-        templateRow.Controls.Add(_browseTemplatePath);
-        templateRow.Controls.Add(_clearTemplatePath);
-        section.Controls.Add(templateRow);
 
-        return section;
+        return Section(
+            "Notification appearance",
+            "A payload can override the accent colour, the duration and the image for its own "
+            + "notification; these are the defaults for everything that does not.",
+            ColourRow("Background colour:", _notificationBackgroundColour, _pickBackgroundColour),
+            ColourRow("Text colour:", _notificationTextColour, _pickTextColour),
+            ColourRow("Accent colour:", _notificationAccentColour, _pickAccentColour),
+            SettingRow("Background opacity:", _notificationBackgroundOpacity),
+            SettingRow("Corner radius (pixels):", _notificationCornerRadius),
+            SettingRow("Default duration (seconds):", _notificationDurationSeconds),
+            SettingRow("Transition:", _notificationTransition, SlideFromLabel(), _notificationSlideEdge),
+            SettingRow(
+                "Background image (optional):",
+                _notificationTemplatePath,
+                _browseTemplatePath,
+                _clearTemplatePath));
     }
+
+    /// <summary>The inline second label on the transition row - "Slide from:" only qualifies the combo beside it, so it does not get a column of its own.</summary>
+    private static Label SlideFromLabel() => new()
+    {
+        Text = "Slide from:",
+        AutoSize = false,
+        Width = 76,
+        Height = RowControlHeight,
+        TextAlign = ContentAlignment.MiddleLeft
+    };
 
     /// <summary>One "label + hex textbox + pick…" row, shared by the three notification colour settings.</summary>
     private Control ColourRow(string label, TextBox hexBox, Button pickButton)
@@ -950,54 +959,17 @@ internal sealed class MainForm : Form
         ConfigureButton(pickButton, "Pick…", false);
         pickButton.Click += (_, _) => PickColour(hexBox);
 
-        var row = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
-        row.Controls.Add(new Label { Text = label, AutoSize = true, Margin = new Padding(0, 6, 8, 0) });
-        row.Controls.Add(hexBox);
-        row.Controls.Add(pickButton);
-        return row;
+        return SettingRow(label, hexBox, pickButton);
     }
 
     /// <summary>§B2 of the Phase 7 plan: direct Streamer.bot event subscription, driven entirely by a live <c>GetEvents</c> response.</summary>
     private Control NotificationEventsSection()
     {
-        var section = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            AutoSize = true,
-            Margin = new Padding(20, 10, 0, 10)
-        };
-        section.Controls.Add(new Label
-        {
-            Text = "Notification events",
-            Font = new Font(Font, FontStyle.Bold),
-            AutoSize = true,
-            Margin = new Padding(0, 0, 0, 6)
-        });
-        section.Controls.Add(new Label
-        {
-            Text = "Nothing is on until you add it here. Streamer.bot has no way to tell this app which "
-                   + "events you've already enabled on its side, so this list is its own switch, not a "
-                   + "mirror of Streamer.bot's Events panel.",
-            AutoSize = true,
-            MaximumSize = new Size(650, 0),
-            ForeColor = Color.FromArgb(92, 101, 112),
-            Margin = new Padding(0, 0, 0, 10)
-        });
-
         _eventPicker.EnabledKeysChanged += NotifySettingsChanged;
         _eventPicker.RefreshRequested += () => NotificationEventsRefreshRequested?.Invoke();
-        section.Controls.Add(_eventPicker);
 
-        var templateRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 10, 0, 6) };
-        templateRow.Controls.Add(new Label
-        {
-            Text = "Customise wording for:",
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
         _templateEventPicker.DropDownStyle = ComboBoxStyle.DropDown;
-        _templateEventPicker.Width = 260;
+        _templateEventPicker.Width = 240;
         _templateEventPicker.Format += (_, args) =>
         {
             if (args.ListItem is StreamerBotEventDescriptor descriptor)
@@ -1005,7 +977,6 @@ internal sealed class MainForm : Form
                 args.Value = descriptor.Key;
             }
         };
-        templateRow.Controls.Add(_templateEventPicker);
         ConfigureButton(_editEventTemplate, "Edit template…", false);
         _editEventTemplate.Click += (_, _) =>
         {
@@ -1033,16 +1004,20 @@ internal sealed class MainForm : Form
 
             NotifySettingsChanged();
         };
-        templateRow.Controls.Add(_editEventTemplate);
-        section.Controls.Add(templateRow);
 
         _showTestEvents.Text = "Show test-fired events (Streamer.bot's own “Test” button)";
         _showTestEvents.AutoSize = true;
         _showTestEvents.Checked = true;
         _showTestEvents.CheckedChanged += (_, _) => NotifySettingsChanged();
-        section.Controls.Add(_showTestEvents);
 
-        return section;
+        return Section(
+            "Alerts",
+            "Nothing is on until you add it here. Streamer.bot has no way to tell this app which "
+            + "events you have already enabled on its side, so this list is its own switch, not a "
+            + "mirror of Streamer.bot's Events panel.",
+            Indented(_eventPicker),
+            SettingRow("Customise wording for:", _templateEventPicker, _editEventTemplate),
+            Indented(_showTestEvents));
     }
 
     private Control CreateActivityPage()

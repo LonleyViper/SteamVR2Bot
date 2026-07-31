@@ -41,6 +41,15 @@ internal sealed class NotificationEventPicker : UserControl
     private const int ChipWidth = 38;
     private const int ListWidth = 560;
 
+    // A row's columns, left to right: chip, event name, source, the
+    // "not reported" note, then the Add/remove control. Named and shared so
+    // the two lists cannot drift apart, and so a long source name ("Streamer
+    // Elements", "StreamlabsDesktop") has somewhere defined to stop rather
+    // than running into whatever is beside it.
+    private const int SourceColumn = 270;
+    private const int NotReportedColumn = 370;
+    private const int ActionColumn = 460;
+
     /// <summary>
     /// Tallest either list grows before it starts scrolling. Both size
     /// themselves to their contents up to this, so one enabled alert gets a
@@ -251,7 +260,12 @@ internal sealed class NotificationEventPicker : UserControl
                 remove.Click += (_, _) => Remove(removedKey);
                 row.Controls.Add(remove);
 
-                if (!IsInCatalog(key))
+                // Only once a catalog has actually arrived. Before the first
+                // GetEvents lands there is no catalog to be absent from, and
+                // flagging every saved alert "not reported" on a freshly
+                // opened window says the wearer's whole selection is broken
+                // when nothing is wrong at all.
+                if (_catalog.Count > 0 && !IsInCatalog(key))
                 {
                     // Kept, not dropped - see the remarks on _enabled. Said
                     // out loud so a user whose alert stopped arriving has
@@ -262,7 +276,7 @@ internal sealed class NotificationEventPicker : UserControl
                         AutoSize = true,
                         ForeColor = MutedText,
                         Font = SmallFont,
-                        Location = new Point(actionColumn - 96, 7)
+                        Location = new Point(NotReportedColumn, 7)
                     });
                 }
 
@@ -426,18 +440,29 @@ internal sealed class NotificationEventPicker : UserControl
         row.Controls.Add(new Label
         {
             Text = descriptor.DisplayName,
-            AutoSize = true,
-            Location = new Point(ChipWidth + 16, 7)
+            AutoSize = false,
+            // Fixed rather than AutoSize so a long event name is clipped
+            // inside its own column instead of running into the source
+            // beside it - the columns have to stay columns.
+            Width = SourceColumn - (ChipWidth + 16) - 8,
+            Height = RowHeight - 8,
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
+            Location = new Point(ChipWidth + 16, 4)
         });
         row.Controls.Add(new Label
         {
             Text = descriptor.Source,
-            AutoSize = true,
+            AutoSize = false,
+            Width = NotReportedColumn - SourceColumn - 8,
+            Height = RowHeight - 8,
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
             ForeColor = MutedText,
-            Location = new Point(300, 7)
+            Location = new Point(SourceColumn, 4)
         });
 
-        actionColumn = 460;
+        actionColumn = ActionColumn;
         return row;
     }
 

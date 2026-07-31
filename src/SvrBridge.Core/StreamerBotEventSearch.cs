@@ -137,13 +137,47 @@ public static class StreamerBotEventSearch
             return CompareAlphabetically(left, right);
         };
 
-    // Lower is better. Kept as named constants because the ordering they
-    // impose is the whole reason the cap does not hide the obvious answer.
+    // Lower is better. Spaced by two so a match reached through a synonym can
+    // sit one step below the same quality of direct match without displacing
+    // the next tier down - "bits" should put Twitch.Cheer above
+    // Twitch.BitsBadgeTier, but a real name match must never lose to a
+    // synonym of the same strength.
     private const int RankExactName = 0;
-    private const int RankNameStartsWith = 1;
-    private const int RankWordStartsWith = 2;
-    private const int RankNameContains = 3;
-    private const int RankSourceOnly = 4;
+    private const int RankNameStartsWith = 2;
+    private const int RankWordStartsWith = 4;
+    private const int RankNameContains = 6;
+    private const int RankSourceOnly = 8;
+    private const int SynonymPenalty = 1;
+
+    /// <summary>
+    /// Words people search for, grouped with the words Streamer.bot actually
+    /// names its events. Typing any member of a group also tries the others.
+    /// <para>
+    /// <b>This is the one place in the picker that hardcodes real event
+    /// vocabulary, and it is a deliberate exception.</b> The governing rule -
+    /// no hardcoded platform or event names - exists so that this app cannot
+    /// quietly stop working for a platform nobody anticipated, and nothing
+    /// here can do that: these terms only ever <em>widen</em> a search.
+    /// Removing this table would change which rows sort first and nothing
+    /// else. Every source, every event, and every future addition still works
+    /// identically whether or not it appears below.
+    /// </para>
+    /// <para>
+    /// It exists because the vocabulary genuinely differs from what a
+    /// streamer would type. Twitch's bits arrive as <c>Cheer</c>; YouTube's
+    /// members arrive as <c>Sponsor</c>. Searching "bits" and being told
+    /// there are no results is indistinguishable from the feature being
+    /// broken, which is what prompted this.
+    /// </para>
+    /// </summary>
+    private static readonly string[][] SynonymGroups =
+    [
+        ["bits", "cheer"],
+        ["donation", "tip"],
+        ["member", "sponsor"],
+        ["host", "raid"],
+        ["sub", "subscription", "subscriber"]
+    ];
 
     /// <summary>
     /// The row's rank, or null when it does not match at all. Every term must
@@ -163,7 +197,9 @@ public static class StreamerBotEventSearch
         var best = int.MaxValue;
         foreach (var term in terms)
         {
-            var rank = RankTerm(descriptor, term) ?? RankTerm(descriptor, WithoutPluralS(term));
+            var rank = RankTerm(descriptor, term)
+                       ?? RankTerm(descriptor, WithoutPluralS(term))
+                       ?? RankBySynonym(descriptor, term);
             if (rank is null)
             {
                 return null;
@@ -173,6 +209,37 @@ public static class StreamerBotEventSearch
         }
 
         return best;
+    }
+
+    /// <summary>
+    /// The best rank any of <paramref name="term"/>'s synonyms reaches, one
+    /// step worse than the same match would have scored directly - see
+    /// <see cref="SynonymGroups"/> for why this exists and why it cannot
+    /// break an unanticipated platform.
+    /// </summary>
+    private static int? RankBySynonym(StreamerBotEventDescriptor descriptor, string term)
+    {
+        var singular = WithoutPluralS(term);
+        int? best = null;
+        foreach (var group in SynonymGroups)
+        {
+            if (!group.Contains(term, StringComparer.OrdinalIgnoreCase)
+                && (singular is null || !group.Contains(singular, StringComparer.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            foreach (var synonym in group)
+            {
+                var rank = RankTerm(descriptor, synonym);
+                if (rank is not null && (best is null || rank < best))
+                {
+                    best = rank;
+                }
+            }
+        }
+
+        return best + SynonymPenalty;
     }
 
     private static int? RankTerm(StreamerBotEventDescriptor descriptor, string? term)
