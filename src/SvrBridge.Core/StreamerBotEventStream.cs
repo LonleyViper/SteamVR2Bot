@@ -66,22 +66,59 @@ public sealed record NotificationEventSettings(
     /// usual field names, and always names the event readably.
     /// <para>
     /// The alternatives are why this can be one string rather than a table of
-    /// which event uses which field: a follow, a raid and a gift sub name
-    /// their actor differently, and the first field that is actually present
-    /// wins. The field names here are ordinary payload field names, not
-    /// platform or event names - an event carrying none of them still renders
-    /// through the <c>"Someone"</c> literal rather than leaving a gap.
+    /// which event uses which field: a follow, a raid and a prediction name
+    /// their subject differently, and the first field actually present wins.
+    /// These are ordinary payload field names, not platform or event names -
+    /// an event carrying none of them still renders through the
+    /// <c>"Someone"</c> literal rather than leaving a gap.
     /// </para>
     /// <para>
-    /// These names are the ones Streamer.bot's own payloads were observed to
-    /// use; <c>streamerbot.event_payload</c> in the activity log records the
-    /// full payload of every event that arrives, so this list can be corrected
-    /// from evidence rather than guessed at again.
+    /// <b>Field naming is genuinely mixed, so the chain covers both
+    /// conventions.</b> Streamer.bot <em>does</em> document event payloads
+    /// (docs.streamer.bot/api/websocket/events/…), unlike <c>GetEvents</c>
+    /// itself, and they disagree with each other: <c>Twitch.Sub</c> carries
+    /// <c>messageId</c>, <c>systemMessage</c> and <c>createdAt</c> alongside
+    /// <c>sub_tier</c>, <c>is_prime</c> and <c>duration_months</c> in the same
+    /// object. A live <c>Twitch.PredictionCreated</c> captured on 2026-07-31
+    /// was snake_case throughout (<c>locks_at</c>, <c>started_at</c>,
+    /// <c>channel_points</c>) - there Streamer.bot had flattened Twitch's
+    /// EventSub <c>payload.event</c> straight into <c>data</c>, keeping
+    /// Twitch's own naming. Betting on either convention would be wrong for
+    /// half the catalog.
+    /// </para>
+    /// <para>
+    /// The actor lives under a different key per event, which is exactly what
+    /// alternatives are for: <c>Twitch.Sub</c> and <c>GiftSub</c> use
+    /// <c>user</c>, <c>Twitch.Follow</c> uses <c>targetUser</c>, and both are
+    /// objects shaped <c>{id, login, name, type}</c>.
+    /// </para>
+    /// <para>
+    /// That captured prediction carried <b>no actor at all</b> - a prediction
+    /// is a channel-wide event, not a viewer's action - which is why
+    /// <c>title</c> sits near the end: for predictions, polls and stream
+    /// updates it is the only human-meaningful field present.
     /// </para>
     /// </summary>
     public const string GenericDefaultTemplate =
         "{user.name|user.display|userName|displayName|targetUser.name|targetUser.display"
-        + "|from|fromName|sender|\"Someone\"} — {eventName}";
+        + "|recipient.name|user_name|user_login|from_broadcaster_user_name|broadcaster_user_name"
+        + "|from|fromName|sender|title|\"Someone\"} — {eventName}";
+
+    /// <summary>
+    /// The field Twitch already fills with a written-out sentence - "Viper
+    /// subscribed at Tier 1. They've subscribed for 3 months!" - which is
+    /// better wording than this app can assemble from parts, and is exactly
+    /// what a wearer expects an alert to say.
+    /// <para>
+    /// Preferred over <see cref="GenericDefaultTemplate"/> whenever it is
+    /// present and the wearer has not written their own template. Documented
+    /// on <c>Twitch.Sub</c>, <c>ReSub</c> and <c>GiftSub</c> among others;
+    /// absent from <c>Twitch.Follow</c> and from channel-wide events, which
+    /// fall through to the generic form. One generic field name and one rule,
+    /// not a table of which event says what.
+    /// </para>
+    /// </summary>
+    public const string SystemMessageField = "systemMessage";
 
     /// <summary>No extra events enabled - exactly today's behaviour, for a caller that has not opted into any.</summary>
     public static readonly NotificationEventSettings None = new(
@@ -874,10 +911,24 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         }
 
         var eventLabel = $"{source}.{type}";
-        var template = _notificationEvents.Templates.TryGetValue(eventLabel, out var custom)
-                        && !string.IsNullOrWhiteSpace(custom)
-            ? custom
-            : _notificationEvents.DefaultTemplate;
+        var custom = _notificationEvents.Templates.TryGetValue(eventLabel, out var configured)
+                     && !string.IsNullOrWhiteSpace(configured)
+            ? configured
+            : null;
+
+        // Twitch writes a whole sentence for some events already, and
+        // anything this app assembles from a name and an event label is worse
+        // wording than the platform's own. A wearer who has not asked for
+        // something specific gets that sentence verbatim - and verbatim is
+        // the point, so it is assigned rather than resolved: it is text
+        // somebody else wrote, and a stray brace in it is not a token.
+        var text = custom is null && TryReadSystemMessage(data) is { } systemMessage
+            ? systemMessage
+            : StreamerBotEventTemplate.Resolve(
+                custom ?? _notificationEvents.DefaultTemplate,
+                data,
+                source,
+                type);
 
         // The whole payload, verbatim, at Debug. Which fields an event
         // actually carries is the one thing needed to write good wording for
@@ -895,11 +946,27 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         payload = new StreamerBotEventPayload
         {
             Target = StreamerBotEventTarget.Notification,
-            Text = StreamerBotEventTemplate.Resolve(template, data, source, type)
+            Text = text
         };
         rejection = "";
         return true;
     }
+
+    /// <summary>
+    /// The platform's own written-out sentence for this event, or null when
+    /// it did not send one - see
+    /// <see cref="NotificationEventSettings.SystemMessageField"/>. Whitespace
+    /// counts as absent: an empty string is a field that exists and says
+    /// nothing, which must fall through to the generic wording rather than
+    /// producing a blank notification.
+    /// </summary>
+    private static string? TryReadSystemMessage(JsonElement data) =>
+        data.ValueKind == JsonValueKind.Object
+        && data.TryGetProperty(NotificationEventSettings.SystemMessageField, out var message)
+        && message.ValueKind == JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(message.GetString())
+            ? message.GetString()
+            : null;
 
     private void FailPendingRequests(Exception reason)
     {

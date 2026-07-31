@@ -1542,11 +1542,13 @@ internal sealed class EventTemplateForm : Form
                    + "    {user.name|targetUser.name|\"Someone\"} just subscribed!\n\n"
                    + "{eventName} is the event's readable name (\"Gift Sub\"), {eventSource} "
                    + "its source, {event} both.\n\n"
-                   + "To find out which fields an event actually carries: turn on this event, "
-                   + "fire it from Streamer.bot's own Test button, and read the "
-                   + "streamerbot.event_payload line in the Activity log - it records the whole "
-                   + "payload verbatim.\n\n"
-                   + "Leave blank to use the generic default.",
+                   + "To find an event's real field names, either read them from "
+                   + "docs.streamer.bot/api/websocket/events, or turn the event on here and let "
+                   + "it happen once - every event that arrives records its whole payload "
+                   + "verbatim in the Activity log as streamerbot.event_payload.\n\n"
+                   + "Leave blank to use the default: for events where the platform writes its "
+                   + "own sentence (subs and gift subs do) that sentence is used as-is; "
+                   + "otherwise it names whoever the event is about, then the event.",
             AutoSize = true,
             MaximumSize = new Size(520, 0),
             ForeColor = Color.FromArgb(92, 101, 112),

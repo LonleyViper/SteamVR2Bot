@@ -1605,10 +1605,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 {
                     isTest,
                     synthetic = true,
-                    user = new { name = "TestViewer", display = "TestViewer" },
-                    message = "This is a test alert from SteamVR2Bot.",
-                    amount = 1,
-                    months = 3
+                    // Shaped after the payloads Streamer.bot documents rather
+                    // than invented now: Twitch.Sub keeps its actor under
+                    // "user" as {id, login, name, type}, Twitch.Follow under
+                    // "targetUser", and duration_months/sub_tier really do sit
+                    // in snake_case beside camelCase systemMessage. Still a
+                    // stand-in, but one shaped like the real thing.
+                    user = new { id = "0", login = "testviewer", name = "TestViewer", type = "" },
+                    targetUser = new { id = "0", login = "testviewer", name = "TestViewer", type = "" },
+                    systemMessage = "TestViewer subscribed at Tier 1. They've subscribed for 3 months!",
+                    duration_months = 3,
+                    sub_tier = "1000"
                 }));
         stream.InjectSyntheticEvent(key[..separator], key[(separator + 1)..], data.RootElement);
         return true;

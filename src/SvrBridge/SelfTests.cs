@@ -794,6 +794,80 @@ internal static class SelfTests
                 "Twitch.Follow")
                 .StartsWith("Someone", StringComparison.Ordinal),
             "The shipped default template left a gap instead of its literal when the payload named nobody.");
+
+        TestGenericTemplateAgainstDocumentedPayloadShapes();
+    }
+
+    /// <summary>
+    /// The shipped default against the payload shapes Streamer.bot actually
+    /// documents, rather than against anything invented here.
+    /// <para>
+    /// Three real shapes, and the reason the default is a chain of
+    /// alternatives rather than one field: <c>Twitch.Sub</c> keeps its actor
+    /// under <c>user</c>, <c>Twitch.Follow</c> under <c>targetUser</c>, and a
+    /// <c>Twitch.PredictionCreated</c> captured live from this very machine
+    /// has no actor at all and is snake_case throughout. One field name would
+    /// have been right for at most one of them.
+    /// </para>
+    /// <para>
+    /// Real platform payload shapes appear here because this is a test
+    /// fixture; production code holds one chain of generic field names and no
+    /// per-event knowledge at all.
+    /// </para>
+    /// </summary>
+    private static void TestGenericTemplateAgainstDocumentedPayloadShapes()
+    {
+        // docs.streamer.bot/api/websocket/events/twitch/follow
+        using var follow = JsonDocument.Parse(
+            """
+            {"broadcaster":null,"isInSharedChat":true,"createdAt":"2026-07-31T15:00:00Z",
+             "isTest":false,"targetUser":{"id":"1","login":"ashling","name":"Ashling","type":""},
+             "followedAt":"2026-07-31T15:00:00Z"}
+            """);
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate, follow.RootElement, "Twitch.Follow")
+            == "Ashling — Follow",
+            "The default did not name a follower from the targetUser object Twitch.Follow documents.");
+
+        // docs.streamer.bot/api/websocket/events/twitch/sub - note sub_tier
+        // and duration_months sitting beside camelCase systemMessage in the
+        // same object, which is why the chain covers both conventions.
+        using var sub = JsonDocument.Parse(
+            """
+            {"user":{"id":"2","login":"viper","name":"Viper","type":""},
+             "messageId":null,"systemMessage":null,"isTest":false,
+             "createdAt":"2026-07-31T15:00:00Z","sub_tier":"1000","is_prime":true,
+             "duration_months":3}
+            """);
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate, sub.RootElement, "Twitch.Sub")
+            == "Viper — Sub",
+            "The default did not name a subscriber from the user object Twitch.Sub documents.");
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                "{user.name} subscribed for {duration_months} months at tier {sub_tier}!",
+                sub.RootElement,
+                "Twitch.Sub")
+            == "Viper subscribed for 3 months at tier 1000!",
+            "A hand-written template could not reach the snake_case fields in a documented payload.");
+
+        // Captured live from this machine on 2026-07-31: a real prediction,
+        // snake_case throughout, and carrying no actor whatsoever.
+        using var prediction = JsonDocument.Parse(
+            """
+            {"locks_at":"2026-07-31T15:33:27Z","id":"2e5b82a4","title":"Poop",
+             "outcomes":[{"id":"cf525541","title":"1","color":"blue","users":0,"channel_points":0}],
+             "started_at":"2026-07-31T15:32:57Z"}
+            """);
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate,
+                prediction.RootElement,
+                "Twitch.PredictionCreated")
+            == "Poop — Prediction Created",
+            "A channel-wide event with no actor did not fall through to its title.");
     }
 
     /// <summary>
@@ -1442,6 +1516,40 @@ internal static class SelfTests
         Assert(
             !received.Payload.Text.Contains("Someone"),
             "The generic template fell back to its literal even though the payload named an actor.");
+
+        // Twitch documents systemMessage on Sub/ReSub/GiftSub: a whole
+        // sentence it wrote itself. It must win over anything assembled here,
+        // and must arrive verbatim - a brace in it is somebody's text, not a
+        // token to resolve.
+        await SendEventAsync(
+            socket,
+            "Twitch",
+            "Follow",
+            new
+            {
+                systemMessage = "Viper subscribed at Tier 1. They've subscribed for 3 months!",
+                targetUser = new { name = "Ashling" },
+                isTest = false
+            },
+            timeout.Token);
+        var withSystemMessage = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            withSystemMessage.Payload.Text
+            == "Viper subscribed at Tier 1. They've subscribed for 3 months!",
+            "The platform's own written-out sentence did not win over this app's assembled wording - "
+            + $"got \"{withSystemMessage.Payload.Text}\".");
+
+        await SendEventAsync(
+            socket,
+            "Twitch",
+            "Follow",
+            new { systemMessage = "   ", targetUser = new { name = "Ashling" }, isTest = false },
+            timeout.Token);
+        var blankSystemMessage = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            blankSystemMessage.Payload.Text.Contains("Ashling"),
+            "A present-but-blank systemMessage produced an empty notification instead of falling "
+            + "through to the generic wording.");
 
         // Even if Streamer.bot sent one anyway, an event never enabled must
         // not become a notification - the dispatch-side check is what
