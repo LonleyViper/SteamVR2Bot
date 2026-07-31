@@ -903,6 +903,40 @@ internal static class SelfTests
                 .Any(entry => entry is { Source: "Twitch", Type: "GiftSub" }),
             "Searching the spaced display name did not find the event.");
 
+        // Ranking, not merely filtering - and this is the case that proves
+        // why it matters. Sorted alphabetically, "sub" filled the visible
+        // twenty with Twitch's EventSub/subscriber-mode plumbing and left
+        // Twitch.Sub at position 28, GiftSub at 22: the cap threw away
+        // precisely the three events anyone typing that word wants.
+        var subs = StreamerBotEventSearch.Search(catalog, "sub");
+        Assert(
+            subs.Matches[0] is { Source: "Twitch", Type: "Sub" },
+            "An event whose name is exactly the query did not rank first.");
+        Assert(
+            subs.Matches.Any(entry => entry is { Source: "Twitch", Type: "GiftSub" })
+            && subs.Matches.Any(entry => entry is { Source: "Twitch", Type: "ReSub" }),
+            "Twitch's own sub events were pushed out of the visible results by the cap.");
+        Assert(
+            IndexOfKey(subs.Matches, "Twitch.GiftSub")
+            < IndexOfKey(subs.Matches, "Twitch.BotEventSubConnected"),
+            "A word-boundary match (Gift Sub) did not outrank an incidental one (BotEventSubConnected).");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "follow").Matches[0].Type == "Follow",
+            "An exact name match did not lead the results for a differently-cased query.");
+
+        // A plural search term has to find a singular event name, or "subs"
+        // silently returns none of Twitch's three sub events.
+        var plural = StreamerBotEventSearch.Search(catalog, "subs");
+        Assert(
+            plural.Matches[0] is { Source: "Twitch", Type: "Sub" },
+            "A plural query did not find the singular event name.");
+        Assert(
+            plural.MatchCount == subs.MatchCount,
+            "A plural query matched a different set from its singular form.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "raid").Matches[0].Type == "Raid",
+            "Stripping a plural \"s\" narrowed a query that was never plural.");
+
         Assert(
             StreamerBotEventSearch.Search(catalog, "nothingmatchesthis").MatchCount == 0,
             "A query matching nothing still produced results.");
@@ -912,6 +946,20 @@ internal static class SelfTests
         Assert(
             StreamerBotEventSearch.Search([], "follow").TotalCount == 0,
             "An empty catalog did not report a zero total.");
+    }
+
+    /// <summary>Where one key sits in a ranked result set, or int.MaxValue when the cap left it out - so an "A outranks B" assertion reads the right way round when B is missing entirely.</summary>
+    private static int IndexOfKey(IReadOnlyList<StreamerBotEventDescriptor> matches, string key)
+    {
+        for (var index = 0; index < matches.Count; index++)
+        {
+            if (string.Equals(matches[index].Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return index;
+            }
+        }
+
+        return int.MaxValue;
     }
 
     /// <summary>
@@ -966,12 +1014,19 @@ internal static class SelfTests
     {
         var sources = new (string Source, int Count, string[] Real)[]
         {
+            // BotEventSubConnected and ChatSubscriberModeOff are real Twitch
+            // events and are here on purpose: they are the incidental "sub"
+            // matches that used to crowd Twitch.Sub out of the visible
+            // twenty, so the ranking test needs them present to mean anything.
             ("Twitch", 137, ["Follow", "Cheer", "Sub", "ReSub", "GiftSub", "GiftBomb", "Raid",
-                "HypeTrainStart", "HypeTrainLevelUp", "RewardRedemption", "ChatMessage", "Whisper"]),
+                "HypeTrainStart", "HypeTrainLevelUp", "RewardRedemption", "ChatMessage", "Whisper",
+                "BotEventSubConnected", "BroadcasterEventSubConnected", "ChatSubscriberModeOff",
+                "ChatSubscriberModeOn", "SubCounterRollover", "SharedChatSub"]),
             ("Elgato", 90, ["ActionTriggered"]),
             ("YouTube", 29, ["BroadcastStarted", "Message", "SuperChat", "NewSponsor"]),
-            ("Kick", 21, ["Follow", "Subscription", "GiftSubscription", "ChatMessage", "StreamOnline"]),
-            ("Trovo", 16, ["Follow", "Subscription"]),
+            ("Kick", 21, ["Follow", "Subscription", "GiftSubscription", "MassGiftSubscription",
+                "Resubscription", "ChatMessage", "StreamOnline"]),
+            ("Trovo", 16, ["Follow", "Subscription", "GiftSubscription"]),
             ("Misc", 13, ["TimedAction"]),
             ("Fourthwall", 13, ["OrderPlaced"]),
             ("MeldStudio", 12, ["SceneChanged"]),
