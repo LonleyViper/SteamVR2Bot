@@ -8,12 +8,24 @@ internal sealed class VrDashboardController : IDisposable
     private readonly Action<ShortcutConfig> _shortcutSaved;
     private readonly Action<string> _shortcutDeleted;
     private readonly Action<VrSettingsSnapshot> _settingsChanged;
+    private readonly Action<bool> _notificationPositioningChanged;
     private readonly Action<string> _log;
     private readonly List<ShortcutConfig> _shortcuts;
     private readonly IReadOnlyList<StreamerBotAction> _actions;
     private readonly VrActionBrowser _actionBrowser;
     private readonly VrDashboardScrollLimiter _scrollLimiter = new();
     private readonly OverlayTextureUploader _uploader;
+
+    /// <summary>
+    /// Coalesces rapid repaints per §B3 of the Phase 6 plan - roughly 16 Hz,
+    /// within the plan's 15-20 Hz target range; tune against rapid
+    /// Tolerance-slider clicking in the headset if that range needs
+    /// adjusting. Only wraps the ordinary already-visible repaint path in
+    /// <see cref="ShowPage"/> - reactivation always paints immediately and
+    /// unthrottled, since showing the dashboard with a stale texture is worse
+    /// than the blink this exists to reduce.
+    /// </summary>
+    private readonly DashboardRepaintCoordinator _repaintCoordinator = new(minimumIntervalMs: 60);
 
     private DashboardPage _page;
     private ControllerSetup _setup = ControllerSetup.Unknown;
@@ -27,13 +39,23 @@ internal sealed class VrDashboardController : IDisposable
     private string? _editingShortcutId;
 
     /// <summary>
-    /// The settings snapshot currently shown on the Settings page, updated
-    /// and re-reported on every applied change - see
+    /// The settings snapshot currently shown on the Chat/Notifications
+    /// settings pages, updated and re-reported on every applied change - see
     /// <see cref="ApplySettingsChange"/>. Unrelated to <see cref="_page"/>:
     /// tabs are peer navigation sitting above the wizard's page stack, not a
     /// page in it - see §"Key design decision" of the Phase 4b plan.
     /// </summary>
     private VrSettingsSnapshot _settings;
+
+    /// <summary>
+    /// Whether the §B1 positioning frame is currently on. Deliberately kept
+    /// here rather than in <see cref="VrSettingsSnapshot"/>/persisted
+    /// settings: it is a transient UI mode, not a preference, so it always
+    /// starts off and is never saved or restored across a restart -
+    /// consistent with the plan's own framing of it as a toggle you turn on
+    /// to place the frame and back off when done.
+    /// </summary>
+    private bool _positioningNotifications;
 
     public VrDashboardController(
         OpenVrInput openVr,
@@ -45,6 +67,7 @@ internal sealed class VrDashboardController : IDisposable
         Action<ShortcutConfig> shortcutSaved,
         Action<string> shortcutDeleted,
         Action<VrSettingsSnapshot> settingsChanged,
+        Action<bool> notificationPositioningChanged,
         Action<string> log)
     {
         _openVr = openVr;
@@ -68,6 +91,7 @@ internal sealed class VrDashboardController : IDisposable
         _shortcutSaved = shortcutSaved;
         _shortcutDeleted = shortcutDeleted;
         _settingsChanged = settingsChanged;
+        _notificationPositioningChanged = notificationPositioningChanged;
         _log = log;
         ShowList(activate, throwOnError: true);
     }
@@ -91,6 +115,23 @@ internal sealed class VrDashboardController : IDisposable
         {
             CaptureRecordedInput(snapshot);
         }
+
+        // A repaint coalesced by ShowPage below must still reach the screen
+        // even if nothing else happens this tick - see
+        // DashboardRepaintCoordinator.Flush.
+        FlushPendingRepaint(Environment.TickCount64);
+    }
+
+    private void FlushPendingRepaint(long nowMs)
+    {
+        try
+        {
+            _repaintCoordinator.Flush(nowMs);
+        }
+        catch (Exception exception)
+        {
+            _log($"SteamVR dashboard repaint failed: {exception.Message}");
+        }
     }
 
     private void HandleClick(float x, float y)
@@ -100,12 +141,12 @@ internal sealed class VrDashboardController : IDisposable
             return;
         }
 
-        // Tabs are peer navigation between the two top-level pages
-        // (Shortcuts and Settings), drawn only on those two - the five
-        // wizard sub-pages never render a tab strip, and this band is
+        // Tabs are peer navigation between the three top-level pages
+        // (Shortcuts, Chat, Notifications), drawn only on those three - the
+        // five wizard sub-pages never render a tab strip, and this band is
         // already dead space for every one of them, so checking it
         // unconditionally here cannot change their behaviour.
-        if ((_page is DashboardPage.List or DashboardPage.Settings)
+        if ((_page is DashboardPage.List or DashboardPage.ChatSettings or DashboardPage.NotificationSettings)
             && y >= VrDashboardLayout.TabStripY
             && y < VrDashboardLayout.TabStripY + VrDashboardLayout.TabStripHeight)
         {
@@ -133,8 +174,11 @@ internal sealed class VrDashboardController : IDisposable
             case DashboardPage.Review:
                 HandleReviewClick(x, y);
                 break;
-            case DashboardPage.Settings:
-                HandleSettingsClick(x, y);
+            case DashboardPage.ChatSettings:
+                HandleChatSettingsClick(x, y);
+                break;
+            case DashboardPage.NotificationSettings:
+                HandleNotificationSettingsClick(x, y);
                 break;
         }
     }
@@ -146,8 +190,11 @@ internal sealed class VrDashboardController : IDisposable
             case 0:
                 ShowList();
                 break;
+            case 1:
+                ShowChatSettings();
+                break;
             default:
-                ShowSettings();
+                ShowNotificationSettings();
                 break;
         }
     }
@@ -669,10 +716,15 @@ internal sealed class VrDashboardController : IDisposable
             DashboardPage.ActionPicker,
             () => VrDashboardRenderer.RenderActionPicker(_actionBrowser));
 
-    private void ShowSettings() =>
+    private void ShowChatSettings() =>
         ShowPage(
-            DashboardPage.Settings,
-            () => VrDashboardRenderer.RenderSettings(_settings));
+            DashboardPage.ChatSettings,
+            () => VrDashboardRenderer.RenderChatSettings(_settings));
+
+    private void ShowNotificationSettings() =>
+        ShowPage(
+            DashboardPage.NotificationSettings,
+            () => VrDashboardRenderer.RenderNotificationSettings(_settings, _positioningNotifications));
 
     /// <summary>
     /// Accepts a settings change this page did not make - today, only the
@@ -681,21 +733,22 @@ internal sealed class VrDashboardController : IDisposable
     /// <para>
     /// Without this the page would keep showing the snapshot it was
     /// constructed with, and its reset control would refuse to act on a window
-    /// it still believed was at the default. Repaints only while the settings
-    /// page is the one showing, so a drag mid-wizard cannot pull the wearer
-    /// off the page they are on.
+    /// it still believed was at the default. Repaints only while the Chat
+    /// settings page is the one showing (the only page a placement drag can
+    /// affect), so a drag mid-wizard cannot pull the wearer off the page
+    /// they are on.
     /// </para>
     /// </summary>
     public void UpdateSettings(VrSettingsSnapshot settings)
     {
         _settings = settings;
-        if (_page == DashboardPage.Settings)
+        if (_page == DashboardPage.ChatSettings)
         {
-            ShowSettings();
+            ShowChatSettings();
         }
     }
 
-    private void HandleSettingsClick(float x, float y)
+    private void HandleChatSettingsClick(float x, float y)
     {
         if (IsWithinRow(y, VrDashboardLayout.ChatControlsY, VrDashboardLayout.SettingsRowHeight))
         {
@@ -715,6 +768,14 @@ internal sealed class VrDashboardController : IDisposable
             return;
         }
 
+        if (IsWithinRow(y, VrDashboardLayout.ResetPlacementY, VrDashboardLayout.SettingsRowHeight))
+        {
+            HandleResetPlacementClick(x);
+        }
+    }
+
+    private void HandleNotificationSettingsClick(float x, float y)
+    {
         if (IsWithinRow(y, VrDashboardLayout.NotificationControlsY, VrDashboardLayout.SettingsRowHeight))
         {
             HandleSurfaceControlsClick(x, isChat: false);
@@ -727,10 +788,42 @@ internal sealed class VrDashboardController : IDisposable
             return;
         }
 
-        if (IsWithinRow(y, VrDashboardLayout.ResetPlacementY, VrDashboardLayout.SettingsRowHeight))
+        if (IsWithinRow(y, VrDashboardLayout.NotificationPositioningY, VrDashboardLayout.SettingsRowHeight))
         {
-            HandleResetPlacementClick(x);
+            HandleNotificationPositioningClick(x);
         }
+    }
+
+    /// <summary>
+    /// The §B1 positioning toggle and its placement reset. Both routed
+    /// through the running worker directly - the toggle via
+    /// <see cref="_notificationPositioningChanged"/> rather than
+    /// <see cref="ApplySettingsChange"/>, since it is not a persisted
+    /// setting; the reset through the ordinary settings path, since a
+    /// placement is.
+    /// </summary>
+    private void HandleNotificationPositioningClick(float x)
+    {
+        var toggle = VrDashboardLayout.PositionNotificationsToggle;
+        if (x >= toggle.Left && x <= toggle.Right)
+        {
+            _positioningNotifications = !_positioningNotifications;
+            _notificationPositioningChanged(_positioningNotifications);
+            ShowNotificationSettings();
+            return;
+        }
+
+        var bounds = VrDashboardLayout.ResetNotificationPlacement;
+        if (x < bounds.Left || x > bounds.Right)
+        {
+            return;
+        }
+
+        // Unconditional, deliberately - see HandleResetPlacementClick's
+        // identical reasoning for chat.
+        _log("The notification position was reset to its default from the VR settings page.");
+        _settings = _settings with { NotificationPlacement = OverlayPlacement.Default };
+        ApplySettingsChange();
     }
 
     /// <summary>
@@ -872,12 +965,23 @@ internal sealed class VrDashboardController : IDisposable
     /// Reports the change (so the OpenVR worker applies it live and the tray
     /// persists it - see §"Live-apply architecture" of the Phase 4b plan)
     /// and repaints immediately, so the wearer sees the effect without
-    /// leaving the settings page.
+    /// leaving whichever settings page they are on. Called only from a
+    /// click handler reached while <see cref="_page"/> is already
+    /// <see cref="DashboardPage.ChatSettings"/> or
+    /// <see cref="DashboardPage.NotificationSettings"/>, so re-showing that
+    /// same page is always correct.
     /// </summary>
     private void ApplySettingsChange()
     {
         _settingsChanged(_settings);
-        ShowSettings();
+        if (_page == DashboardPage.ChatSettings)
+        {
+            ShowChatSettings();
+        }
+        else
+        {
+            ShowNotificationSettings();
+        }
     }
 
     private void ShowPage(
@@ -886,25 +990,62 @@ internal sealed class VrDashboardController : IDisposable
         bool activate = false,
         bool throwOnError = false)
     {
+        // The positioning frame is meant to be on only while the wearer is
+        // actively looking at the Notifications page to place it - leaving
+        // any other page turns it off automatically, so it can never be left
+        // capturing the laser indefinitely just because the wearer moved on
+        // to something else. The toggle itself remains the way to turn it
+        // back on.
+        if (page != DashboardPage.NotificationSettings && _positioningNotifications)
+        {
+            _positioningNotifications = false;
+            _notificationPositioningChanged(false);
+        }
+
         try
         {
-            // Create first, then upload, then show - the upload needs a handle
-            // to land on, and showing an overlay with no texture yet would
-            // flash an empty panel.
             _openVr.EnsureDashboardCreated();
-            var rendered = render();
-            _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
+
             if (activate)
             {
+                // Reactivation (recording flow returning from the SteamVR
+                // system menu, and the very first page at startup) is rare
+                // and always paints immediately and unthrottled - create
+                // first, then upload, then show, since the upload needs a
+                // handle to land on and showing an overlay with no texture
+                // yet would flash an empty panel. Never goes through
+                // _repaintCoordinator: that would risk showing the overlay
+                // before a coalesced paint had actually landed.
+                var rendered = render();
+                _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
                 _openVr.ShowDashboardOverlay();
+                _page = page;
+                _log($"SteamVR dashboard page: {page}.");
+                _openVr.SetInputProbeEnabled(page == DashboardPage.RecordInput);
             }
+            else
+            {
+                // _page (and the log/input-probe state that follow it)
+                // update synchronously regardless of when the throttled
+                // repaint below actually paints - HandleClick's page routing
+                // and CaptureRecordedInput both read _page on the very next
+                // tick, long before a coalesced repaint might fire, so
+                // navigation cannot wait on the same throttle as the pixels.
+                _page = page;
+                _log($"SteamVR dashboard page: {page}.");
 
-            _page = page;
-            _log($"SteamVR dashboard page: {page}.");
+                // Read-only diagnostics stay scoped to the recorder so the
+                // log stays quiet during normal dashboard use.
+                _openVr.SetInputProbeEnabled(page == DashboardPage.RecordInput);
 
-            // Read-only diagnostics stay scoped to the recorder so the log
-            // stays quiet during normal dashboard use.
-            _openVr.SetInputProbeEnabled(page == DashboardPage.RecordInput);
+                _repaintCoordinator.Request(
+                    () =>
+                    {
+                        var rendered = render();
+                        _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
+                    },
+                    Environment.TickCount64);
+            }
         }
         catch (Exception exception)
         {
@@ -964,8 +1105,11 @@ internal sealed class VrDashboardController : IDisposable
             case DashboardPage.Review:
                 ShowReview();
                 break;
-            case DashboardPage.Settings:
-                ShowSettings();
+            case DashboardPage.ChatSettings:
+                ShowChatSettings();
+                break;
+            case DashboardPage.NotificationSettings:
+                ShowNotificationSettings();
                 break;
         }
     }
@@ -986,11 +1130,16 @@ internal sealed class VrDashboardController : IDisposable
         Review,
 
         /// <summary>
-        /// The Settings tab's own page. Not part of the shortcut wizard's
-        /// page stack in any functional sense - it exists in this enum only
-        /// so the existing single-page-at-a-time dashboard model can
-        /// represent it, per §"Key design decision" of the Phase 4b plan.
+        /// The Chat tab's own page. Not part of the shortcut wizard's page
+        /// stack in any functional sense - it exists in this enum only so
+        /// the existing single-page-at-a-time dashboard model can represent
+        /// it, per §"Key design decision" of the Phase 4b plan. Split from
+        /// the original single <c>Settings</c> page per §B1 of the Phase 6
+        /// plan, following that same reasoning.
         /// </summary>
-        Settings
+        ChatSettings,
+
+        /// <summary>The Notifications tab's own page - see <see cref="ChatSettings"/>.</summary>
+        NotificationSettings
     }
 }

@@ -57,8 +57,16 @@ public sealed record StreamerBotEventPayload
     /// <summary>How long a notification stays on screen when it does not say.</summary>
     public const int DefaultDurationMs = 5000;
 
-    private const int MinimumDurationMs = 500;
-    private const int MaximumDurationMs = 60_000;
+    /// <summary>
+    /// Public so <c>NotificationOverlay</c> clamps a settings-level default
+    /// duration to exactly the same bounds a payload's own value is held to -
+    /// one guarantee stated once rather than two constants that could drift
+    /// apart.
+    /// </summary>
+    public const int MinimumDurationMs = 500;
+
+    /// <inheritdoc cref="MinimumDurationMs"/>
+    public const int MaximumDurationMs = 60_000;
 
     public int Version { get; init; } = CurrentVersion;
     public StreamerBotEventTarget Target { get; init; }
@@ -68,8 +76,33 @@ public sealed record StreamerBotEventPayload
     public string Text { get; init; } = "";
     public string Title { get; init; } = "";
     public int DurationMs { get; init; } = DefaultDurationMs;
+
+    /// <summary>
+    /// Whether <see cref="DurationMs"/> came from the payload itself rather
+    /// than from <see cref="ReadDuration"/> defaulting an absent field.
+    /// <para>
+    /// Needed because §B4 of the Phase 7 plan asks for a settings-level
+    /// default duration that a payload's own <c>duration</c> overrides - and
+    /// once <see cref="ReadDuration"/> has already substituted
+    /// <see cref="DefaultDurationMs"/> for a missing field, "absent" and
+    /// "explicitly five seconds" are the same number. This flag is what a
+    /// caller resolving that precedence actually needs to branch on;
+    /// <see cref="DurationMs"/> itself keeps exactly its pre-Phase-7 default
+    /// behaviour so nothing reading it directly changes.
+    /// </para>
+    /// </summary>
+    public bool HasExplicitDuration { get; init; }
+
     public string Accent { get; init; } = "";
     public string Command { get; init; } = "";
+
+    /// <summary>
+    /// A user-supplied PNG template path overriding the notification's
+    /// configured default, per §B5 of the Phase 7 plan. Meaningless outside a
+    /// notification payload. Empty when absent, which means "use the
+    /// configured default template, if any".
+    /// </summary>
+    public string Image { get; init; } = "";
 
     /// <summary>
     /// The exact substrings of <see cref="Text"/> a platform identified as
@@ -202,8 +235,10 @@ public sealed record StreamerBotEventPayload
             Text = ReadString(body, "text"),
             Title = ReadString(body, "title"),
             DurationMs = ReadDuration(body),
+            HasExplicitDuration = body.TryGetProperty("duration", out _),
             Accent = ReadColour(body, "accent"),
             Command = ReadString(body, "command").Trim(),
+            Image = ReadString(body, "image"),
             EmoteNames = ReadStringArray(body, "emotes"),
             BadgeImageUrl = ReadString(body, "badgeImageUrl"),
             Badges = ReadBadges(body, "badges"),
@@ -214,6 +249,25 @@ public sealed record StreamerBotEventPayload
         rejection = "";
         return true;
     }
+
+    /// <summary>
+    /// Resolves §B4/§B5's precedence rule - the payload's own value wins when
+    /// present, a settings-level default applies when it is silent - for
+    /// duration, accent and image all at once. Pure and OpenVR-free
+    /// deliberately, so the rule itself is provable without constructing a
+    /// <c>NotificationOverlay</c>: that type calls this once, in
+    /// <c>Enqueue</c>, and treats the result as already resolved from then on.
+    /// </summary>
+    public StreamerBotEventPayload WithNotificationDefaults(
+        int defaultDurationMs,
+        string defaultAccent,
+        string defaultImage) =>
+        this with
+        {
+            DurationMs = HasExplicitDuration ? DurationMs : defaultDurationMs,
+            Accent = Accent.Length == 0 ? defaultAccent : Accent,
+            Image = Image.Length == 0 ? defaultImage : Image
+        };
 
     /// <summary>A one-line description for the activity log.</summary>
     public string Describe() =>

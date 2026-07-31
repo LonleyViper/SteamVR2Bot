@@ -300,18 +300,19 @@ internal static class VrDashboardRenderer
     }
 
     /// <summary>
-    /// The VR settings page - anchor mode/hand, opacity, size and (chat only)
-    /// gaze sensitivity per surface, per §B1/§B4 of the Phase 4b plan. No
-    /// bottom bar: every change here applies and saves automatically, the
-    /// same as the desktop.
+    /// The Chat tab's settings page - on/off, anchor mode/hand, opacity,
+    /// size, gaze sensitivity and the Phase 5 placement reset, per §B1 of the
+    /// Phase 6 plan (split from the combined Settings page - see §B1/§B4 of
+    /// the Phase 4b plan for the controls themselves). No bottom bar: every
+    /// change here applies and saves automatically, the same as the desktop.
     /// </summary>
-    public static RenderedPanel RenderSettings(VrSettingsSnapshot settings)
+    public static RenderedPanel RenderChatSettings(VrSettingsSnapshot settings)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
             // Deliberately no repeated "SteamVR2Bot" title/subtitle here -
             // the tab strip immediately above already establishes "you are
-            // in Settings", and the full title collided with the first
+            // in Chat settings", and the full title collided with the first
             // section heading below it (a real layout bug caught live: the
             // title at the same fixed y the List page uses landed directly
             // on top of "Chat" and the anchor buttons, since this page's
@@ -354,6 +355,24 @@ internal static class VrDashboardRenderer
                 (int)settings.GazeSensitivity,
                 enabled: true);
 
+            DrawResetPlacement(graphics, fonts, brushes, settings);
+        });
+    }
+
+    /// <summary>
+    /// The Notifications tab's settings page - on/off, anchor mode, opacity,
+    /// size, and (since Phase 7) the §B1 positioning frame toggle and its
+    /// reset. <paramref name="positioningEnabled"/> is passed separately from
+    /// <paramref name="settings"/> because it is deliberately transient UI
+    /// state, not a persisted setting - see
+    /// <see cref="VrDashboardController"/>'s own remarks.
+    /// </summary>
+    public static RenderedPanel RenderNotificationSettings(VrSettingsSnapshot settings, bool positioningEnabled)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            DrawTabStrip(graphics, fonts.Body, brushes.White, brushes.Blue, brushes.Card, activeIndex: 2);
+
             DrawSurfaceSection(
                 graphics,
                 fonts,
@@ -382,8 +401,63 @@ internal static class VrDashboardRenderer
                 $"{Math.Round(settings.NotificationSizeScale * 100)}%",
                 (float)Math.Clamp((settings.NotificationSizeScale - 0.5) / 1.5, 0, 1));
 
-            DrawResetPlacement(graphics, fonts, brushes, settings);
+            DrawNotificationPositioning(graphics, fonts, brushes, settings, positioningEnabled);
         });
+    }
+
+    /// <summary>
+    /// The §B1 positioning frame's toggle and its placement reset - the
+    /// Notifications-page counterpart of <see cref="DrawResetPlacement"/>.
+    /// The reset button is always drawn live, for the identical reason that
+    /// one is: a recovery control gated on this page's own possibly-stale
+    /// copy of the placement is a control that looks broken exactly when the
+    /// wearer most needs it.
+    /// </summary>
+    private static void DrawNotificationPositioning(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        VrSettingsSnapshot settings,
+        bool positioningEnabled)
+    {
+        var moved = !settings.NotificationPlacement.Equals(OverlayPlacement.Default);
+        var bounds = VrDashboardLayout.ResetNotificationPlacement;
+        DrawRoundedRectangle(graphics, brushes.Card, bounds, 14);
+        DrawCenteredText(
+            graphics,
+            "Reset notification position",
+            fonts.Body,
+            brushes.White,
+            bounds);
+        graphics.DrawString(
+            moved
+                ? "Moved by hand. Grab the frame with the laser to move it again."
+                : "At its default position.",
+            fonts.Body,
+            brushes.Muted,
+            bounds.Right + 20,
+            bounds.Top + 4);
+        graphics.DrawString(
+            positioningEnabled
+                ? "Point at the frame, pull the trigger anywhere on it, and drag."
+                : "Show a draggable sample frame to set the position.",
+            fonts.Body,
+            brushes.Muted,
+            bounds.Right + 20,
+            bounds.Top + 44);
+
+        var toggle = VrDashboardLayout.PositionNotificationsToggle;
+        DrawRoundedRectangle(
+            graphics,
+            positioningEnabled ? brushes.Green : brushes.Disabled,
+            toggle,
+            14);
+        DrawCenteredText(
+            graphics,
+            positioningEnabled ? "On" : "Off",
+            fonts.Heading,
+            brushes.White,
+            toggle);
     }
 
     /// <summary>
@@ -1133,7 +1207,7 @@ internal static class VrDashboardRenderer
         graphics.DrawString(text, font, brush, bounds, format);
     }
 
-    /// <summary>Peer navigation between the Shortcuts and Settings pages - see <see cref="VrDashboardLayout.Tabs"/>.</summary>
+    /// <summary>Peer navigation between the Shortcuts, Chat and Notifications pages - see <see cref="VrDashboardLayout.Tabs"/>.</summary>
     private static void DrawTabStrip(
         Graphics graphics,
         Font font,
@@ -1142,7 +1216,7 @@ internal static class VrDashboardRenderer
         Brush card,
         int activeIndex)
     {
-        string[] labels = ["Shortcuts", "Settings"];
+        string[] labels = ["Shortcuts", "Chat", "Notifications"];
         for (var index = 0; index < VrDashboardLayout.Tabs.Length; index++)
         {
             var rectangle = VrDashboardLayout.Tabs[index];

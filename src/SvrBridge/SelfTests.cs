@@ -28,12 +28,17 @@ internal static class SelfTests
         TestStreamerBotEventPayload();
         TestTwitchChatMessageMapper();
         TestTwitchEmoteCatalog();
+        TestStreamerBotEventTemplateResolvesDottedPaths();
+        TestStreamerBotEventCatalogParsesGetEventsResponse();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
         await TestStreamerBotRestartRecoveryAsync();
         await TestUnconfirmedDeliveryIsNotRetriedAsync();
         await TestStreamerBotEventStreamAsync();
         await TestStreamerBotEventStreamPendingRequestsAsync();
+        await TestStreamerBotEventStreamSubscribesToEnabledEventsAsync();
+        await TestStreamerBotEventStreamFallsBackWhenGetEventsFailsAtConnectAsync();
+        await TestStreamerBotEventStreamGetEventsFailureDoesNotStopTheFeedAsync();
         await TestSteamVrSessionRestartAsync();
         Console.WriteLine(
             "SELF-TEST PASS: chord detection, physical controller mapping, authentication, SteamVR worker " +
@@ -696,6 +701,109 @@ internal static class SelfTests
             "A response with no emotes object did not produce an empty catalog.");
     }
 
+    /// <summary>
+    /// §B2's template resolver: a dotted path resolves; a missing path, a
+    /// null intermediate (<c>targetUser: null</c>, exactly as Twitch.Follow's
+    /// own schema allows it), and a null leaf each resolve to empty rather
+    /// than throwing. Also covers the special <c>{event}</c> token and an
+    /// unbalanced <c>{</c> with no closing brace.
+    /// </summary>
+    private static void TestStreamerBotEventTemplateResolvesDottedPaths()
+    {
+        using var data = JsonDocument.Parse(
+            """
+            {
+              "targetUser": { "name": "Ashling", "id": null },
+              "nullTargetUser": null,
+              "followedAt": "2026-07-30T12:00:00Z",
+              "viewerCount": 42
+            }
+            """);
+        var root = data.RootElement;
+
+        Assert(
+            StreamerBotEventTemplate.Resolve("{targetUser.name} just followed!", root, "Twitch.Follow")
+            == "Ashling just followed!",
+            "A dotted path into a present nested object did not resolve.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{targetUser.id}", root, "Twitch.Follow") == "",
+            "A null leaf did not resolve to an empty string.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{nullTargetUser.name}", root, "Twitch.Follow") == "",
+            "A null intermediate segment did not resolve to an empty string.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{doesNotExist.name}", root, "Twitch.Follow") == "",
+            "A missing path did not resolve to an empty string.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{viewerCount} viewers", root, "Twitch.Raid") == "42 viewers",
+            "A numeric field did not resolve to its plain string form.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("New {event}!", root, "Twitch.Raid") == "New Twitch.Raid!",
+            "The {event} token did not resolve to the event's own Source.Type label.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("no tokens here", root, "Twitch.Raid") == "no tokens here",
+            "A template with no tokens at all was not passed through unchanged.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("trailing {unterminated", root, "Twitch.Raid")
+            == "trailing {unterminated",
+            "An unterminated token (no closing brace) lost its literal tail instead of being copied through.");
+    }
+
+    /// <summary>
+    /// §B2: <c>GetEvents</c>' own reference/events pages are both marked
+    /// "Documentation Needed", so this proves the parser against the shape
+    /// that mirrors the (documented) Subscribe request's own argument -
+    /// source name keyed to an array of event type names - and that a
+    /// response this cannot make sense of degrades to an empty list rather
+    /// than throwing, since a GetEvents failure must not take down the feed.
+    /// </summary>
+    private static void TestStreamerBotEventCatalogParsesGetEventsResponse()
+    {
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "status": "ok",
+              "id": "req-1",
+              "events": {
+                "General": ["Custom"],
+                "Twitch": ["Follow", "Raid", "ChatMessage"],
+                "YouTube": ["Message"],
+                "Broken": "not-an-array",
+                "Objects": [{ "type": "Cheer" }, { "name": "Sub" }, { "nothingUseful": true }, 42]
+              }
+            }
+            """);
+
+        var events = StreamerBotEventCatalog.Parse(document.RootElement);
+        Assert(
+            events.Any(entry => entry is { Source: "Twitch", Type: "Follow" }),
+            "A plain string event entry was not parsed.");
+        Assert(
+            events.Any(entry => entry is { Source: "YouTube", Type: "Message" }),
+            "An event under a different source was not parsed.");
+        Assert(
+            events.Count(entry => entry.Source == "Broken") == 0,
+            "A source whose value was not an array produced entries instead of being skipped.");
+        Assert(
+            events.Any(entry => entry is { Source: "Objects", Type: "Cheer" })
+            && events.Any(entry => entry is { Source: "Objects", Type: "Sub" }),
+            "An object-shaped event entry (type/name instead of a bare string) was not read.");
+        Assert(
+            events.Count(entry => entry.Source == "Objects") == 2,
+            "A malformed object entry with neither type nor name was not skipped.");
+        Assert(
+            events.First(entry => entry is { Source: "Twitch", Type: "Follow" }).Key == "Twitch.Follow",
+            "StreamerBotEventDescriptor.Key did not build the expected \"Source.Type\" form.");
+
+        Assert(
+            StreamerBotEventCatalog.Parse(JsonDocument.Parse("{}").RootElement).Count == 0,
+            "A response with no events object did not produce an empty list.");
+        Assert(
+            StreamerBotEventCatalog.Parse(JsonDocument.Parse("""{"events": "not-an-object"}""").RootElement).Count
+            == 0,
+            "A response whose events property was not an object did not degrade to an empty list.");
+    }
+
     private static StreamerBotEventPayload MapTwitchChatMessage(string json)
     {
         using var document = JsonDocument.Parse(json);
@@ -901,6 +1009,274 @@ internal static class SelfTests
             "A request left behind by a dropped socket was not removed.");
     }
 
+    /// <summary>
+    /// §B2, opt-in: only the events the wearer explicitly enabled fold into
+    /// the Subscribe request alongside the two this app always wants - a
+    /// broader "subscribe to everything GetEvents reports" design was tried
+    /// live and rejected, since Streamer.bot exposes no way to ask which
+    /// events currently have an enabled trigger (confirmed live: disabling
+    /// every event in its own Settings > Events panel did not stop delivery)
+    /// and a wide-open subscription pulled in non-alert plumbing (OBS scene
+    /// changes and the like). An enabled event becomes a notification
+    /// through the generic template; an event Streamer.bot reports but the
+    /// wearer never enabled (YouTube.Message here) is neither subscribed to
+    /// nor turned into a notification even if it somehow arrives anyway.
+    /// </summary>
+    private static async Task TestStreamerBotEventStreamSubscribesToEnabledEventsAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        var notificationEvents = new NotificationEventSettings(
+            ["Twitch.Follow", "twitch.follow"],
+            new Dictionary<string, string>(),
+            NotificationEventSettings.GenericDefaultTemplate,
+            true);
+
+        await using var stream = new StreamerBotEventStream(
+            new StreamerBotConfig { WebSocketUrl = $"ws://127.0.0.1:{port}/", DryRun = false },
+            notificationEvents: notificationEvents);
+        stream.Start();
+
+        var catalog = new { Twitch = new[] { "Follow", "Raid" }, YouTube = new[] { "Message" } };
+        var (socket, subscribedEvents) = await AcceptSubscriberCapturingEventsAsync(listener, catalog, timeout.Token);
+        using var disposableSocket = socket;
+
+        var general = subscribedEvents.GetProperty("General")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        Assert(
+            general.Length == 1 && general[0] == "Custom",
+            "General.Custom was not subscribed unconditionally alongside the enabled notification events.");
+
+        var twitch = subscribedEvents.GetProperty("Twitch")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        Assert(
+            twitch.Contains("ChatMessage") && twitch.Contains("Follow"),
+            "The enabled notification event was not folded into the Twitch subscription alongside ChatMessage.");
+        Assert(
+            !twitch.Contains("Raid"),
+            "An event GetEvents reported but the wearer never enabled (Twitch.Raid) was subscribed to anyway.");
+        Assert(
+            twitch.Count(type => string.Equals(type, "Follow", StringComparison.OrdinalIgnoreCase)) == 1,
+            "A duplicate/differently-cased enabled event produced more than one Subscribe entry.");
+        Assert(
+            !subscribedEvents.TryGetProperty("YouTube", out _),
+            "A source with nothing enabled (YouTube) still appeared in the Subscribe request.");
+
+        await SendEventAsync(
+            socket,
+            "Twitch",
+            "Follow",
+            new { targetUser = new { name = "Ashling" }, isTest = false },
+            timeout.Token);
+        var received = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            received.Payload.Target == StreamerBotEventTarget.Notification
+            && received.Payload.Text.Contains("Twitch.Follow"),
+            "A directly-subscribed enabled event did not produce a notification payload via the generic template.");
+
+        // Even if Streamer.bot sent one anyway, an event never enabled must
+        // not become a notification - the dispatch-side check is what
+        // actually enforces this, not just the Subscribe request.
+        await SendEventAsync(socket, "Twitch", "Raid", new { viewers = 5 }, timeout.Token);
+        await SendCustomEventAsync(
+            socket,
+            new { target = "chat", user = "Viewer", text = "still alive after an unenabled event" },
+            timeout.Token);
+        var next = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            next.Payload.Target == StreamerBotEventTarget.Chat,
+            "An unenabled event (Twitch.Raid) was turned into a notification instead of being ignored.");
+    }
+
+    /// <summary>
+    /// §B2: "a GetEvents failure must not take down the feed" - now most
+    /// relevant at connect time, since that is when this stream asks it to
+    /// build its Subscribe list. A GetEvents failure there falls back to
+    /// exactly General.Custom and Twitch.ChatMessage, and the connection
+    /// still succeeds and keeps delivering events.
+    /// </summary>
+    private static async Task TestStreamerBotEventStreamFallsBackWhenGetEventsFailsAtConnectAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        await using var stream = new StreamerBotEventStream(
+            new StreamerBotConfig { WebSocketUrl = $"ws://127.0.0.1:{port}/", DryRun = false });
+        stream.Start();
+
+        // null catalog tells the mock to answer GetEvents with an error
+        // status rather than a catalog, simulating a real GetEvents failure.
+        var (socket, subscribedEvents) = await AcceptSubscriberCapturingEventsAsync(listener, null, timeout.Token);
+        using var disposableSocket = socket;
+
+        var general = subscribedEvents.GetProperty("General")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        var twitch = subscribedEvents.GetProperty("Twitch")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        Assert(
+            general.Length == 1 && general[0] == "Custom" && twitch.Length == 1 && twitch[0] == "ChatMessage",
+            "A GetEvents failure at connect did not fall back to exactly General.Custom and Twitch.ChatMessage.");
+
+        await SendCustomEventAsync(
+            socket,
+            new { target = "chat", user = "Viewer", text = "still alive" },
+            timeout.Token);
+        var received = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            received.Payload.Target == StreamerBotEventTarget.Chat && received.Payload.Text == "still alive",
+            "The connection did not succeed and keep delivering events after a GetEvents failure at connect.");
+    }
+
+    /// <summary>
+    /// Separately, an on-demand <see cref="StreamerBotEventStream.GetEventsAsync"/>
+    /// call (e.g. the desktop app's "Refresh events" button) that goes
+    /// unanswered must not leak a pending-table entry or otherwise disturb
+    /// the feed - the same pending-table discipline
+    /// <see cref="TestStreamerBotEventStreamPendingRequestsAsync"/> already
+    /// covers for other requests.
+    /// </summary>
+    private static async Task TestStreamerBotEventStreamGetEventsFailureDoesNotStopTheFeedAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        await using var stream = new StreamerBotEventStream(
+            new StreamerBotConfig { WebSocketUrl = $"ws://127.0.0.1:{port}/", DryRun = false });
+        stream.Start();
+
+        using var socket = await AcceptEventSubscriberAsync(listener, requireAuthentication: false, timeout.Token);
+
+        using (var giveUp = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token))
+        {
+            giveUp.CancelAfter(TimeSpan.FromMilliseconds(300));
+            try
+            {
+                await stream.GetEventsAsync(giveUp.Token);
+                throw new InvalidOperationException(
+                    "SELF-TEST FAIL: GetEvents completed even though the mock never answered it.");
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected: the mock deliberately never answers this one.
+            }
+        }
+
+        Assert(
+            stream.PendingRequestCount == 0,
+            "An abandoned GetEvents request was left in the pending table.");
+
+        await SendCustomEventAsync(
+            socket,
+            new { target = "chat", user = "Viewer", text = "still alive" },
+            timeout.Token);
+        var received = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            received.Payload.Target == StreamerBotEventTarget.Chat && received.Payload.Text == "still alive",
+            "The event feed stopped delivering events after a GetEvents request went unanswered.");
+    }
+
+    /// <summary>
+    /// Same Hello/GetEvents/Subscribe handshake as
+    /// <see cref="AcceptEventSubscriberAsync"/>, but answers GetEvents with
+    /// <paramref name="eventsCatalogResponse"/> (or an error status when
+    /// null, to simulate a GetEvents failure) and hands the raw Subscribe
+    /// <c>events</c> argument back for the caller's own assertions instead of
+    /// asserting a fixed shape - needed once that argument became dynamic per
+    /// §B2.
+    /// </summary>
+    private static async Task<(WebSocket Socket, JsonElement Events)> AcceptSubscriberCapturingEventsAsync(
+        HttpListener listener,
+        object? eventsCatalogResponse,
+        CancellationToken cancellationToken)
+    {
+        var context = await listener.GetContextAsync().WaitAsync(cancellationToken);
+        var webSocketContext = await context.AcceptWebSocketAsync(subProtocol: null);
+        var socket = webSocketContext.WebSocket;
+
+        await SendJsonAsync(
+            socket,
+            new { request = "Hello", info = new { instanceId = "self-test", name = "Mock Streamer.bot" } },
+            cancellationToken);
+
+        using var getEvents = await ReceiveJsonAsync(socket, cancellationToken);
+        Assert(
+            getEvents.RootElement.GetProperty("request").GetString() == "GetEvents",
+            "The event stream did not ask GetEvents before subscribing.");
+        var getEventsId = getEvents.RootElement.GetProperty("id").GetString();
+        if (eventsCatalogResponse is null)
+        {
+            await SendJsonAsync(
+                socket,
+                new { status = "error", id = getEventsId, error = "self-test: GetEvents deliberately failed" },
+                cancellationToken);
+        }
+        else
+        {
+            await SendJsonAsync(
+                socket,
+                new { status = "ok", id = getEventsId, events = eventsCatalogResponse },
+                cancellationToken);
+        }
+
+        using var subscribe = await ReceiveJsonAsync(socket, cancellationToken);
+        Assert(
+            subscribe.RootElement.GetProperty("request").GetString() == "Subscribe",
+            "The event stream did not subscribe.");
+        var events = subscribe.RootElement.GetProperty("events").Clone();
+        await SendJsonAsync(
+            socket,
+            new { status = "ok", id = subscribe.RootElement.GetProperty("id").GetString() },
+            cancellationToken);
+
+        return (socket, events);
+    }
+
+    private static Task SendEventAsync(
+        WebSocket socket,
+        string source,
+        string type,
+        object data,
+        CancellationToken cancellationToken) =>
+        SendJsonAsync(
+            socket,
+            new
+            {
+                timeStamp = DateTimeOffset.Now.ToString("O"),
+                @event = new { source, type },
+                data
+            },
+            cancellationToken);
+
     private static StreamerBotEventPayload ParsePayload(string json)
     {
         Assert(
@@ -965,6 +1341,24 @@ internal static class SelfTests
                 },
                 cancellationToken);
         }
+
+        // Per §B2's revised design, the stream asks GetEvents before it ever
+        // subscribes - answered with an empty catalog here, so every test
+        // using this helper keeps asserting the exact same fallback shape
+        // (General.Custom + Twitch.ChatMessage only) it always has.
+        using var getEvents = await ReceiveJsonAsync(socket, cancellationToken);
+        Assert(
+            getEvents.RootElement.GetProperty("request").GetString() == "GetEvents",
+            "The event stream did not ask GetEvents before subscribing.");
+        await SendJsonAsync(
+            socket,
+            new
+            {
+                status = "ok",
+                id = getEvents.RootElement.GetProperty("id").GetString(),
+                events = new { }
+            },
+            cancellationToken);
 
         using var subscribe = await ReceiveJsonAsync(socket, cancellationToken);
         Assert(

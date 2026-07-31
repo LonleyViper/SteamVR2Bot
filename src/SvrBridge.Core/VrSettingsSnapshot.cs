@@ -35,6 +35,13 @@ public enum GazeSensitivity
 /// <see cref="OverlayPlacement.Default"/>, which exists because a window
 /// dragged somewhere unreachable cannot be dragged back.
 /// </param>
+/// <param name="NotificationPlacement">
+/// The notification panel's hand-placed offsets, one per anchor mode - the
+/// same mechanism <paramref name="ChatPlacement"/> already is, added for the
+/// positioning frame in §B1 of the Phase 7 plan. Its own page control is also
+/// only a reset back to <see cref="OverlayPlacement.Default"/>.
+/// </param>
+/// <param name="NotificationAppearance">Everything §B3/§B4/§B5 of the Phase 7 plan added - see <see cref="Core.NotificationAppearanceSettings"/>.</param>
 public sealed record VrSettingsSnapshot(
     bool ChatEnabled,
     OverlayAnchor ChatAnchor,
@@ -46,4 +53,6 @@ public sealed record VrSettingsSnapshot(
     bool NotificationsEnabled,
     OverlayAnchor NotificationAnchor,
     double NotificationOpacity,
-    double NotificationSizeScale);
+    double NotificationSizeScale,
+    OverlayPlacement NotificationPlacement,
+    NotificationAppearanceSettings NotificationAppearance);

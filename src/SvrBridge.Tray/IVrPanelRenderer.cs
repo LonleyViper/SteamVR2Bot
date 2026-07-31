@@ -1,7 +1,31 @@
 namespace SvrBridge.Tray;
 
-/// <summary>Text content for one notification render, independent of what draws it.</summary>
-public readonly record struct NotificationContent(string Title, string Text, string AccentHex);
+/// <summary>
+/// Text content for one notification render, independent of what draws it.
+/// <para>
+/// <see cref="AccentHex"/>, <see cref="BackgroundHex"/> and
+/// <see cref="TextHex"/> are already the <b>resolved</b> colours - whichever
+/// of the payload's own value or the configured setting won, per §B4 of the
+/// Phase 7 plan's precedence rule. The renderer has no opinion about where a
+/// colour came from, only what to draw with it; empty falls back to the
+/// renderer's own hardcoded default, which covers a settings file predating
+/// this feature.
+/// </para>
+/// <para>
+/// <see cref="TemplatePath"/> is the resolved template - the payload's
+/// <c>image</c> field if it set one, else the configured default - or empty
+/// for no template at all. See §B5.
+/// </para>
+/// </summary>
+public readonly record struct NotificationContent(
+    string Title,
+    string Text,
+    string AccentHex,
+    string BackgroundHex = "",
+    string TextHex = "",
+    string TemplatePath = "",
+    double BackgroundOpacity = SvrBridge.Core.NotificationAppearanceSettings.DefaultBackgroundOpacity,
+    double CornerRadiusPixels = 0);
 
 /// <summary>
 /// The messages to draw for one chat repaint, oldest first, newest last - a

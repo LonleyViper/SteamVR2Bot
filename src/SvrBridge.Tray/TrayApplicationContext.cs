@@ -50,6 +50,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _mainForm.SettingsChanged += QueueSettingsApply;
         _mainForm.TestRequested += TestStreamerBot;
         _mainForm.FindActionsRequested += FindStreamerBotActions;
+        _mainForm.NotificationEventsRefreshRequested += () => _ = RefreshNotificationEventsAsync();
         _mainForm.SteamVrSetupRequested += RepairSteamVrSetup;
         _mainForm.BindingsRequested += OpenControllerBindings;
         _mainForm.DashboardRequested += OpenVrDashboard;
@@ -297,7 +298,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
         || previous.ActionId != updated.ActionId
         || previous.StartBridgeWhenAppOpens != updated.StartBridgeWhenAppOpens
         || previous.EventStreamEnabled != updated.EventStreamEnabled
-        || !previous.GetShortcuts().SequenceEqual(updated.GetShortcuts());
+        || !previous.GetShortcuts().SequenceEqual(updated.GetShortcuts())
+        // §B2's toggles change the Subscribe request itself, which only a
+        // full restart (and the RestartEventStreamLockedAsync it reaches)
+        // rebuilds - the live-apply path never touches the event stream.
+        || CanonicaliseEventKeys(previous.EnabledEvents) != CanonicaliseEventKeys(updated.EnabledEvents)
+        || CanonicaliseEventTemplates(previous.EventTemplates) != CanonicaliseEventTemplates(updated.EventTemplates)
+        || previous.ShowTestEvents != updated.ShowTestEvents;
+
+    /// <summary>Order-independent canonical form of a "Source.Type" selection - see <see cref="EventStreamSettings"/>.</summary>
+    private static string CanonicaliseEventKeys(IReadOnlyCollection<string> keys) =>
+        string.Join(
+            '|',
+            keys.Select(key => key.Trim())
+                .Where(key => key.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(key => key, StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>Order-independent canonical form of the per-event template overrides - see <see cref="EventStreamSettings"/>.</summary>
+    private static string CanonicaliseEventTemplates(IReadOnlyDictionary<string, string> templates) =>
+        string.Join(
+            '|',
+            templates
+                .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(entry => $"{entry.Key}={entry.Value}"));
 
     private static VrSettingsSnapshot BuildVrSettingsSnapshot(UserSettings settings) =>
         new(
@@ -311,7 +335,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             settings.NotificationsEnabled,
             settings.NotificationAnchor,
             settings.NotificationOpacity,
-            settings.NotificationSizeScale);
+            settings.NotificationSizeScale,
+            settings.NotificationPlacement,
+            settings.NotificationAppearance);
 
     private async Task RestartRuntimeAsync()
     {
@@ -424,7 +450,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var wanted = new EventStreamSettings(
             _settings.EventStreamEnabled,
             _settings.StreamerBotAddress.Trim(),
-            _settings.Password);
+            _settings.Password,
+            CanonicaliseEventKeys(_settings.EnabledEvents),
+            CanonicaliseEventTemplates(_settings.EventTemplates),
+            _settings.ShowTestEvents);
         if (wanted == _appliedEventStream)
         {
             return;
@@ -441,19 +470,74 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         var stream = new StreamerBotEventStream(
             _settings.ToAppConfig().StreamerBot,
-            OnActivity);
+            OnActivity,
+            _settings.NotificationEvents);
         stream.StateChanged += state =>
         {
             _mainForm.UpdateEventStreamState(state);
             if (state == StreamerBotStreamState.Connected)
             {
                 _ = EnsureEmoteCatalogAsync();
+                // Refreshed on every (re)connect, not just the first one, so
+                // the Notifications tab's toggle list stays current if the
+                // connected Streamer.bot instance's own action/event set
+                // changed between sessions.
+                _ = RefreshNotificationEventsAsync();
             }
         };
         _eventStream = stream;
         _eventPump = ConsumeEventStreamAsync(stream);
         _mainForm.UpdateEventStreamState(stream.State);
         stream.Start();
+    }
+
+    /// <summary>
+    /// Populates the Notifications tab's toggle list from a live
+    /// <c>GetEvents</c> response - §B2 of the Phase 7 plan. Requires the
+    /// event feed to already be connected: <c>GetEvents</c> is an ordinary
+    /// request/response over the same long-lived socket the feed itself
+    /// uses, and standing up a second, short-lived connection just for this
+    /// (the way <see cref="RefreshStreamerBotActionsAsync"/> does for
+    /// actions) was judged not worth a second connection type - the toggle
+    /// list is a convenience, not something a shortcut is waiting on.
+    /// <para>
+    /// A failure here must not take the feed down - see §B2 - so it is
+    /// caught and logged rather than propagated; whatever selection is
+    /// already saved keeps subscribing exactly as before.
+    /// </para>
+    /// </summary>
+    private async Task RefreshNotificationEventsAsync()
+    {
+        var stream = _eventStream;
+        if (stream is null || stream.State != StreamerBotStreamState.Connected)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.events_catalog_unavailable",
+                    "Turn on the Streamer.bot event feed and wait for it to connect before "
+                    + "refreshing the notification event list.",
+                    BridgeLogLevel.Warning));
+            return;
+        }
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var events = await stream.GetEventsAsync(timeout.Token);
+            _mainForm.ShowNotificationEvents(events);
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.events_catalog",
+                    $"Loaded {events.Count} Streamer.bot events for the Notifications tab."));
+        }
+        catch (Exception exception)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.events_catalog_failed",
+                    $"Could not load the Streamer.bot event list: {exception.Message}",
+                    BridgeLogLevel.Warning));
+        }
     }
 
     /// <summary>Bounded retry window for delivering a fetched catalog to a worker that is not up yet.</summary>
@@ -937,22 +1021,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _mainForm.BeginInvoke(() =>
         {
-            var updated = _settings with
-            {
-                ChatEnabled = snapshot.ChatEnabled,
-                ChatAnchorMode = snapshot.ChatAnchor.Mode,
-                ChatAnchorHand = snapshot.ChatAnchor.Hand,
-                ChatPlacement = snapshot.ChatPlacement,
-                ChatOpacity = snapshot.ChatOpacity,
-                ChatSizeScale = snapshot.ChatSizeScale,
-                GazeSensitivity = snapshot.GazeSensitivity,
-                ChatGazeScaleEnabled = snapshot.ChatGazeScaleEnabled,
-                NotificationsEnabled = snapshot.NotificationsEnabled,
-                NotificationAnchorMode = snapshot.NotificationAnchor.Mode,
-                NotificationAnchorHand = snapshot.NotificationAnchor.Hand,
-                NotificationOpacity = snapshot.NotificationOpacity,
-                NotificationSizeScale = snapshot.NotificationSizeScale
-            };
+            var updated = MergeVrSettingsSnapshot(_settings, snapshot);
 
             try
             {
@@ -971,6 +1040,47 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
         });
     }
+
+    /// <summary>
+    /// Folds every field of a <see cref="VrSettingsSnapshot"/> reported back
+    /// from the VR dashboard/worker into <paramref name="previous"/>. Pure
+    /// and <c>internal static</c> - like <see cref="RequiresRuntimeRestart"/>
+    /// - specifically so a self-test can assert every one of
+    /// <see cref="VrSettingsSnapshot"/>'s fields actually lands somewhere,
+    /// rather than trusting a hand-written <c>with</c> expression to have
+    /// remembered all of them. It did not: <see cref="VrSettingsSnapshot.NotificationPlacement"/>
+    /// and <see cref="VrSettingsSnapshot.NotificationAppearance"/> were both
+    /// missing from this method for the whole of Phase 7, so every VR-side
+    /// placement drag or reset applied live and then silently reverted to
+    /// default on the very next restart - confirmed live, not theoretical.
+    /// </summary>
+    internal static UserSettings MergeVrSettingsSnapshot(UserSettings previous, VrSettingsSnapshot snapshot) =>
+        previous with
+        {
+            ChatEnabled = snapshot.ChatEnabled,
+            ChatAnchorMode = snapshot.ChatAnchor.Mode,
+            ChatAnchorHand = snapshot.ChatAnchor.Hand,
+            ChatPlacement = snapshot.ChatPlacement,
+            ChatOpacity = snapshot.ChatOpacity,
+            ChatSizeScale = snapshot.ChatSizeScale,
+            GazeSensitivity = snapshot.GazeSensitivity,
+            ChatGazeScaleEnabled = snapshot.ChatGazeScaleEnabled,
+            NotificationsEnabled = snapshot.NotificationsEnabled,
+            NotificationAnchorMode = snapshot.NotificationAnchor.Mode,
+            NotificationAnchorHand = snapshot.NotificationAnchor.Hand,
+            NotificationOpacity = snapshot.NotificationOpacity,
+            NotificationSizeScale = snapshot.NotificationSizeScale,
+            NotificationPlacement = snapshot.NotificationPlacement,
+            NotificationBackgroundColour = snapshot.NotificationAppearance.BackgroundHex,
+            NotificationTextColour = snapshot.NotificationAppearance.TextHex,
+            NotificationAccentColour = snapshot.NotificationAppearance.AccentHex,
+            NotificationDefaultDurationMs = snapshot.NotificationAppearance.DefaultDurationMs,
+            NotificationTransitionKind = snapshot.NotificationAppearance.Transition,
+            NotificationSlideEdge = snapshot.NotificationAppearance.SlideEdge,
+            NotificationTemplatePath = snapshot.NotificationAppearance.TemplatePath,
+            NotificationBackgroundOpacity = snapshot.NotificationAppearance.BackgroundOpacity,
+            NotificationCornerRadiusPixels = snapshot.NotificationAppearance.CornerRadiusPixels
+        };
 
     private async void FindStreamerBotActions() =>
         await RefreshStreamerBotActionsAsync(
@@ -1499,10 +1609,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>The only settings the event feed is built from.</summary>
+    /// <param name="EnabledEventsKey">
+    /// A canonical, order-independent string built from §B2's "Source.Type"
+    /// selection - never the raw <see cref="IReadOnlyCollection{T}"/> itself.
+    /// A freshly-read <c>UserSettings.EnabledEvents</c> is a new list instance
+    /// on every save even when its contents are unchanged, exactly the same
+    /// hazard already documented on <c>UserSettings.Shortcuts</c> - a record
+    /// holding the collection directly would see every save as "something
+    /// changed" and reconnect the feed needlessly.
+    /// </param>
+    /// <param name="EventTemplatesKey">Same reasoning as <paramref name="EnabledEventsKey"/>, for the per-event template overrides.</param>
     private sealed record EventStreamSettings(
         bool Enabled,
         string Address,
-        string Password);
+        string Password,
+        string EnabledEventsKey,
+        string EventTemplatesKey,
+        bool ShowTestEvents);
 
     private const int ShowWindowNormal = 1;
 

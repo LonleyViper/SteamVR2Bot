@@ -416,6 +416,15 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
         startInfo.ArgumentList.Add(config.NotificationOpacity.ToString(CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add("--notification-size-scale");
         startInfo.ArgumentList.Add(config.NotificationSizeScale.ToString(CultureInfo.InvariantCulture));
+        // One argument rather than twelve numbers, same reasoning as
+        // --chat-placement above.
+        startInfo.ArgumentList.Add("--notification-placement");
+        startInfo.ArgumentList.Add(config.NotificationPlacement.ToArgument());
+        // One JSON argument rather than seven flags, for the same reason -
+        // an appearance bundle can never be half-applied by a
+        // partially-updated spawn. See NotificationAppearanceSettings.
+        startInfo.ArgumentList.Add("--notification-appearance");
+        startInfo.ArgumentList.Add(JsonSerializer.Serialize(config.NotificationAppearance));
         if (!string.IsNullOrWhiteSpace(config.OpenVrDllPath))
         {
             startInfo.ArgumentList.Add("--openvr-dll");
@@ -698,6 +707,10 @@ internal static class OpenVrWorker
             var notificationOpacity = ParseDoubleArgument(GetArgumentValue(args, "--notification-opacity"), 1.0);
             var notificationSizeScale =
                 ParseDoubleArgument(GetArgumentValue(args, "--notification-size-scale"), 1.0);
+            var notificationPlacement =
+                OverlayPlacement.Parse(GetArgumentValue(args, "--notification-placement"));
+            var notificationAppearance =
+                ParseNotificationAppearanceArgument(GetArgumentValue(args, "--notification-appearance"));
 
             using var openVr = new OpenVrInput(
                 openVrDll,
@@ -754,17 +767,43 @@ internal static class OpenVrWorker
                     openVr,
                     textureDevice,
                     notificationOverride.EffectiveAnchor,
+                    notificationPlacement,
                     notificationOpacity,
                     notificationSizeScale,
+                    notificationAppearance,
+                    OnNotificationPlacementDragged,
                     message => Emit(new OpenVrWorkerMessage("log", Message: message)));
                 if (notificationOverlay is not null)
                 {
+                    // Needed for the §B1 positioning frame's grab-to-place -
+                    // TryGetDevicePose reads nothing unless this is on, which
+                    // otherwise only EnsureChatOverlay ever set. Without it, a
+                    // grab silently reads an untracked pose from both
+                    // devices and reports "a controller is not tracking"
+                    // regardless of whether one actually is.
+                    openVr.MotionSamplingEnabled = true;
                     notificationOverlay.SetTexturePathEnabled(overlayTexturePathEnabled);
                     if (notificationOverride.Hidden)
                     {
                         notificationOverlay.SetHidden(true);
                     }
                 }
+            }
+
+            // Turns the notification positioning frame on or off - §B1 of
+            // the Phase 7 plan. Called directly from VrDashboardController's
+            // click handling, since that controller already runs on this
+            // same thread inside this same process - no worker command or
+            // IPC round trip needed, the same reasoning ApplyVrSettingsChange
+            // already relies on for a VR-page edit.
+            void SetNotificationPositioningEnabled(bool enabled)
+            {
+                // Forced into existence even if the wearer never turned
+                // notifications on: positioning them ahead of enabling them
+                // is legitimate, and the toggle is not gated behind that
+                // setting.
+                EnsureNotificationOverlay();
+                notificationOverlay?.SetPositioningEnabled(enabled);
             }
 
             void EnsureChatOverlay()
@@ -827,7 +866,9 @@ internal static class OpenVrWorker
                 notificationsEnabled,
                 notificationOverride.SavedDefault,
                 notificationOpacity,
-                notificationSizeScale);
+                notificationSizeScale,
+                notificationPlacement,
+                notificationAppearance);
 
             // The wearer let go of the chat window's move handle. The overlay
             // has already been sitting at this offset for the whole drag, so
@@ -860,6 +901,29 @@ internal static class OpenVrWorker
                             "log",
                             Message: "The VR settings page could not be refreshed after the chat "
                                      + $"window was moved: {exception.Message}"));
+                }
+
+                Emit(new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: settings));
+            }
+
+            // The wearer let go of the notification positioning frame's grab
+            // - see OnChatPlacementDragged, which this mirrors exactly.
+            void OnNotificationPlacementDragged(OverlayPlacement placement)
+            {
+                notificationPlacement = placement;
+                notificationOverride.AdoptEffectiveAnchorAsSavedDefault();
+                var settings = CurrentVrSettings();
+                try
+                {
+                    dashboard?.UpdateSettings(settings);
+                }
+                catch (Exception exception)
+                {
+                    Emit(
+                        new OpenVrWorkerMessage(
+                            "log",
+                            Message: "The VR settings page could not be refreshed after notifications "
+                                     + $"were moved: {exception.Message}"));
                 }
 
                 Emit(new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: settings));
@@ -924,12 +988,30 @@ internal static class OpenVrWorker
                                 : "The chat window moved to a saved position."));
                 }
 
+                // Same reasoning as the chat placement block above - normally
+                // unchanged, but applied the same way as everything else so a
+                // reset from the Notifications tab lands live.
+                if (!notificationPlacement.Equals(newSettings.NotificationPlacement))
+                {
+                    notificationPlacement = newSettings.NotificationPlacement;
+                    notificationOverlay?.SetPlacement(notificationPlacement);
+                    Emit(
+                        new OpenVrWorkerMessage(
+                            "log",
+                            Message: notificationPlacement.Equals(OverlayPlacement.Default)
+                                ? "Notifications went back to their default position."
+                                : "Notifications moved to a saved position."));
+                }
+
+                notificationAppearance = newSettings.NotificationAppearance;
+
                 chatOverlay?.SetOpacity(chatOpacity);
                 chatOverlay?.SetSizeScale(chatSizeScale);
                 chatOverlay?.SetGazeSensitivity(gazeSensitivity);
                 chatOverlay?.SetGazeScaleEnabled(chatGazeScaleEnabled);
                 notificationOverlay?.SetOpacity(notificationOpacity);
                 notificationOverlay?.SetSizeScale(notificationSizeScale);
+                notificationOverlay?.ApplyAppearance(notificationAppearance);
 
                 // SetSavedDefaultAnchor also clears any active Streamer.bot
                 // anchor override - an explicit VR edit wins, per §B5 of the
@@ -1222,6 +1304,7 @@ internal static class OpenVrWorker
                                         "shortcutDeleted",
                                         ShortcutDeletedId: shortcutId)),
                                 ApplyVrSettingsChange,
+                                SetNotificationPositioningEnabled,
                                 message => Emit(
                                     new OpenVrWorkerMessage(
                                         "log",
@@ -1402,6 +1485,30 @@ internal static class OpenVrWorker
 
     private static double ParseDoubleArgument(string? raw, double fallback) =>
         double.TryParse(raw, CultureInfo.InvariantCulture, out var value) ? value : fallback;
+
+    /// <summary>
+    /// Unparseable - or absent, for a worker spawned by an older build - falls
+    /// back to <see cref="NotificationAppearanceSettings.Default"/> whole,
+    /// same reasoning as <see cref="OverlayPlacement.Parse"/>: a half-read
+    /// bundle is worse than the proven default.
+    /// </summary>
+    private static NotificationAppearanceSettings ParseNotificationAppearanceArgument(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return NotificationAppearanceSettings.Default;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<NotificationAppearanceSettings>(raw)
+                   ?? NotificationAppearanceSettings.Default;
+        }
+        catch (JsonException)
+        {
+            return NotificationAppearanceSettings.Default;
+        }
+    }
 
     private static string? GetArgumentValue(string[] args, string name)
     {

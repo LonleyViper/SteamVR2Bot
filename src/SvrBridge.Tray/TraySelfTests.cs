@@ -17,10 +17,15 @@ internal static class TraySelfTests
         TestNotificationPlayerQueueing();
         TestNotificationDurationClampingEndToEnd();
         TestNotificationAlphaCurve();
+        TestNotificationTransitionAnimatorConvergesAndStopsIssuingCalls();
+        TestNotificationTemplateLoaderDegradesGracefully();
+        TestNotificationTemplateLoaderDownscalesAnOversizedImage();
+        TestNotificationPayloadPrecedenceResolvesSettingsDefaults();
         TestWpfRenderThreadStartsAndShutsDownCleanly();
         TestNotificationPixelFormatConversion();
         TestChatRingBufferEviction();
         TestChatRepaintThrottleCoalescesBurst();
+        TestDashboardRepaintCoordinatorCoalescesBurst();
         TestChatGazeHysteresisNoOscillationAtBoundary();
         TestGazeScaleAnimationConvergesAndStopsIssuingCalls();
         TestChatRenderWrapsLongUnbrokenString();
@@ -49,6 +54,7 @@ internal static class TraySelfTests
         TestChatDeveloperInjectorProducesExpectedMessages();
         TestChatCommandJsonRoundTripPreservesBadgesAndEmotes();
         TestChatPlacementSurvivesTheWorkerMessageChannel();
+        TestMergeVrSettingsSnapshotPersistsEveryField();
         TestRequiresRuntimeRestartDistinguishesLiveAppliableChanges();
         TestOverlayTextureCopyRespectsAnOverWideRowPitch();
         TestOverlaySourceFormatsConvertToTheSameRgba();
@@ -536,9 +542,10 @@ internal static class TraySelfTests
     }
 
     /// <summary>
-    /// The Phase 4b tab strip and the Settings page's segmented controls
-    /// follow the same shared-rectangle-table rule as the bottom bar tested
-    /// above: every control the renderer draws is declared once in
+    /// The tab strip (three tabs since Phase 6: Shortcuts, Chat,
+    /// Notifications) and the Chat/Notifications settings pages' segmented
+    /// controls follow the same shared-rectangle-table rule as the bottom bar
+    /// tested above: every control the renderer draws is declared once in
     /// <see cref="VrDashboardLayout"/> and hit-tests to itself, and no two
     /// controls on the same page overlap.
     /// </summary>
@@ -629,13 +636,27 @@ internal static class TraySelfTests
                 "A settings-page control falls outside the canvas or under the tab strip.");
         }
 
-        // The reset control was added below the notification sliders. A
-        // Y-band dispatch cannot tell two rows apart if they touch, and this
-        // page has no bottom bar to bound it from below.
+        // The reset control sits below the gaze-sensitivity row - the last
+        // row above it on the Chat page since Phase 6 split Chat and
+        // Notifications into separate tabs. A Y-band dispatch cannot tell
+        // two rows apart if they touch, and this page has no bottom bar to
+        // bound it from below.
         Assert(
             VrDashboardLayout.ResetPlacement.Top
-            >= VrDashboardLayout.NotificationSlidersY + VrDashboardLayout.SettingsSliderRowHeight,
-            "The chat placement reset overlaps the notification slider row.");
+            >= VrDashboardLayout.GazeSensitivityY + VrDashboardLayout.SettingsRowHeight,
+            "The chat placement reset overlaps the gaze-sensitivity row above it.");
+
+        // Chat and Notifications became separate pages in Phase 6, so their
+        // first two rows intentionally now share the same Y - each page
+        // starts fresh below its own tab strip rather than the Notifications
+        // page continuing to sit lower down where it used to share a page
+        // with Chat. Pinned down so this reads as a deliberate choice, not
+        // leftover drift, the same way VrDashboardLayout's own comment on
+        // NotificationControlsY explains it.
+        Assert(
+            VrDashboardLayout.NotificationControlsY == VrDashboardLayout.ChatControlsY
+            && VrDashboardLayout.NotificationSlidersY == VrDashboardLayout.ChatSlidersY,
+            "The Chat and Notifications pages' first two rows drifted apart even though each now starts fresh below its own tab strip.");
 
         // The reset button and the grow-on-gaze toggle share the bottom row,
         // so a Y-band dispatch alone cannot tell them apart - they must not
@@ -1731,7 +1752,18 @@ internal static class TraySelfTests
             true,
             SvrBridge.Core.OverlayAnchor.Head,
             0.7,
-            0.6);
+            0.6,
+            placement,
+            new SvrBridge.Core.NotificationAppearanceSettings(
+                "#112233",
+                "#FFEEDD",
+                "#00FF00",
+                4200,
+                SvrBridge.Core.NotificationTransition.Slide,
+                SvrBridge.Core.NotificationSlideEdge.Left,
+                "C:\\templates\\banner.png",
+                0.5,
+                12));
 
         var json = System.Text.Json.JsonSerializer.Serialize(
             new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: settings),
@@ -1748,6 +1780,84 @@ internal static class TraySelfTests
             && received.GazeSensitivity == settings.GazeSensitivity
             && received.ChatGazeScaleEnabled,
             "The rest of the VR settings snapshot did not survive the worker message channel.");
+        Assert(
+            received.NotificationPlacement.Equals(placement)
+            && received.NotificationAppearance == settings.NotificationAppearance,
+            "The Phase 7 notification placement/appearance fields did not survive the worker message channel.");
+    }
+
+    /// <summary>
+    /// Guards the exact regression a live headset session caught:
+    /// <c>NotificationPlacement</c> and <c>NotificationAppearance</c> were
+    /// both missing from the hand-written <c>with</c> expression that folds
+    /// a VR-reported <see cref="SvrBridge.Core.VrSettingsSnapshot"/> back into
+    /// saved settings, so every VR-side placement drag or reset applied live
+    /// and then silently reverted to default on the very next restart. Every
+    /// field of the snapshot is given a value that differs from
+    /// <see cref="UserSettings"/>'s own defaults, so a field the merge forgot
+    /// would show up as still-default rather than accidentally matching.
+    /// </summary>
+    private static void TestMergeVrSettingsSnapshotPersistsEveryField()
+    {
+        var previous = new UserSettings();
+        var placement = new SvrBridge.Core.OverlayPlacement(
+            SvrBridge.Core.VrOverlayTransform.Translation(0.11f, 0.22f, -0.33f)
+            * SvrBridge.Core.VrOverlayTransform.RotationY(0.4f),
+            SvrBridge.Core.VrOverlayTransform.Translation(-0.44f, -0.55f, -0.66f)
+            * SvrBridge.Core.VrOverlayTransform.RotationX(0.2f));
+        var appearance = new SvrBridge.Core.NotificationAppearanceSettings(
+            "#ABCDEF",
+            "#123456",
+            "#654321",
+            9999,
+            SvrBridge.Core.NotificationTransition.ScalePop,
+            SvrBridge.Core.NotificationSlideEdge.Right,
+            "C:\\some\\template.png",
+            0.33,
+            22);
+        var snapshot = new SvrBridge.Core.VrSettingsSnapshot(
+            true,
+            new SvrBridge.Core.OverlayAnchor(SvrBridge.Core.OverlayAnchorMode.Head, SvrBridge.Core.OverlayAnchorHand.Right),
+            placement,
+            0.81,
+            1.44,
+            SvrBridge.Core.GazeSensitivity.Tight,
+            true,
+            true,
+            new SvrBridge.Core.OverlayAnchor(SvrBridge.Core.OverlayAnchorMode.Controller, SvrBridge.Core.OverlayAnchorHand.Right),
+            0.71,
+            1.66,
+            placement,
+            appearance);
+
+        var updated = TrayApplicationContext.MergeVrSettingsSnapshot(previous, snapshot);
+
+        Assert(updated.ChatEnabled, "ChatEnabled was not merged.");
+        Assert(updated.ChatAnchorMode == SvrBridge.Core.OverlayAnchorMode.Head, "ChatAnchorMode was not merged.");
+        Assert(updated.ChatAnchorHand == SvrBridge.Core.OverlayAnchorHand.Right, "ChatAnchorHand was not merged.");
+        Assert(updated.ChatPlacement.Equals(placement), "ChatPlacement was not merged.");
+        Assert(updated.ChatOpacity == 0.81, "ChatOpacity was not merged.");
+        Assert(updated.ChatSizeScale == 1.44, "ChatSizeScale was not merged.");
+        Assert(updated.GazeSensitivity == SvrBridge.Core.GazeSensitivity.Tight, "GazeSensitivity was not merged.");
+        Assert(updated.ChatGazeScaleEnabled, "ChatGazeScaleEnabled was not merged.");
+        Assert(updated.NotificationsEnabled, "NotificationsEnabled was not merged.");
+        Assert(
+            updated.NotificationAnchorMode == SvrBridge.Core.OverlayAnchorMode.Controller,
+            "NotificationAnchorMode was not merged.");
+        Assert(
+            updated.NotificationAnchorHand == SvrBridge.Core.OverlayAnchorHand.Right,
+            "NotificationAnchorHand was not merged.");
+        Assert(updated.NotificationOpacity == 0.71, "NotificationOpacity was not merged.");
+        Assert(updated.NotificationSizeScale == 1.66, "NotificationSizeScale was not merged.");
+
+        // The two fields the live regression was actually about.
+        Assert(
+            updated.NotificationPlacement.Equals(placement),
+            "NotificationPlacement was not merged - this is the exact bug a live headset session caught: "
+            + "a VR-side placement drag applied live and then reverted to default on restart.");
+        Assert(
+            updated.NotificationAppearance == appearance,
+            "NotificationAppearance was not merged - every Phase 7 appearance field would revert on restart.");
     }
 
     /// <summary>
@@ -1818,6 +1928,44 @@ internal static class TraySelfTests
         Assert(
             !TrayApplicationContext.RequiresRuntimeRestart(baseline, same),
             "An unchanged settings object with a new Shortcuts array instance was seen as requiring a restart.");
+
+        // §B2's toggles change the Subscribe request itself, which only a
+        // full restart (and the RestartEventStreamLockedAsync it reaches)
+        // rebuilds - the live-apply path never touches the event stream.
+        Assert(
+            TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with { EnabledEvents = ["Twitch.Follow"] }),
+            "Enabling a notification event did not require a restart.");
+        Assert(
+            TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with
+                {
+                    EventTemplates = new Dictionary<string, string> { ["Twitch.Follow"] = "{targetUser.name}!" }
+                }),
+            "Changing a per-event template override did not require a restart.");
+        Assert(
+            TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with { ShowTestEvents = false }),
+            "Toggling test-event visibility did not require a restart.");
+
+        // Same hazard as the Shortcuts case above, for the two §B2 collections:
+        // a freshly-read EnabledEvents/EventTemplates is a new instance every
+        // call even when unchanged, and order must not matter either.
+        var sameEvents = baseline with
+        {
+            EnabledEvents = new List<string> { "Twitch.Follow", "Twitch.Raid" },
+            EventTemplates = new Dictionary<string, string> { ["Twitch.Follow"] = "hi" }
+        };
+        var reorderedEvents = sameEvents with
+        {
+            EnabledEvents = new List<string> { "Twitch.Raid", "Twitch.Follow" }
+        };
+        Assert(
+            !TrayApplicationContext.RequiresRuntimeRestart(sameEvents, reorderedEvents),
+            "Reordering the same enabled-events selection was seen as requiring a restart.");
     }
 
     /// <summary>
@@ -1939,6 +2087,243 @@ internal static class TraySelfTests
         };
 
     /// <summary>
+    /// The most important test in Phase 7: proves each of the three named
+    /// transitions converges on <see cref="SvrBridge.Core.NotificationPlayer"/>'s
+    /// own bounded fade timeline and then issues <b>zero</b> further calls for
+    /// the whole Holding phase - the property behind the hard rule that a
+    /// non-converging animation looks perfectly still yet issues overlay calls
+    /// forever, the exact bug <c>ChatOverlay.AnimateGaze</c> shipped with once.
+    /// A visual check cannot catch this; only counting calls does.
+    /// </summary>
+    private static void TestNotificationTransitionAnimatorConvergesAndStopsIssuingCalls()
+    {
+        AssertTransitionIsSilentAtSteadyState(
+            SvrBridge.Core.NotificationTransition.Fade,
+            SvrBridge.Core.NotificationSlideEdge.Bottom);
+        AssertTransitionIsSilentAtSteadyState(
+            SvrBridge.Core.NotificationTransition.Slide,
+            SvrBridge.Core.NotificationSlideEdge.Left);
+        AssertTransitionIsSilentAtSteadyState(
+            SvrBridge.Core.NotificationTransition.ScalePop,
+            SvrBridge.Core.NotificationSlideEdge.Top);
+
+        // Re-asserting the same progress every tick (exactly what a real
+        // caller does, since it recomputes progress from the player on every
+        // call) must not itself keep re-opening a value already reported.
+        var animator = new SvrBridge.Core.NotificationTransitionAnimator();
+        Assert(
+            animator.Advance(
+                SvrBridge.Core.NotificationTransition.Fade,
+                SvrBridge.Core.NotificationSlideEdge.Bottom,
+                1f,
+                0.5f,
+                out _),
+            "A fresh transition animator reported no change on its first call.");
+        for (var index = 0; index < 50; index++)
+        {
+            Assert(
+                !animator.Advance(
+                    SvrBridge.Core.NotificationTransition.Fade,
+                    SvrBridge.Core.NotificationSlideEdge.Bottom,
+                    1f,
+                    0.5f,
+                    out _),
+                "A converged transition animator issued a call even though nothing changed - "
+                + "steady state must be zero overlay calls per tick.");
+        }
+
+        animator.Reset();
+        Assert(
+            animator.Advance(
+                SvrBridge.Core.NotificationTransition.Fade,
+                SvrBridge.Core.NotificationSlideEdge.Bottom,
+                1f,
+                0.5f,
+                out _),
+            "Resetting the animator did not force its next call to report a change - a new "
+            + "notification's first frame must never be skipped as unchanged against the "
+            + "previous one's final value.");
+    }
+
+    /// <summary>
+    /// Plays one notification's whole timeline through
+    /// <see cref="SvrBridge.Core.NotificationPlayer"/> and counts the transition
+    /// animator's calls during the Holding phase specifically - the one phase
+    /// that lasts long enough (most of a notification's 5 seconds) for a
+    /// non-converging animation to matter.
+    /// </summary>
+    private static void AssertTransitionIsSilentAtSteadyState(
+        SvrBridge.Core.NotificationTransition transition,
+        SvrBridge.Core.NotificationSlideEdge edge)
+    {
+        var player = new SvrBridge.Core.NotificationPlayer();
+        player.Enqueue(NotificationFor("transition", 5000));
+        var animator = new SvrBridge.Core.NotificationTransitionAnimator();
+
+        var holdTicksSeen = 0;
+        var callsAfterTheFirstHoldTick = 0;
+        for (var nowMs = 0L; nowMs <= 5000; nowMs += 10)
+        {
+            var frame = player.Tick(nowMs);
+            if (frame.Phase == SvrBridge.Core.NotificationPhase.Idle)
+            {
+                break;
+            }
+
+            var changed = animator.Advance(transition, edge, frame.Alpha, 0.5f, out _);
+            if (frame.Phase != SvrBridge.Core.NotificationPhase.Holding)
+            {
+                continue;
+            }
+
+            holdTicksSeen++;
+            // The very first Holding tick is allowed one call, transitioning
+            // in from wherever the fade-in left off - every tick after that
+            // is steady state and must issue nothing.
+            if (holdTicksSeen > 1 && changed)
+            {
+                callsAfterTheFirstHoldTick++;
+            }
+        }
+
+        Assert(
+            holdTicksSeen > 5,
+            $"Not enough simulated Holding ticks ({holdTicksSeen}) to be a meaningful test of {transition}.");
+        Assert(
+            callsAfterTheFirstHoldTick == 0,
+            $"The {transition} transition issued {callsAfterTheFirstHoldTick} overlay call(s) during "
+            + "Holding, where progress never changes - steady state must be zero calls per tick.");
+    }
+
+    /// <summary>
+    /// §B5: a malformed, truncated or missing PNG template must each degrade
+    /// to no background rather than throwing - the same discipline
+    /// <see cref="SvrBridge.Core.StreamerBotEventPayload.TryParse(string, out SvrBridge.Core.StreamerBotEventPayload, out string)"/>
+    /// applies to hand-authored payloads.
+    /// </summary>
+    private static void TestNotificationTemplateLoaderDegradesGracefully()
+    {
+        Assert(
+            WpfNotificationRenderer.LoadTemplate(
+                Path.Combine(Path.GetTempPath(), $"svr-bridge-missing-{Guid.NewGuid():N}.png")) is null,
+            "A missing template path did not degrade to no background.");
+
+        var malformedPath = Path.Combine(Path.GetTempPath(), $"svr-bridge-malformed-{Guid.NewGuid():N}.png");
+        File.WriteAllBytes(malformedPath, [0x01, 0x02, 0x03, 0x04, 0x05]);
+        try
+        {
+            Assert(
+                WpfNotificationRenderer.LoadTemplate(malformedPath) is null,
+                "A malformed (non-PNG) template file did not degrade to no background.");
+        }
+        finally
+        {
+            File.Delete(malformedPath);
+        }
+
+        var truncatedPath = Path.Combine(Path.GetTempPath(), $"svr-bridge-truncated-{Guid.NewGuid():N}.png");
+        using (var bitmap = new System.Drawing.Bitmap(64, 64))
+        {
+            bitmap.Save(truncatedPath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+
+        var wholeFile = File.ReadAllBytes(truncatedPath);
+        File.WriteAllBytes(truncatedPath, wholeFile[..(wholeFile.Length / 3)]);
+        try
+        {
+            Assert(
+                WpfNotificationRenderer.LoadTemplate(truncatedPath) is null,
+                "A truncated PNG template did not degrade to no background.");
+        }
+        finally
+        {
+            File.Delete(truncatedPath);
+        }
+    }
+
+    /// <summary>
+    /// §B5: a template larger than this panel could ever usefully show is
+    /// downscaled on load, capped memory rather than caching a user's
+    /// full-resolution photo for a 900x260 panel; a template already under
+    /// the cap must not be upscaled.
+    /// </summary>
+    private static void TestNotificationTemplateLoaderDownscalesAnOversizedImage()
+    {
+        var oversizedPath = Path.Combine(Path.GetTempPath(), $"svr-bridge-oversized-{Guid.NewGuid():N}.png");
+        using (var bitmap = new System.Drawing.Bitmap(WpfNotificationRenderer.MaxDecodePixelWidth + 400, 300))
+        {
+            bitmap.Save(oversizedPath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+
+        try
+        {
+            var loaded = WpfNotificationRenderer.LoadTemplate(oversizedPath);
+            Assert(loaded is not null, "A valid oversized PNG template failed to load at all.");
+            Assert(
+                loaded!.PixelWidth <= WpfNotificationRenderer.MaxDecodePixelWidth,
+                $"An oversized template ({loaded.PixelWidth}px wide) was not downscaled to the "
+                + $"{WpfNotificationRenderer.MaxDecodePixelWidth}px cap.");
+        }
+        finally
+        {
+            File.Delete(oversizedPath);
+        }
+
+        var smallPath = Path.Combine(Path.GetTempPath(), $"svr-bridge-small-{Guid.NewGuid():N}.png");
+        using (var bitmap = new System.Drawing.Bitmap(64, 32))
+        {
+            bitmap.Save(smallPath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+
+        try
+        {
+            var loaded = WpfNotificationRenderer.LoadTemplate(smallPath);
+            Assert(
+                loaded is not null && loaded.PixelWidth == 64,
+                "A template already under the decode cap was resized anyway.");
+        }
+        finally
+        {
+            File.Delete(smallPath);
+        }
+    }
+
+    /// <summary>
+    /// §B4's precedence rule: a payload's own duration/accent/image win when
+    /// present; a settings-level default applies only when the payload is
+    /// silent. Pure - proven directly against
+    /// <see cref="SvrBridge.Core.StreamerBotEventPayload.WithNotificationDefaults"/>
+    /// rather than through a live <c>NotificationOverlay</c>, which needs OpenVR.
+    /// </summary>
+    private static void TestNotificationPayloadPrecedenceResolvesSettingsDefaults()
+    {
+        var silent = new SvrBridge.Core.StreamerBotEventPayload
+        {
+            Target = SvrBridge.Core.StreamerBotEventTarget.Notification,
+            Text = "hello"
+        };
+        var resolvedSilent = silent.WithNotificationDefaults(9000, "#112233", "C:\\default.png");
+        Assert(
+            resolvedSilent.DurationMs == 9000
+            && resolvedSilent.Accent == "#112233"
+            && resolvedSilent.Image == "C:\\default.png",
+            "A payload silent about duration/accent/image did not take the settings-level defaults.");
+
+        Assert(
+            SvrBridge.Core.StreamerBotEventPayload.TryParse(
+                """{"target":"notification","duration":1234,"accent":"#ABCDEF","image":"C:\\custom.png","text":"hi"}""",
+                out var explicitPayload,
+                out _),
+            "A well-formed notification payload with duration/accent/image was rejected.");
+        var resolvedExplicit = explicitPayload!.WithNotificationDefaults(9000, "#112233", "C:\\default.png");
+        Assert(
+            resolvedExplicit.DurationMs == 1234
+            && resolvedExplicit.Accent == "#ABCDEF"
+            && resolvedExplicit.Image == "C:\\custom.png",
+            "A payload's own duration/accent/image did not win over the settings-level defaults.");
+    }
+
+    /// <summary>
     /// Proves the render thread actually runs dispatched work and that
     /// <see cref="WpfRenderThread.Dispose"/> joins the OS thread rather than
     /// merely asking it to stop - a hung dispatcher shutdown would otherwise
@@ -2058,6 +2443,68 @@ internal static class TraySelfTests
         Assert(
             throttle.ShouldRepaint(buffer.Version, nowMs: 150),
             "The chat repaint throttle did not allow a repaint once its interval had elapsed.");
+    }
+
+    /// <summary>
+    /// Proves §B3 of the Phase 6 plan's exact requirement for the dashboard
+    /// repaint throttle: leading edge, not trailing. The first request in a
+    /// burst must paint immediately, a burst within the window must coalesce
+    /// into exactly one further paint (not zero, not one per request), and
+    /// that one paint must show the final state - not the first, and not a
+    /// stale intermediate one. Asserting the render count and the final
+    /// value together is deliberate: a naive per-click render would also
+    /// leave <c>lastValue</c> at the final state and look correct on that
+    /// check alone.
+    /// </summary>
+    private static void TestDashboardRepaintCoordinatorCoalescesBurst()
+    {
+        var coordinator = new SvrBridge.Core.DashboardRepaintCoordinator(minimumIntervalMs: 60);
+        var renderCount = 0;
+        var lastValue = -1;
+
+        void RequestValue(int value, long nowMs) =>
+            coordinator.Request(
+                () =>
+                {
+                    renderCount++;
+                    lastValue = value;
+                },
+                nowMs);
+
+        RequestValue(1, 0);
+        Assert(
+            renderCount == 1 && lastValue == 1,
+            "The first update in a burst was not rendered immediately (leading edge).");
+
+        RequestValue(2, 10);
+        RequestValue(3, 20);
+        RequestValue(4, 30);
+        Assert(
+            renderCount == 1,
+            $"A burst inside the throttle window rendered {renderCount} times before the window elapsed instead of coalescing.");
+
+        coordinator.Flush(59);
+        Assert(
+            renderCount == 1,
+            "The coalesced repaint fired one millisecond before its throttle window elapsed.");
+
+        coordinator.Flush(60);
+        Assert(
+            renderCount == 2 && lastValue == 4,
+            $"The coalesced burst produced {renderCount} render(s) showing value {lastValue} instead of exactly 2 renders, the second showing the final value 4 - this is the per-click-render bug the throttle exists to catch.");
+
+        // Nothing left pending: a flush with no new request must not render
+        // again, proving the throttle does not keep re-firing on a stale
+        // version once it has caught up.
+        coordinator.Flush(1000);
+        Assert(renderCount == 2, "A flush with nothing pending rendered anyway.");
+
+        // A single isolated request, well clear of the previous burst, is
+        // its own leading edge and must not be held back by the earlier one.
+        RequestValue(5, 1000);
+        Assert(
+            renderCount == 3 && lastValue == 5,
+            "A request arriving after the throttle window had long elapsed was not treated as a fresh leading edge.");
     }
 
     /// <summary>

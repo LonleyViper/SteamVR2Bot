@@ -2708,3 +2708,175 @@ settings file predating the toggle takes the new default.
 The self-test that asserted the old default now asserts the new one, and says
 in a comment why it is the odd one out - so a later reader does not "fix" it
 back into line with its neighbours.
+
+## Phase 6 — three dashboard tabs and a repaint throttle - not yet run
+
+### Scope
+
+Per `PHASE6_VR_TABS_PROMPT.md`: the dashboard's two tabs (Shortcuts, Settings)
+became three (Shortcuts, Chat, Notifications), with the former combined
+Settings page's controls split by owning surface - Chat keeps its on/off,
+anchor mode/hand, opacity, size, gaze sensitivity and the Phase 5
+placement-reset/grow-on-gaze row; Notifications keeps its on/off, anchor mode,
+opacity and size. No settings migration: `UserSettings`' shape is unchanged,
+only its presentation across two pages instead of one. The shortcut wizard's
+six pages (`List`, `GestureType`, `Tolerance`, `ActionPicker`, `RecordInput`,
+`Review`) were not touched.
+
+Separately, the dashboard gained a leading-edge coalescing repaint throttle
+(`DashboardRepaintCoordinator`, `SvrBridge.Core`, ~16 Hz) - the dashboard was
+the one surface with no repaint throttle at all, and the new tabs are
+slider-heavy. The first update in a burst still paints immediately; only
+repeats within the ~60 ms window coalesce into one further paint, and the
+final state is always what lands - never a stale intermediate one. It is
+deliberately scoped to the ordinary already-visible repaint path only:
+dashboard *reactivation* (the recording flow returning from the SteamVR system
+menu, and the very first page shown at startup) still paints immediately and
+unthrottled, since showing the overlay before its texture is ready would flash
+an empty panel - the exact hazard the existing `ShowPage` ordering comment
+already guarded against. This reduces blink frequency; it does not eliminate
+it, per the known limitation already recorded above under "Known limitations"
+in `README.md`.
+
+### What is already covered without a headset
+
+Both self-test suites pass and both projects build with zero warnings.
+`TestSettingsPageLayoutRectangles` was extended: the three-tab strip's
+rectangles still hit-test to themselves and stay evenly spaced; the Chat
+page's placement-reset row sits below its gaze-sensitivity row with no
+overlap (replacing the old assertion that it sat below the Notifications
+sliders, which no longer applies now that Chat and Notifications are
+different pages); and a new assertion pins down that the Chat and
+Notifications pages' first two rows deliberately share the same Y, each
+starting fresh below its own tab strip, so a future reader does not "fix"
+that back into disagreement mistaking it for leftover overlap from the old
+combined page.
+
+`TestDashboardRepaintCoordinatorCoalescesBurst` (`SvrBridge.Core`, no OpenVR
+needed) asserts the throttle's exact contract with fabricated timestamps: the
+first request in a burst renders immediately (asserting the render count,
+not just that a render happened); three further requests inside the window
+produce no additional render; the coalesced render fires exactly once the
+window elapses and shows the *last* requested value, not an intermediate one;
+a flush with nothing pending never renders; and a request arriving long after
+the previous burst is treated as its own fresh leading edge rather than being
+held back. None of this proves the panel is visible, correctly tabbed, or
+that the blink is actually reduced in the headset - only the manual steps
+below can show that.
+
+### Preparation
+
+SteamVR running, both Vive controllers on and tracked, the freshly published
+`artifacts\publish\SteamVR2Bot.exe` running (not `dotnet run` from source -
+SteamVR is registered against the published exe), with at least one saved
+shortcut bound to a Streamer.bot action.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Open the SteamVR dashboard → SteamVR2Bot | Three tabs read **Shortcuts**, **Chat**, **Notifications**; Shortcuts is active by default and shows the saved shortcut list exactly as before | **PASS** |
+| 2 | Select the **Chat** tab | Renders on/off, anchor mode/hand, opacity, size, gaze-sensitivity and the placement-reset/grow-on-gaze row - the same controls the old combined Settings page showed for Chat | **PASS** |
+| 3 | Select the **Notifications** tab | Renders on/off, anchor mode, opacity and size only - no gaze-sensitivity row and no placement reset, since neither applies to notifications | **PASS** |
+| 4 | Switch rapidly between all three tabs several times | Switching feels immediate, not delayed by the repaint throttle | **PASS** |
+| 5 | On the Chat tab, change anchor mode, hand, opacity and size in turn | Each applies live to the running chat window immediately, exactly as the old combined page did | **PASS** |
+| 6 | On the Notifications tab, change anchor mode, opacity and size, then trigger a test notification | Each applies live; the notification appears using the new settings | **PASS** |
+| 7 | Toggle Chat off then on, and Notifications off then on, from their new tabs | Each surface disappears and reappears as expected | **PASS** |
+| 8 | On the Chat tab, drag the chat window with the laser, then press **Reset chat window position** | Behaves exactly as it did on the old combined Settings page | **PASS** |
+| 9 | On the Chat tab, toggle **Grow on gaze** | Behaves exactly as it did on the old combined Settings page | **PASS** |
+| 10 | Create a new shortcut end to end: gesture type → tolerance (if applicable) → record input → choose action → save | Every wizard page renders and behaves exactly as before; the tab strip never appears on any wizard sub-page | **PASS** |
+| 11 | Edit an existing shortcut, then delete a different one | Both complete exactly as before, from the Shortcuts tab | **PASS** |
+| 12 | On the Tolerance page (double-press or long-hold), click rapidly along the slider many times in a row | Visibly blinks **less** than before the throttle - not necessarily zero - and the slider still tracks each click with no felt input delay and lands on the last value clicked, not an earlier one | **PASS** |
+| 13 | Do the same rapid-click test on the Chat and Notification opacity/size sliders | Same result as row 12: less blinking, no felt delay, final value always correct | **PASS** |
+| 14 | Close SteamVR2Bot, relaunch it, and reopen the dashboard | All settings from rows 5-9 persisted across the restart | **PASS** |
+| 15 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | **PASS** |
+
+### Result, 2026-07-30 — 15/15 pass
+
+All fifteen rows passed as reported by the user. The three-tab split (rows
+1-3), live-apply for every moved setting on its new tab (rows 5-9), and the
+unmodified shortcut wizard end to end - create, edit, delete (rows 10-11) -
+all hold. Rows 12-13 confirm the repaint throttle does what §B3 of the Phase
+6 plan asked for and nothing more: less blinking under rapid slider
+clicking, with no felt input delay and no dropped/stale final value - this
+reduces blink frequency, it does not eliminate it, consistent with the known
+CPU-upload-path limitation already recorded in `README.md`. Row 14 confirms
+persistence, and row 15 confirms shortcut delivery is unaffected.
+
+No wizard page's behaviour changed - rows 10 and 11 are the direct evidence
+for that, matching the code-level analysis that `GestureType`, `Tolerance`,
+`ActionPicker`, `RecordInput` and `Review` were not touched.
+
+## Phase 7 — notification customisation
+
+### Scope
+
+Per `PHASE7_NOTIFICATION_CUSTOMISATION_PROMPT.md`: notifications became
+configurable - position (a grabbable positioning frame, §B1), which kinds
+appear (direct `GetEvents`-driven subscription, §B2), entry/exit animation
+(fade/slide/scale-pop, §B3), colours, duration, background opacity and corner
+radius (§B4), and an optional PNG template (§B5).
+
+### Round 1 - 2026-07-31, headset test
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Open the Notifications tab and turn on **Position notifications** | A persistent dummy frame appears showing representative sample text, sized/coloured per current settings | **PASS** |
+| 2 | Grab the frame with the laser and drag/rotate it | Follows the controller rigidly in all six degrees of freedom, the same feel as the chat window's grab-to-place | **PASS** |
+| 3 | Release, turn **Position notifications** off, then back on | The frame reappears at the placement just dragged to, not the default | **PASS** - once, the frame reappeared visibly displaced to the left instead. Not reproduced on retry; no root cause identified. Watch for a recurrence. |
+| 4 | Close SteamVR2Bot, relaunch it, reopen the dashboard, turn positioning back on | The dragged placement survived the restart | First attempt **FAIL** (placement reverted to default), root-caused and fixed - `SaveVrSettingsChange` never copied `NotificationPlacement`/`NotificationAppearance` into saved settings, so every VR-side change applied live but never reached disk. Retest after fix: **PASS**. |
+| 5 | Drag the frame somewhere awkward (e.g. behind you), then press **Reset notification position** | The frame - or the next real notification - returns to the default placement; the reset control works even though the frame is currently unreachable | **PASS** |
+| 6 | Navigate away from the Notifications tab while positioning is on, then back | Positioning turned itself off when you left the tab (frame lost its laser); the toggle reads Off and can be turned back on | **PASS** |
+| 7 | Trigger a real Streamer.bot event with no relay action authored for it | Produces a notification with no Streamer.bot-side setup beyond an enabled local trigger | not run - the events UI was confusing (opt-in per-event list) and has since been redesigned: every event Streamer.bot reports now subscribes and notifies automatically, with no per-event enabling anywhere in this app. Re-test against the new design. |
+| 8 | Toggle **Show test-fired events** off, fire a Streamer.bot test button, confirm no notification; back on, confirm it appears | Off suppresses test-fired events; on restores them | not run |
+| 9 | (superseded - see row 7) | | n/a |
+| 10 | (superseded - see row 7) | | n/a |
+| 11 | Set the transition to **Fade**, then **Slide** (try a couple of edges), then **Scale pop**; trigger a notification each time | Each transition looks distinct and visually correct, and the panel visibly comes to rest (no lingering jitter/drift) rather than animating forever | **PASS** |
+| 12 | Set background, text and accent colours away from their defaults; trigger a notification | Colours match exactly what was picked on every surface - background, title, body - with no channel swap (red picked shows as red, not blue) | **PASS** |
+| 13 | Set a default duration away from 5 seconds; trigger a notification with no payload-level duration | Stays on screen for the configured duration | not checked this round |
+| 14 | Trigger a notification whose payload sets its own `duration`/`accent` | The payload's values win over the settings-level defaults | **PASS** for accent (confirmed the payload's own `"accent":"#60C8FF"` correctly overrides the settings default - this is the documented precedence rule working as designed, not a bug) |
+| 15 | Set a valid PNG as the background template; trigger a notification | The image renders letterboxed (not stretched/distorted) behind legible title/body text | **PASS** |
+| 16 | Point the template path at a missing file, then a corrupted/non-PNG file | Notifications still render (flat colour background), nothing crashes | **PASS** |
+| 17 | Send a notification whose payload sets its own `image` field to a different PNG | That payload's image overrides the configured template for that one notification | not run - needs a Streamer.bot action with an `"image"` field authored; UI/documentation for this was unclear, addressed below |
+| 18 | Open the chat window and the SteamVR dashboard's other tabs/wizard | Both work exactly as before this phase - no regression from anything above | **PASS** |
+| 19 | Fire an existing shortcut | The Streamer.bot action fires exactly once, no misses or duplicates | **PASS** |
+
+Also caught this round, both fixed same-day: the PNG template's text scrim
+and the accent stripe were still rendering (a dark box, and the coloured
+bottom border) when a template was active, regardless of background opacity.
+Per direct feedback, both are now hidden entirely whenever a template is
+loaded - a template gets exactly the wearer's own background opacity and
+text colour, nothing this renderer adds uninvited. A "Clear" button was also
+added next to the template path field (there was no way to unset a template
+once chosen).
+
+### Round 2 - events model, redesigned twice, not yet re-tested in headset
+
+Following Round 1's feedback ("I don't like this interface... all events
+should push to the notification display except those filtered in the
+streamerbot"), §B2 was first redesigned to subscribe to every event
+`GetEvents` reports automatically, on the theory that Streamer.bot only
+forwards an event with an enabled local trigger. **Live-tested and
+disproven**: toggling every event off in Streamer.bot's own Settings >
+Events panel did not stop this app receiving them (confirmed via a
+screenshot of that exact panel and a direct test), and non-alert plumbing
+(OBS scene-change events, not shown in that panel's categories at all)
+reached the headset indistinguishable from a real alert. Streamer.bot's own
+API and documentation expose **no** request that reveals which events
+currently have an enabled trigger, so there is no server-side signal this
+app can rely on.
+
+Reverted to opt-in (§B2's original design), defaulting to nothing enabled -
+the same migration-safe default this app has used throughout. The interface
+itself was rebuilt to match Streamer.bot's own Events panel per direct
+feedback: a search box, grouped by source, a "Toggle group" convenience
+action per group, individual switches underneath. A separate "Customise
+wording for:" picker (searchable, independent of the enable switches) is
+what "Edit template…" now uses to pick an event, since selecting one no
+longer means the same thing as enabling it.
+
+All Core/Tray self-tests updated and passing for this final design:
+`Subscribe` includes only General.Custom/Twitch.ChatMessage plus whichever
+events are enabled; an event GetEvents reports but the wearer never enabled
+is neither subscribed to nor turned into a notification even if it arrives
+anyway; a GetEvents failure at connect still falls back gracefully; an
+on-demand refresh that goes unanswered doesn't disturb the feed. Rows 7-10
+above need re-testing against this final grouped/searchable opt-in UI.

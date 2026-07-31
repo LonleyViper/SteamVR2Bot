@@ -71,6 +71,12 @@ public sealed class AppConfig
     /// <summary>Multiplies the notification panel's saved default width. See <see cref="ChatOpacity"/>.</summary>
     public double NotificationSizeScale { get; init; } = 1.0;
 
+    /// <summary>The notification panel's saved default placement - see <see cref="ChatPlacement"/>, added for §B1 of the Phase 7 plan.</summary>
+    public OverlayPlacement NotificationPlacement { get; init; } = OverlayPlacement.Default;
+
+    /// <summary>Everything §B3/§B4/§B5 of the Phase 7 plan added - baked in at spawn like every other appearance field above.</summary>
+    public NotificationAppearanceSettings NotificationAppearance { get; init; } = NotificationAppearanceSettings.Default;
+
     public static AppConfig Load(string path)
     {
         if (!File.Exists(path))

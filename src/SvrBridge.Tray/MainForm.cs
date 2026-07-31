@@ -1,3 +1,4 @@
+using System.Globalization;
 using SvrBridge.Core;
 
 namespace SvrBridge.Tray;
@@ -27,6 +28,76 @@ internal sealed class MainForm : Form
     private readonly CheckBox _chatGazeScale = new();
     private readonly TrackBar _notificationOpacity = new();
     private readonly TrackBar _notificationSizeScale = new();
+
+    // §B3/§B4/§B5 of the Phase 7 plan - notification appearance.
+    private readonly TextBox _notificationBackgroundColour = new();
+    private readonly TextBox _notificationTextColour = new();
+    private readonly TextBox _notificationAccentColour = new();
+    private readonly Button _pickBackgroundColour = new();
+    private readonly Button _pickTextColour = new();
+    private readonly Button _pickAccentColour = new();
+    private readonly NumericUpDown _notificationDurationSeconds = new();
+    private readonly ComboBox _notificationTransition = new();
+    private readonly ComboBox _notificationSlideEdge = new();
+    private readonly TextBox _notificationTemplatePath = new();
+    private readonly Button _browseTemplatePath = new();
+    private readonly Button _clearTemplatePath = new();
+    private readonly TrackBar _notificationBackgroundOpacity = new();
+    private readonly NumericUpDown _notificationCornerRadius = new();
+
+    // §B2 - direct event subscription. Opt-in, not "subscribe to
+    // everything": Streamer.bot exposes no way to ask which events currently
+    // have an enabled trigger (confirmed live - disabling every event in its
+    // own Settings > Events panel did not stop this app receiving them), so
+    // a broader default pulled in non-alert plumbing (OBS scene changes and
+    // the like) indistinguishable from a real alert. Modelled on
+    // Streamer.bot's own Events panel per direct feedback: a search box,
+    // grouped by source with a "Toggle group" convenience action, individual
+    // switches underneath.
+    private readonly Button _refreshEvents = new();
+    private readonly TextBox _eventSearch = new();
+    private readonly Panel _eventGroupsContainer = new();
+
+    /// <summary>
+    /// Whether to build the browse-every-event picker above. Off unless a
+    /// developer sets <c>SVRBRIDGE_BROWSE_EVENT_PICKER=1</c>: live testing
+    /// rejected this list as unusable at Twitch's real event count (~187 in
+    /// one source), and Phase 7b replaces it with an inverted design - the
+    /// short enabled list first, search only to add. Gated rather than
+    /// deleted outright so the shipped build cannot present the rejected UI
+    /// while its replacement is still being built, and so the freeze fix and
+    /// grouping behaviour stay exercisable in the meantime.
+    /// </summary>
+    private static readonly bool BrowseEventPickerEnabled =
+        string.Equals(
+            Environment.GetEnvironmentVariable("SVRBRIDGE_BROWSE_EVENT_PICKER"),
+            "1",
+            StringComparison.Ordinal);
+    private readonly ComboBox _templateEventPicker = new();
+    private readonly CheckBox _showTestEvents = new();
+    private readonly Button _editEventTemplate = new();
+    private readonly Dictionary<string, string> _eventTemplates =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The checkbox for every known event, keyed by
+    /// <see cref="StreamerBotEventDescriptor.Key"/>, rebuilt each time
+    /// <see cref="ShowNotificationEvents"/> runs. Kept so
+    /// <see cref="CheckedEventKeys"/> can read the current selection and the
+    /// search box can show/hide rows without rebuilding them.
+    /// </summary>
+    private readonly Dictionary<string, CheckBox> _eventCheckboxesByKey =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The keys saved as enabled, remembered independently of
+    /// <see cref="_eventCheckboxesByKey"/>'s own contents. <c>GetEvents</c>
+    /// populates that list asynchronously, well after
+    /// <see cref="ApplySettings"/> can run, so a saved selection has to be
+    /// restorable against checkboxes that have not been built yet.
+    /// </summary>
+    private readonly HashSet<string> _enabledEventKeys = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly Button _add = new();
     private readonly Button _edit = new();
     private readonly Button _remove = new();
@@ -51,12 +122,17 @@ internal sealed class MainForm : Form
     /// actually get at it.
     /// </summary>
     private OverlayPlacement _chatPlacement = OverlayPlacement.Default;
+
+    /// <summary>The notification panel's hand-placed offset - see <see cref="_chatPlacement"/>'s own remarks; the same reasoning applies since §B1 of the Phase 7 plan.</summary>
+    private OverlayPlacement _notificationPlacement = OverlayPlacement.Default;
+
     private bool _allowClose;
     private bool _applyingSettings;
 
     public event Action? SettingsChanged;
     public event Action<ShortcutConfig>? TestRequested;
     public event Action? FindActionsRequested;
+    public event Action? NotificationEventsRefreshRequested;
     public event Action? SteamVrSetupRequested;
     public event Action? BindingsRequested;
     public event Action? DashboardRequested;
@@ -111,8 +187,48 @@ internal sealed class MainForm : Form
             GazeSensitivity = (GazeSensitivity)Math.Clamp(_gazeSensitivity.SelectedIndex, 0, 2),
             ChatGazeScaleEnabled = _chatGazeScale.Checked,
             NotificationOpacity = OpacityFromSlider(_notificationOpacity),
-            NotificationSizeScale = SizeScaleFromSlider(_notificationSizeScale)
+            NotificationSizeScale = SizeScaleFromSlider(_notificationSizeScale),
+            NotificationPlacement = _notificationPlacement,
+            NotificationBackgroundColour = _notificationBackgroundColour.Text.Trim(),
+            NotificationTextColour = _notificationTextColour.Text.Trim(),
+            NotificationAccentColour = _notificationAccentColour.Text.Trim(),
+            NotificationDefaultDurationMs = (int)(_notificationDurationSeconds.Value * 1000),
+            NotificationTransitionKind = (NotificationTransition)Math.Max(0, _notificationTransition.SelectedIndex),
+            NotificationSlideEdge = (NotificationSlideEdge)Math.Max(0, _notificationSlideEdge.SelectedIndex),
+            NotificationTemplatePath = _notificationTemplatePath.Text.Trim(),
+            NotificationBackgroundOpacity = _notificationBackgroundOpacity.Value / 100.0,
+            NotificationCornerRadiusPixels = (double)_notificationCornerRadius.Value,
+            EnabledEvents = CheckedEventKeys(),
+            EventTemplates = new Dictionary<string, string>(_eventTemplates, StringComparer.OrdinalIgnoreCase),
+            ShowTestEvents = _showTestEvents.Checked
         };
+    }
+
+    /// <summary>The "Source.Type" keys currently checked - §B2's actual subscription selection. Reads live checkbox state where checkboxes exist, and preserves any saved key with no checkbox yet (not fetched this session).</summary>
+    private List<string> CheckedEventKeys()
+    {
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, checkedEventBox) in _eventCheckboxesByKey)
+        {
+            if (checkedEventBox.Checked)
+            {
+                keys.Add(key);
+            }
+        }
+
+        foreach (var key in _enabledEventKeys)
+        {
+            if (!_eventCheckboxesByKey.ContainsKey(key))
+            {
+                // Saved as enabled, but GetEvents has not reported it this
+                // session (not yet fetched, or the connected instance
+                // temporarily didn't include it) - preserved rather than
+                // silently dropped from the save.
+                keys.Add(key);
+            }
+        }
+
+        return keys.ToList();
     }
 
     private static OverlayAnchorMode SelectedAnchorMode(ComboBox combo) =>
@@ -162,6 +278,38 @@ internal sealed class MainForm : Form
             _chatGazeScale.Checked = settings.ChatGazeScaleEnabled;
             ApplyOpacityToSlider(_notificationOpacity, settings.NotificationOpacity);
             ApplySizeScaleToSlider(_notificationSizeScale, settings.NotificationSizeScale);
+            _notificationPlacement = settings.NotificationPlacement;
+            _notificationBackgroundColour.Text = settings.NotificationBackgroundColour;
+            _notificationTextColour.Text = settings.NotificationTextColour;
+            _notificationAccentColour.Text = settings.NotificationAccentColour;
+            _notificationDurationSeconds.Value = Math.Clamp(
+                settings.NotificationDefaultDurationMs / 1000m,
+                _notificationDurationSeconds.Minimum,
+                _notificationDurationSeconds.Maximum);
+            _notificationTransition.SelectedIndex = (int)settings.NotificationTransitionKind;
+            _notificationSlideEdge.SelectedIndex = (int)settings.NotificationSlideEdge;
+            RefreshSlideEdgeEnabled();
+            _notificationTemplatePath.Text = settings.NotificationTemplatePath;
+            _notificationBackgroundOpacity.Value = (int)Math.Round(
+                Math.Clamp(settings.NotificationBackgroundOpacity, 0, 1) * 100);
+            _notificationCornerRadius.Value = (decimal)Math.Clamp(
+                settings.NotificationCornerRadiusPixels,
+                (double)_notificationCornerRadius.Minimum,
+                (double)_notificationCornerRadius.Maximum);
+            _showTestEvents.Checked = settings.ShowTestEvents;
+            _enabledEventKeys.Clear();
+            foreach (var key in settings.EnabledEvents)
+            {
+                _enabledEventKeys.Add(key);
+            }
+
+            ApplyCheckedEventsFromKnownKeys();
+            _eventTemplates.Clear();
+            foreach (var (key, value) in settings.EventTemplates)
+            {
+                _eventTemplates[key] = value;
+            }
+
             _shortcutItems.Clear();
             _shortcutItems.AddRange(settings.GetShortcuts());
             RefreshShortcutGrid();
@@ -290,6 +438,251 @@ internal sealed class MainForm : Form
         }
 
         _actions = actions;
+    }
+
+    /// <summary>
+    /// Rebuilds the Notifications section's event picker from a live
+    /// <c>GetEvents</c> response - §B2 of the Phase 7 plan. Never hardcoded:
+    /// every entry, and every group, comes from what the connected
+    /// Streamer.bot instance itself reported. Grouped by source with a
+    /// "Toggle group" convenience action, modelled on Streamer.bot's own
+    /// Events panel per direct feedback that a flat list was hard to use.
+    /// Re-checks whichever keys were already saved as enabled, since this
+    /// can arrive well after <see cref="ApplySettings"/> already ran.
+    /// </summary>
+    public void ShowNotificationEvents(IReadOnlyList<StreamerBotEventDescriptor> events)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => ShowNotificationEvents(events));
+            return;
+        }
+
+        if (BrowseEventPickerEnabled)
+        {
+            _eventGroupsContainer.SuspendLayout();
+            _eventGroupsContainer.Controls.Clear();
+            _eventCheckboxesByKey.Clear();
+
+            var groups = events
+                .GroupBy(descriptor => descriptor.Source, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase);
+
+            var y = 0;
+            foreach (var group in groups)
+            {
+                var groupPanel = BuildEventGroupPanel(
+                    group.Key,
+                    group.OrderBy(descriptor => descriptor.Type, StringComparer.OrdinalIgnoreCase).ToArray(),
+                    ref y);
+                _eventGroupsContainer.Controls.Add(groupPanel);
+            }
+
+            _eventGroupsContainer.ResumeLayout();
+        }
+
+        _templateEventPicker.Items.Clear();
+        foreach (var descriptor in events
+                     .OrderBy(entry => entry.Source, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(entry => entry.Type, StringComparer.OrdinalIgnoreCase))
+        {
+            _templateEventPicker.Items.Add(descriptor);
+        }
+
+        ApplyCheckedEventsFromKnownKeys();
+    }
+
+    /// <summary>One source group: a bold header with a "Toggle group" button, then one checkbox per event underneath.</summary>
+    private Control BuildEventGroupPanel(
+        string source,
+        IReadOnlyList<StreamerBotEventDescriptor> descriptors,
+        ref int y)
+    {
+        var panel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            Width = 420,
+            Margin = new Padding(0, 0, 0, 10),
+            Tag = source
+        };
+
+        var header = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 2) };
+        header.Controls.Add(new Label
+        {
+            Text = source,
+            Font = new Font(Font, FontStyle.Bold),
+            AutoSize = true,
+            Margin = new Padding(0, 4, 10, 0)
+        });
+        var toggleGroup = new Button();
+        ConfigureButton(toggleGroup, "Toggle group", false);
+        panel.Controls.Add(header);
+
+        var groupBoxes = new List<CheckBox>();
+        foreach (var descriptor in descriptors)
+        {
+            var box = new CheckBox
+            {
+                Text = descriptor.Type,
+                AutoSize = true,
+                Tag = descriptor,
+                Margin = new Padding(20, 1, 0, 1),
+                Checked = _enabledEventKeys.Contains(descriptor.Key)
+            };
+            box.CheckedChanged += (_, _) => NotifySettingsChanged();
+            _eventCheckboxesByKey[descriptor.Key] = box;
+            groupBoxes.Add(box);
+            panel.Controls.Add(box);
+        }
+
+        toggleGroup.Click += (_, _) =>
+        {
+            // Flip relative to majority state, so "mostly on, one stray off"
+            // turns everything on rather than everything off.
+            var turnOn = groupBoxes.Count(box => box.Checked) * 2 < groupBoxes.Count;
+            // Without suspending layout, each Checked assignment below can
+            // trigger a relayout of this (AutoSize) FlowLayoutPanel - with
+            // 30-60 checkboxes in a group that is enough individual layout
+            // passes to read as the app freezing, confirmed live.
+            panel.SuspendLayout();
+            try
+            {
+                foreach (var box in groupBoxes)
+                {
+                    box.Checked = turnOn;
+                }
+            }
+            finally
+            {
+                panel.ResumeLayout(true);
+            }
+        };
+        header.Controls.Add(toggleGroup);
+
+        return panel;
+    }
+
+    /// <summary>Re-checks whatever of <see cref="_enabledEventKeys"/> is currently present in <see cref="_eventCheckboxesByKey"/>, and filters by the search box.</summary>
+    private void ApplyCheckedEventsFromKnownKeys()
+    {
+        _applyingSettings = true;
+        try
+        {
+            foreach (var (key, box) in _eventCheckboxesByKey)
+            {
+                box.Checked = _enabledEventKeys.Contains(key);
+            }
+        }
+        finally
+        {
+            _applyingSettings = false;
+        }
+
+        ApplyEventSearchFilter();
+    }
+
+    /// <summary>
+    /// Hides an event row that does not match the search box, and hides a
+    /// whole group once every one of its rows is hidden.
+    /// <para>
+    /// Every mutating call in here is wrapped in <c>SuspendLayout</c>/
+    /// <c>ResumeLayout</c>, on both the outer container and each inner group
+    /// panel - without it, every single <c>Visible</c> assignment triggers
+    /// its own relayout of an <c>AutoSize</c> <see cref="FlowLayoutPanel"/>,
+    /// and with dozens of checkboxes per group that reads as the whole app
+    /// freezing on every keystroke, confirmed live. The final
+    /// <see cref="Control.PerformLayout()"/> forces one clean recalculation
+    /// afterwards, which is also what stops the scrollable area from keeping
+    /// stale, empty extra space once rows have been hidden.
+    /// </para>
+    /// </summary>
+    private void ApplyEventSearchFilter()
+    {
+        var query = _eventSearch.Text.Trim();
+        _eventGroupsContainer.SuspendLayout();
+        try
+        {
+            foreach (Control groupControl in _eventGroupsContainer.Controls)
+            {
+                if (groupControl is not FlowLayoutPanel { Tag: string source } groupPanel)
+                {
+                    continue;
+                }
+
+                groupPanel.SuspendLayout();
+                try
+                {
+                    var anyVisible = false;
+                    foreach (Control child in groupPanel.Controls)
+                    {
+                        if (child is not CheckBox { Tag: StreamerBotEventDescriptor descriptor } box)
+                        {
+                            continue;
+                        }
+
+                        var visible = query.Length == 0
+                                      || descriptor.Type.Contains(query, StringComparison.OrdinalIgnoreCase)
+                                      || source.Contains(query, StringComparison.OrdinalIgnoreCase);
+                        box.Visible = visible;
+                        anyVisible |= visible;
+                    }
+
+                    groupPanel.Visible = anyVisible;
+                }
+                finally
+                {
+                    groupPanel.ResumeLayout(true);
+                }
+            }
+        }
+        finally
+        {
+            _eventGroupsContainer.ResumeLayout(true);
+        }
+
+        _eventGroupsContainer.PerformLayout();
+    }
+
+    private void RefreshSlideEdgeEnabled() =>
+        _notificationSlideEdge.Enabled =
+            (NotificationTransition)Math.Max(0, _notificationTransition.SelectedIndex)
+            == NotificationTransition.Slide;
+
+    /// <summary>Opens a colour picker seeded with <paramref name="target"/>'s current value, writing the chosen colour back as "#RRGGBB".</summary>
+    private void PickColour(TextBox target)
+    {
+        using var dialog = new ColorDialog();
+        if (TryParseHexColour(target.Text) is { } current)
+        {
+            dialog.Color = current;
+        }
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        target.Text = $"#{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}";
+        NotifySettingsChanged();
+    }
+
+    private static Color? TryParseHexColour(string hex)
+    {
+        var trimmed = hex.Trim();
+        if (trimmed.Length != 7
+            || trimmed[0] != '#'
+            || !int.TryParse(
+                trimmed.AsSpan(1),
+                NumberStyles.HexNumber,
+                CultureInfo.InvariantCulture,
+                out var value))
+        {
+            return null;
+        }
+
+        return Color.FromArgb((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF);
     }
 
     public void AllowCloseAndClose()
@@ -515,6 +908,9 @@ internal sealed class MainForm : Form
         panel.Controls.Add(GazeSensitivityRow());
         panel.Controls.Add(GazeScaleToggle());
 
+        panel.Controls.Add(NotificationAppearanceSection());
+        panel.Controls.Add(NotificationEventsSection());
+
         ConfigureButton(_findActions, "Refresh Streamer.bot actions", false);
         _findActions.Click += (_, _) => FindActionsRequested?.Invoke();
         panel.Controls.Add(_findActions);
@@ -644,6 +1040,269 @@ internal sealed class MainForm : Form
         });
         row.Controls.Add(_gazeSensitivity);
         return row;
+    }
+
+    /// <summary>§B3/§B4/§B5 of the Phase 7 plan: colours, duration, transition and an optional PNG template.</summary>
+    private Control NotificationAppearanceSection()
+    {
+        var section = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            Margin = new Padding(20, 10, 0, 10)
+        };
+        section.Controls.Add(new Label
+        {
+            Text = "Notification appearance",
+            Font = new Font(Font, FontStyle.Bold),
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 6)
+        });
+
+        section.Controls.Add(
+            ColourRow("Background:", _notificationBackgroundColour, _pickBackgroundColour));
+        section.Controls.Add(ColourRow("Text:", _notificationTextColour, _pickTextColour));
+        section.Controls.Add(
+            ColourRow(
+                "Accent (a payload's own “accent” still wins):",
+                _notificationAccentColour,
+                _pickAccentColour));
+
+        _notificationBackgroundOpacity.Minimum = 0;
+        _notificationBackgroundOpacity.Maximum = 100;
+        _notificationBackgroundOpacity.TickFrequency = 10;
+        _notificationBackgroundOpacity.Width = 220;
+        _notificationBackgroundOpacity.ValueChanged += (_, _) => NotifySettingsChanged();
+        var backgroundOpacityRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+        backgroundOpacityRow.Controls.Add(new Label
+        {
+            Text = "Background opacity:",
+            AutoSize = true,
+            Margin = new Padding(0, 6, 8, 0)
+        });
+        backgroundOpacityRow.Controls.Add(_notificationBackgroundOpacity);
+        section.Controls.Add(backgroundOpacityRow);
+
+        _notificationCornerRadius.Minimum = 0;
+        _notificationCornerRadius.Maximum = 60;
+        _notificationCornerRadius.Width = 80;
+        _notificationCornerRadius.ValueChanged += (_, _) => NotifySettingsChanged();
+        var cornerRadiusRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+        cornerRadiusRow.Controls.Add(new Label
+        {
+            Text = "Corner radius (pixels of a 900x260 panel):",
+            AutoSize = true,
+            Margin = new Padding(0, 6, 8, 0)
+        });
+        cornerRadiusRow.Controls.Add(_notificationCornerRadius);
+        section.Controls.Add(cornerRadiusRow);
+
+        _notificationDurationSeconds.Minimum = 0.5m;
+        _notificationDurationSeconds.Maximum = 60m;
+        _notificationDurationSeconds.Increment = 0.5m;
+        _notificationDurationSeconds.DecimalPlaces = 1;
+        _notificationDurationSeconds.Width = 90;
+        _notificationDurationSeconds.ValueChanged += (_, _) => NotifySettingsChanged();
+        var durationRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+        durationRow.Controls.Add(new Label
+        {
+            Text = "Default duration (seconds, a payload's own “duration” still wins):",
+            AutoSize = true,
+            Margin = new Padding(0, 6, 8, 0)
+        });
+        durationRow.Controls.Add(_notificationDurationSeconds);
+        section.Controls.Add(durationRow);
+
+        _notificationTransition.DropDownStyle = ComboBoxStyle.DropDownList;
+        _notificationTransition.Items.AddRange(["Fade", "Slide", "Scale pop"]);
+        _notificationTransition.Width = 130;
+        _notificationSlideEdge.DropDownStyle = ComboBoxStyle.DropDownList;
+        _notificationSlideEdge.Items.AddRange(["Top", "Bottom", "Left", "Right"]);
+        _notificationSlideEdge.Width = 110;
+        _notificationTransition.SelectedIndexChanged += (_, _) =>
+        {
+            RefreshSlideEdgeEnabled();
+            NotifySettingsChanged();
+        };
+        _notificationSlideEdge.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
+        var transitionRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+        transitionRow.Controls.Add(new Label
+        {
+            Text = "Transition:",
+            AutoSize = true,
+            Margin = new Padding(0, 6, 8, 0)
+        });
+        transitionRow.Controls.Add(_notificationTransition);
+        transitionRow.Controls.Add(new Label
+        {
+            Text = "Slide from:",
+            AutoSize = true,
+            Margin = new Padding(14, 6, 8, 0)
+        });
+        transitionRow.Controls.Add(_notificationSlideEdge);
+        section.Controls.Add(transitionRow);
+
+        _notificationTemplatePath.Width = 420;
+        _notificationTemplatePath.TextChanged += (_, _) => NotifySettingsChanged();
+        ConfigureButton(_browseTemplatePath, "Browse…", false);
+        _browseTemplatePath.Click += (_, _) =>
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Filter = "PNG images (*.png)|*.png",
+                Title = "Choose a notification background image"
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                _notificationTemplatePath.Text = dialog.FileName;
+                NotifySettingsChanged();
+            }
+        };
+        ConfigureButton(_clearTemplatePath, "Clear", false);
+        _clearTemplatePath.Click += (_, _) =>
+        {
+            _notificationTemplatePath.Text = "";
+            NotifySettingsChanged();
+        };
+        var templateRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+        templateRow.Controls.Add(new Label
+        {
+            Text = "Background PNG template (optional):",
+            AutoSize = true,
+            Margin = new Padding(0, 6, 8, 0)
+        });
+        templateRow.Controls.Add(_notificationTemplatePath);
+        templateRow.Controls.Add(_browseTemplatePath);
+        templateRow.Controls.Add(_clearTemplatePath);
+        section.Controls.Add(templateRow);
+
+        return section;
+    }
+
+    /// <summary>One "label + hex textbox + pick…" row, shared by the three notification colour settings.</summary>
+    private Control ColourRow(string label, TextBox hexBox, Button pickButton)
+    {
+        hexBox.Width = 90;
+        hexBox.PlaceholderText = "#RRGGBB";
+        hexBox.TextChanged += (_, _) => NotifySettingsChanged();
+        ConfigureButton(pickButton, "Pick…", false);
+        pickButton.Click += (_, _) => PickColour(hexBox);
+
+        var row = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+        row.Controls.Add(new Label { Text = label, AutoSize = true, Margin = new Padding(0, 6, 8, 0) });
+        row.Controls.Add(hexBox);
+        row.Controls.Add(pickButton);
+        return row;
+    }
+
+    /// <summary>§B2 of the Phase 7 plan: direct Streamer.bot event subscription, driven entirely by a live <c>GetEvents</c> response.</summary>
+    private Control NotificationEventsSection()
+    {
+        var section = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            Margin = new Padding(20, 10, 0, 10)
+        };
+        section.Controls.Add(new Label
+        {
+            Text = "Notification events",
+            Font = new Font(Font, FontStyle.Bold),
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 6)
+        });
+        section.Controls.Add(new Label
+        {
+            Text = BrowseEventPickerEnabled
+                ? "Turn on the events you want in the headset. Streamer.bot has no way to tell this app "
+                  + "which events you've already enabled on its side, so this list is its own switch, not "
+                  + "a mirror of Streamer.bot's Events panel."
+                : "Choosing which events appear in the headset is being rebuilt - no alert is subscribed to "
+                  + "until it lands, so nothing here fires on its own. Wording overrides below still apply "
+                  + "once an event is enabled.",
+            AutoSize = true,
+            MaximumSize = new Size(650, 0),
+            ForeColor = Color.FromArgb(92, 101, 112),
+            Margin = new Padding(0, 0, 0, 6)
+        });
+
+        if (BrowseEventPickerEnabled)
+        {
+            _eventSearch.Width = 460;
+            _eventSearch.PlaceholderText = "Search events…";
+            _eventSearch.TextChanged += (_, _) => ApplyEventSearchFilter();
+            section.Controls.Add(_eventSearch);
+
+            _eventGroupsContainer.AutoScroll = true;
+            _eventGroupsContainer.Width = 480;
+            _eventGroupsContainer.Height = 260;
+            _eventGroupsContainer.BorderStyle = BorderStyle.FixedSingle;
+            _eventGroupsContainer.BackColor = Color.White;
+            _eventGroupsContainer.Margin = new Padding(0, 6, 0, 6);
+            _eventGroupsContainer.Padding = new Padding(8);
+            section.Controls.Add(_eventGroupsContainer);
+        }
+
+        ConfigureButton(_refreshEvents, "Refresh events from Streamer.bot", false);
+        _refreshEvents.Click += (_, _) => NotificationEventsRefreshRequested?.Invoke();
+        section.Controls.Add(_refreshEvents);
+
+        var templateRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 10, 0, 6) };
+        templateRow.Controls.Add(new Label
+        {
+            Text = "Customise wording for:",
+            AutoSize = true,
+            Margin = new Padding(0, 6, 8, 0)
+        });
+        _templateEventPicker.DropDownStyle = ComboBoxStyle.DropDown;
+        _templateEventPicker.Width = 260;
+        _templateEventPicker.Format += (_, args) =>
+        {
+            if (args.ListItem is StreamerBotEventDescriptor descriptor)
+            {
+                args.Value = descriptor.Key;
+            }
+        };
+        templateRow.Controls.Add(_templateEventPicker);
+        ConfigureButton(_editEventTemplate, "Edit template…", false);
+        _editEventTemplate.Click += (_, _) =>
+        {
+            if (_templateEventPicker.SelectedItem is not StreamerBotEventDescriptor descriptor)
+            {
+                ShowSettingsError("Choose an event first (type to search).");
+                return;
+            }
+
+            _eventTemplates.TryGetValue(descriptor.Key, out var existing);
+            using var dialog = new EventTemplateForm(descriptor.Key, existing ?? "");
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(dialog.Template))
+            {
+                _eventTemplates.Remove(descriptor.Key);
+            }
+            else
+            {
+                _eventTemplates[descriptor.Key] = dialog.Template.Trim();
+            }
+
+            NotifySettingsChanged();
+        };
+        templateRow.Controls.Add(_editEventTemplate);
+        section.Controls.Add(templateRow);
+
+        _showTestEvents.Text = "Show test-fired events (Streamer.bot's own “Test” button)";
+        _showTestEvents.AutoSize = true;
+        _showTestEvents.Checked = true;
+        _showTestEvents.CheckedChanged += (_, _) => NotifySettingsChanged();
+        section.Controls.Add(_showTestEvents);
+
+        return section;
     }
 
     private Control CreateActivityPage()
@@ -1125,5 +1784,80 @@ internal sealed class ShortcutEditorForm : Form
         button.BackColor = primary ? Color.FromArgb(37, 99, 235) : Color.White;
         button.ForeColor = primary ? Color.White : Color.FromArgb(32, 37, 43);
         button.Margin = new Padding(0, 4, 10, 4);
+    }
+}
+
+/// <summary>
+/// A small modal for one event's template override - §B2 of the Phase 7
+/// plan. Deliberately just a multiline textbox and the dotted-path
+/// explanation: the resolver itself (<see cref="StreamerBotEventTemplate"/>)
+/// is generic, so there is nothing per-event to validate here beyond letting
+/// the wearer type a path they read off Streamer.bot's own event
+/// documentation.
+/// </summary>
+internal sealed class EventTemplateForm : Form
+{
+    private readonly TextBox _template = new();
+
+    public EventTemplateForm(string eventKey, string existingTemplate)
+    {
+        Text = $"Template for {eventKey}";
+        StartPosition = FormStartPosition.CenterParent;
+        Size = new Size(560, 260);
+        MinimumSize = Size;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        Font = new Font("Segoe UI", 10F);
+        BackColor = Color.FromArgb(247, 248, 250);
+
+        var panel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(22)
+        };
+        panel.Controls.Add(new Label
+        {
+            Text = "Use {dotted.path} to read a field from the event's own data - e.g. "
+                   + "{targetUser.name}. A missing or null field resolves to nothing rather "
+                   + "than an error. Leave blank to use the generic default template.",
+            AutoSize = true,
+            MaximumSize = new Size(500, 0),
+            ForeColor = Color.FromArgb(92, 101, 112),
+            Margin = new Padding(0, 0, 0, 10)
+        });
+        _template.Text = existingTemplate;
+        _template.Width = 500;
+        _template.Multiline = true;
+        _template.Height = 70;
+        panel.Controls.Add(_template);
+
+        var buttons = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 16, 0, 0) };
+        var save = new Button();
+        var cancel = new Button();
+        ConfigureButtonStatic(save, "Save", true);
+        ConfigureButtonStatic(cancel, "Cancel", false);
+        save.DialogResult = DialogResult.OK;
+        cancel.DialogResult = DialogResult.Cancel;
+        buttons.Controls.AddRange([save, cancel]);
+        panel.Controls.Add(buttons);
+        Controls.Add(panel);
+        AcceptButton = save;
+        CancelButton = cancel;
+    }
+
+    public string Template => _template.Text;
+
+    private static void ConfigureButtonStatic(Button button, string text, bool primary)
+    {
+        button.Text = text;
+        button.AutoSize = true;
+        button.MinimumSize = new Size(112, 38);
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderSize = primary ? 0 : 1;
+        button.BackColor = primary ? Color.FromArgb(37, 99, 235) : Color.White;
+        button.ForeColor = primary ? Color.White : Color.FromArgb(32, 37, 43);
+        button.Margin = new Padding(0, 0, 10, 0);
     }
 }
