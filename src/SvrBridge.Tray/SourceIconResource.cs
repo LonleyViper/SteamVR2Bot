@@ -28,7 +28,17 @@ namespace SvrBridge.Tray;
 /// </summary>
 internal static class SourceIconResource
 {
-    private const string ResourcePrefix = "SvrBridge.Tray.assets.source-icons.";
+    /// <summary>
+    /// Note the underscore where the folder on disk has a hyphen:
+    /// <c>assets\source-icons\twitch.png</c> is embedded as
+    /// <c>SvrBridge.Tray.assets.source_icons.twitch.png</c>, because MSBuild
+    /// replaces characters that are not valid in an identifier when it
+    /// derives a manifest resource name from a path. Getting this wrong is
+    /// silent - every icon embeds correctly and every lookup misses, and the
+    /// chip fallback makes it look like nothing is wrong - which is what
+    /// <c>TestSourceIconResourceFindsEveryEmbeddedIcon</c> exists to catch.
+    /// </summary>
+    private const string ResourcePrefix = "SvrBridge.Tray.assets.source_icons.";
 
     /// <summary>
     /// Decoded icons by lowercased source name, with a null entry recording

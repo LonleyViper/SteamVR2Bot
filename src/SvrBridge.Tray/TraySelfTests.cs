@@ -61,6 +61,7 @@ internal static class TraySelfTests
         TestOverlayUploadFallsBackOnDeviceLossAndRecovers();
         TestOverlayUploadDefaultsOffUntilExplicitlyEnabled();
         TestD3D11OverlayTextureRoundTripsRgbaWithoutSwappingChannels();
+        TestSourceIconResourceFindsEveryEmbeddedIcon();
         TestNotificationEventPickerStaysBoundedAtARealCatalogSize();
         TestNotificationEventPickerRoundTripsAndKeepsUnreportedEvents();
 
@@ -1615,6 +1616,51 @@ internal static class TraySelfTests
             Target = SvrBridge.Core.StreamerBotEventTarget.Control,
             Command = command
         };
+
+    /// <summary>
+    /// Every platform icon this build ships must actually be findable by the
+    /// source name it is named for.
+    /// <para>
+    /// This exists because the first version of the lookup missed all of them
+    /// and nothing said so. MSBuild derives a manifest resource name from a
+    /// file's path but replaces characters that are not valid in an
+    /// identifier, so <c>assets\source-icons\twitch.png</c> embeds as
+    /// <c>...assets.source_icons.twitch.png</c> - underscore, not hyphen. The
+    /// resolver's prefix had the hyphen, every icon embedded correctly, every
+    /// lookup missed, and the chip fallback rendered a perfectly good-looking
+    /// picker with no icons in it and no error anywhere. Reading the manifest
+    /// rather than hardcoding the expected names is the point: this fails the
+    /// moment the two disagree, whatever the reason.
+    /// </para>
+    /// <para>
+    /// Shipping no icons at all is a valid state - the chip fallback is the
+    /// design - so an empty icon set passes. What cannot pass is shipping one
+    /// the app then fails to find.
+    /// </para>
+    /// </summary>
+    private static void TestSourceIconResourceFindsEveryEmbeddedIcon()
+    {
+        var embedded = System.Reflection.Assembly.GetExecutingAssembly()
+            .GetManifestResourceNames()
+            .Where(name => name.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        foreach (var name in embedded)
+        {
+            var source = Path.GetFileNameWithoutExtension(name).Split('.').Last();
+            Assert(
+                SourceIconResource.TryResolve(source) is not null,
+                $"The embedded icon \"{name}\" was not resolvable as source \"{source}\" - "
+                + "the resolver's resource prefix and the one MSBuild generated disagree.");
+        }
+
+        Assert(
+            SourceIconResource.TryResolve("Zorblatt") is null,
+            "A source with no icon file resolved to one, so the chip fallback would never be reached.");
+        Assert(
+            SourceIconResource.TryResolve("") is null && SourceIconResource.TryResolve(null) is null,
+            "An empty source name threw or resolved to an icon.");
+    }
 
     /// <summary>
     /// The regression guard for the failure that got two earlier versions of
