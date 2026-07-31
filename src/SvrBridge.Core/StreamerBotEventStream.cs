@@ -597,6 +597,42 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Feeds one synthetic Streamer.bot broadcast through the exact dispatch
+    /// a real one takes, for the developer notification test harness.
+    /// <para>
+    /// The point is what it does <b>not</b> bypass. Testing whether an alert
+    /// works otherwise needs a real viewer to subscribe or follow at the
+    /// moment you happen to be wearing the headset, which is not a thing
+    /// anyone can arrange on demand - so the alternative was showing a
+    /// notification directly, which proves only that the overlay works and
+    /// is exactly the check that already passes. This goes in one layer
+    /// earlier, so the enabled-events filter, the test-event suppression, the
+    /// template resolution and the payload precedence rules are all the real
+    /// ones. An event the wearer never enabled produces nothing here for the
+    /// same reason it produces nothing in production.
+    /// </para>
+    /// <para>
+    /// <paramref name="data"/> is whatever the caller wants to stand in for
+    /// the platform's payload; a template referring to a field it does not
+    /// carry resolves that field to empty text, exactly as a real malformed
+    /// payload would.
+    /// </para>
+    /// </summary>
+    public void InjectSyntheticEvent(string source, string type, JsonElement data)
+    {
+        using var frame = JsonDocument.Parse(
+            JsonSerializer.Serialize(
+                new
+                {
+                    // The same envelope PublishEvent reads off the wire, so
+                    // this cannot drift into testing a different shape.
+                    e = new { source, type },
+                    data
+                }));
+        PublishEvent(frame.RootElement, frame.RootElement.GetProperty("e"));
+    }
+
     private void PublishEvent(JsonElement root, JsonElement source)
     {
         var eventSource = source.TryGetProperty("source", out var sourceName)

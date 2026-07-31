@@ -39,6 +39,14 @@ internal sealed class NotificationEventPicker : UserControl
 
     private const int RowHeight = 30;
     private const int ChipWidth = 38;
+    private const int ListWidth = 560;
+
+    /// <summary>
+    /// Tallest either list grows before it starts scrolling. Both size
+    /// themselves to their contents up to this, so one enabled alert gets a
+    /// one-row box rather than a mostly-empty panel with a scrollbar on it.
+    /// </summary>
+    private const int MaxListHeight = 260;
 
     private static readonly Color MutedText = Color.FromArgb(92, 101, 112);
     private static readonly Color RowBorder = Color.FromArgb(226, 230, 235);
@@ -53,8 +61,23 @@ internal sealed class NotificationEventPicker : UserControl
     private static readonly Font HeadingFont = new("Segoe UI", 10F, FontStyle.Bold);
 
     private readonly TextBox _search = new();
-    private readonly Panel _enabledList = new();
-    private readonly Panel _results = new();
+
+    /// <summary>
+    /// Both lists lay their rows out rather than positioning them by hand.
+    /// The hand-positioned version could be scrolled up into blank space:
+    /// a child's <see cref="Control.Location"/> inside an
+    /// <see cref="ScrollableControl.AutoScroll"/> container is relative to
+    /// the <em>scrolled</em> origin, so rebuilding the rows while the panel
+    /// happened to be scrolled placed them all below the top by however far
+    /// it had been scrolled, and the scroll extents grew to match. Letting
+    /// the layout own the positions removes the whole class of bug rather
+    /// than papering over one instance of it - and at a couple of dozen rows
+    /// the layout cost is nothing. The rejected design's freeze came from
+    /// building hundreds of controls, not from this.
+    /// </summary>
+    private readonly FlowLayoutPanel _enabledList = NewListPanel();
+
+    private readonly FlowLayoutPanel _results = NewListPanel();
     private readonly Label _resultCount = new();
     private readonly System.Windows.Forms.Timer _searchDebounce = new();
 
@@ -96,25 +119,15 @@ internal sealed class NotificationEventPicker : UserControl
         };
 
         layout.Controls.Add(SectionHeading("Alerts shown in the headset"));
-        _enabledList.Width = 560;
-        _enabledList.Height = 150;
-        _enabledList.AutoScroll = true;
-        _enabledList.BackColor = Color.White;
-        _enabledList.BorderStyle = BorderStyle.FixedSingle;
         _enabledList.Margin = new Padding(0, 0, 0, 12);
         layout.Controls.Add(_enabledList);
 
         layout.Controls.Add(SectionHeading("Add an alert"));
-        _search.Width = 560;
+        _search.Width = ListWidth;
         _search.PlaceholderText = "Search events - try a platform, or what happens (follow, sub, raid)…";
         _search.TextChanged += (_, _) => RestartSearchDebounce();
         layout.Controls.Add(_search);
 
-        _results.Width = 560;
-        _results.Height = 260;
-        _results.AutoScroll = true;
-        _results.BackColor = Color.White;
-        _results.BorderStyle = BorderStyle.FixedSingle;
         _results.Margin = new Padding(0, 6, 0, 4);
         layout.Controls.Add(_results);
 
@@ -215,21 +228,13 @@ internal sealed class NotificationEventPicker : UserControl
                 // Invites the search below rather than apologising - there is
                 // nothing wrong with having no alerts on, it is the state
                 // every install starts in.
-                _enabledList.Controls.Add(new Label
-                {
-                    Text = "No alerts yet. Search below to add one.",
-                    AutoSize = true,
-                    ForeColor = MutedText,
-                    Location = new Point(12, 12)
-                });
+                _enabledList.Controls.Add(EmptyStateLabel("No alerts yet. Search below to add one."));
                 return;
             }
 
-            var y = 0;
             foreach (var key in _enabled)
             {
-                var descriptor = DescriptorFor(key);
-                var row = BuildRow(descriptor, y, out var actionColumn);
+                var row = BuildRow(DescriptorFor(key), out var actionColumn);
 
                 var remove = new Button
                 {
@@ -262,12 +267,12 @@ internal sealed class NotificationEventPicker : UserControl
                 }
 
                 _enabledList.Controls.Add(row);
-                y += RowHeight;
             }
         }
         finally
         {
             _enabledList.ResumeLayout(true);
+            FitListToContent(_enabledList);
         }
     }
 
@@ -287,21 +292,16 @@ internal sealed class NotificationEventPicker : UserControl
             DisposeChildren(_results);
             if (found.Matches.Count == 0)
             {
-                _results.Controls.Add(new Label
-                {
-                    Text = _catalog.Count == 0
-                        ? "No events loaded yet. Connect to Streamer.bot, then refresh below."
-                        : "Nothing matches that search.",
-                    AutoSize = true,
-                    ForeColor = MutedText,
-                    Location = new Point(12, 12)
-                });
+                _results.Controls.Add(
+                    EmptyStateLabel(
+                        _catalog.Count == 0
+                            ? "No events loaded yet. Connect to Streamer.bot, then refresh below."
+                            : "Nothing matches that search."));
             }
 
-            var y = 0;
             foreach (var descriptor in found.Matches)
             {
-                var row = BuildRow(descriptor, y, out var actionColumn);
+                var row = BuildRow(descriptor, out var actionColumn);
                 if (IsEnabled(descriptor.Key))
                 {
                     // Greyed "added" rather than dropping the row: hiding it
@@ -335,16 +335,58 @@ internal sealed class NotificationEventPicker : UserControl
                 }
 
                 _results.Controls.Add(row);
-                y += RowHeight;
             }
         }
         finally
         {
             _results.ResumeLayout(true);
+            FitListToContent(_results);
         }
 
         _resultCount.Text = DescribeCount(found);
     }
+
+    /// <summary>
+    /// A list panel that lays its own rows out top-to-bottom. Not
+    /// hand-positioned: see the remarks on <see cref="_enabledList"/> for the
+    /// blank-scroll-space bug that came of doing it by hand.
+    /// </summary>
+    private static FlowLayoutPanel NewListPanel() => new()
+    {
+        FlowDirection = FlowDirection.TopDown,
+        WrapContents = false,
+        AutoScroll = true,
+        Width = ListWidth,
+        Height = MaxListHeight,
+        BackColor = Color.White,
+        BorderStyle = BorderStyle.FixedSingle,
+        Padding = new Padding(6, 6, 6, 6)
+    };
+
+    /// <summary>
+    /// Shrinks a list to the height its rows actually need, up to
+    /// <see cref="MaxListHeight"/>, and puts the scroll position back to the
+    /// top. Without the reset, removing the alert you were scrolled down to
+    /// leaves the view parked past the end of a now-shorter list - which is
+    /// the same blank space, arrived at from the other direction.
+    /// </summary>
+    private static void FitListToContent(FlowLayoutPanel list)
+    {
+        var content = list.Controls.Cast<Control>().Sum(child => child.Height + child.Margin.Vertical);
+        list.Height = Math.Clamp(
+            content + list.Padding.Vertical + 2,
+            RowHeight + list.Padding.Vertical + 2,
+            MaxListHeight);
+        list.AutoScrollPosition = new Point(0, 0);
+    }
+
+    private static Label EmptyStateLabel(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        ForeColor = MutedText,
+        Margin = new Padding(6, 6, 0, 0)
+    };
 
     /// <summary>
     /// The line under the results. Says how many matched rather than silently
@@ -364,14 +406,19 @@ internal sealed class NotificationEventPicker : UserControl
             : matched;
     }
 
-    /// <summary>A chip, the event's name, and its source - the shared skeleton of both lists' rows. <paramref name="actionColumn"/> is where the caller's own button or label goes.</summary>
-    private Panel BuildRow(StreamerBotEventDescriptor descriptor, int y, out int actionColumn)
+    /// <summary>
+    /// A chip, the event's name, and its source - the shared skeleton of both
+    /// lists' rows. <paramref name="actionColumn"/> is where the caller's own
+    /// button or label goes. The row carries no <see cref="Control.Location"/>
+    /// of its own; its list positions it.
+    /// </summary>
+    private Panel BuildRow(StreamerBotEventDescriptor descriptor, out int actionColumn)
     {
         var row = new Panel
         {
-            Width = 520,
+            Width = ListWidth - 40,
             Height = RowHeight,
-            Location = new Point(6, 6 + y),
+            Margin = new Padding(0),
             Tag = descriptor.Key
         };
 

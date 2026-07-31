@@ -120,6 +120,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // broken and the tray menu is on a monitor they cannot see.
         var chatInputProbe =
             new ToolStripMenuItem("Probe chat laser input for 60s (developer)");
+        // Testing an alert otherwise needs a real viewer to subscribe or
+        // follow at the exact moment you are wearing the headset, which is
+        // not something anyone can arrange on demand. These drive the same
+        // dispatch a real event does - see StreamerBotEventStream's
+        // InjectSyntheticEvent - so the enabled-events filter and the
+        // template are the real ones, not a notification shown directly.
+        var notificationTestHarness =
+            new ToolStripMenuItem("Notification test harness (developer)");
+        var fireEnabledAlerts =
+            new ToolStripMenuItem("Fire a test alert for every enabled event");
+        var fireUnenabledAlert =
+            new ToolStripMenuItem("Fire an event that is NOT enabled (expect nothing)");
+        var fireTestFlaggedAlert =
+            new ToolStripMenuItem("Fire an enabled event flagged isTest");
+        notificationTestHarness.DropDownItems.AddRange(
+        [
+            fireEnabledAlerts,
+            fireUnenabledAlert,
+            fireTestFlaggedAlert
+        ]);
         chatTestHarness.DropDownItems.AddRange(
         [
             injectBurst,
@@ -163,6 +183,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         dashboardTexturePath.Click += (_, _) => ToggleDashboardTexturePath(dashboardTexturePath);
         overlayTexturePath.Click += (_, _) => ToggleOverlayTexturePath(overlayTexturePath);
         chatInputProbe.Click += (_, _) => StartChatInputProbe();
+        fireEnabledAlerts.Click += (_, _) => FireEnabledNotificationTests(isTest: false);
+        fireTestFlaggedAlert.Click += (_, _) => FireEnabledNotificationTests(isTest: true);
+        fireUnenabledAlert.Click += (_, _) => FireUnenabledNotificationTest();
         exit.Click += (_, _) => ExitApplication();
 
         menu.Items.AddRange(
@@ -175,6 +198,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             logs,
             testOverlay,
             chatTestHarness,
+            notificationTestHarness,
             new ToolStripSeparator(),
             exit
         ]);
@@ -1474,6 +1498,113 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// this from a Streamer.bot C# action, which could not be diagnosed from
     /// this app's own logs because the failure was in another program.
     /// </summary>
+    /// <summary>
+    /// Fires one synthetic event for each alert the wearer has enabled -
+    /// whatever those happen to be. Carries no list of its own, so it tests
+    /// the actual selection rather than a set of events somebody hardcoded
+    /// here, and needs no edit when Streamer.bot gains new ones.
+    /// </summary>
+    private void FireEnabledNotificationTests(bool isTest)
+    {
+        var enabled = _settings.EnabledEvents;
+        if (enabled.Count == 0)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "notification.dev_inject_skipped",
+                    "No alerts are enabled yet - add one on the Connection & setup tab first.",
+                    BridgeLogLevel.Warning));
+            return;
+        }
+
+        var fired = 0;
+        foreach (var key in enabled)
+        {
+            if (TryFireSyntheticEvent(key, isTest))
+            {
+                fired++;
+            }
+        }
+
+        OnActivity(
+            new BridgeActivity(
+                "notification.dev_injected",
+                $"Fired {fired} of {enabled.Count} enabled alert(s)"
+                + (isTest ? " flagged isTest" : "")
+                + (isTest
+                    ? " - each should appear only if \"Show test-fired events\" is on."
+                    : " - each should appear in the headset."),
+                BridgeLogLevel.Info));
+    }
+
+    /// <summary>
+    /// The other half of the check, and the one a passing notification cannot
+    /// prove on its own: an event the wearer never enabled must produce
+    /// nothing at all. Uses a deliberately absurd key so it cannot collide
+    /// with a real selection, and says so in the log, because "nothing
+    /// happened" is otherwise indistinguishable from "the harness is broken".
+    /// </summary>
+    private void FireUnenabledNotificationTest()
+    {
+        const string source = "SvrBridgeHarness";
+        const string type = "DefinitelyNotEnabled";
+        var key = $"{source}.{type}";
+        if (_settings.EnabledEvents.Contains(key, StringComparer.OrdinalIgnoreCase))
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "notification.dev_inject_skipped",
+                    $"{key} is somehow enabled, so this check cannot prove anything - remove it first.",
+                    BridgeLogLevel.Warning));
+            return;
+        }
+
+        var reached = TryFireSyntheticEvent(key, isTest: false);
+        OnActivity(
+            new BridgeActivity(
+                "notification.dev_injected",
+                reached
+                    ? $"Fired {key}, which is not enabled. Nothing should appear in the headset; "
+                      + "an \"Ignored an unsubscribed Streamer.bot event\" line below is the pass."
+                    : $"Could not fire {key} - the Streamer.bot event feed is not running.",
+                reached ? BridgeLogLevel.Info : BridgeLogLevel.Warning));
+    }
+
+    /// <summary>
+    /// Sends one synthetic event through the live stream's own dispatch. The
+    /// payload carries a few generically-named fields so a wearer testing a
+    /// custom template has something to substitute; a template naming a field
+    /// that is absent resolves it to empty text, exactly as a real payload
+    /// missing that field would.
+    /// </summary>
+    private bool TryFireSyntheticEvent(string key, bool isTest)
+    {
+        var stream = _eventStream;
+        if (stream is null)
+        {
+            return false;
+        }
+
+        var separator = key.IndexOf('.');
+        if (separator <= 0 || separator == key.Length - 1)
+        {
+            return false;
+        }
+
+        using var data = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(
+                new
+                {
+                    isTest,
+                    user = new { name = "TestViewer" },
+                    targetUser = new { name = "TestViewer" },
+                    message = "This is a test alert from SteamVR2Bot.",
+                    amount = 1
+                }));
+        stream.InjectSyntheticEvent(key[..separator], key[(separator + 1)..], data.RootElement);
+        return true;
+    }
+
     private void InjectDeveloperChatMessages(
         IReadOnlyList<StreamerBotEventPayload> messages,
         string description)
