@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace SvrBridge.Tray;
 
 internal static class TraySelfTests
@@ -15,10 +17,15 @@ internal static class TraySelfTests
         TestNotificationPlayerQueueing();
         TestNotificationDurationClampingEndToEnd();
         TestNotificationAlphaCurve();
+        TestNotificationTransitionAnimatorConvergesAndStopsIssuingCalls();
+        TestNotificationTemplateLoaderDegradesGracefully();
+        TestNotificationTemplateLoaderDownscalesAnOversizedImage();
+        TestNotificationPayloadPrecedenceResolvesSettingsDefaults();
         TestWpfRenderThreadStartsAndShutsDownCleanly();
         TestNotificationPixelFormatConversion();
         TestChatRingBufferEviction();
         TestChatRepaintThrottleCoalescesBurst();
+        TestDashboardRepaintCoordinatorCoalescesBurst();
         TestChatGazeHysteresisNoOscillationAtBoundary();
         TestGazeScaleAnimationConvergesAndStopsIssuingCalls();
         TestChatRenderWrapsLongUnbrokenString();
@@ -31,15 +38,33 @@ internal static class TraySelfTests
         TestChatRenderEmbedsMultipleBadges();
         TestChatRingBufferThreadSafeConcurrentAccess();
         TestOverlayAnchorOffsetsMatchProvenTransforms();
+        TestOverlayPlacementDefaultMatchesProvenTransforms();
+        TestRigidInverseRoundTrips();
+        TestPanelViewMeasuresTheWindowRatherThanItsAnchor();
+        TestPanelVisibilityGateHidesTurnedAwayAndDistantPanels();
+        TestDegeneratePlacementFallsBackInsteadOfVanishing();
+        TestOverlayDragCarriesRotationAsWellAsPosition();
+        TestOverlayPlacementArgumentRoundTrip();
+        TestChatHandleHitTestMatchesTheDrawnRectangle();
+        TestChatHoverRepaintsOncePerRectangleCrossed();
+        TestChatInputIsRejectedOutsideTheGazedState();
+        TestOnlyTheHandleStartsAndEndsAGrab();
+        TestHandPlacedOffsetClearsAStreamerBotOverride();
         TestSurfaceOverrideStateAppliesAndResetsControlCommands();
         TestChatDeveloperInjectorProducesExpectedMessages();
         TestChatCommandJsonRoundTripPreservesBadgesAndEmotes();
+        TestChatPlacementSurvivesTheWorkerMessageChannel();
+        TestMergeVrSettingsSnapshotPersistsEveryField();
         TestRequiresRuntimeRestartDistinguishesLiveAppliableChanges();
         TestOverlayTextureCopyRespectsAnOverWideRowPitch();
         TestOverlaySourceFormatsConvertToTheSameRgba();
         TestOverlayUploadFallsBackOnDeviceLossAndRecovers();
         TestOverlayUploadDefaultsOffUntilExplicitlyEnabled();
         TestD3D11OverlayTextureRoundTripsRgbaWithoutSwappingChannels();
+        TestSourceIconResourceFindsEveryEmbeddedIcon();
+        TestNotificationEventPickerStaysBoundedAtARealCatalogSize();
+        TestNotificationEventPickerRoundTripsAndKeepsUnreportedEvents();
+        TestNotificationRendersAtTheConfiguredSizeWithItsIcon();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -81,8 +106,18 @@ internal static class TraySelfTests
                 ChatOpacity = 0.8,
                 ChatSizeScale = 1.2,
                 GazeSensitivity = SvrBridge.Core.GazeSensitivity.Tight,
+                // Non-default, so a dropped field cannot pass by accident.
+                ChatGazeScaleEnabled = true,
                 NotificationOpacity = 0.7,
-                NotificationSizeScale = 0.6
+                NotificationSizeScale = 0.6,
+                // Deliberately not the default in either mode: a placement
+                // that happened to equal OverlayPlacement.Default would
+                // round-trip even if the field were never written at all.
+                ChatPlacement = new SvrBridge.Core.OverlayPlacement(
+                    SvrBridge.Core.VrOverlayTransform.Translation(0.03f, 0.11f, -0.19f)
+                    * SvrBridge.Core.VrOverlayTransform.RotationY(0.4f),
+                    SvrBridge.Core.VrOverlayTransform.Translation(-0.05f, -0.2f, -0.8f)
+                    * SvrBridge.Core.VrOverlayTransform.RotationZ(-0.25f))
             };
 
             store.Save(expected);
@@ -113,9 +148,13 @@ internal static class TraySelfTests
                 actual.ChatOpacity == expected.ChatOpacity
                 && actual.ChatSizeScale == expected.ChatSizeScale
                 && actual.GazeSensitivity == expected.GazeSensitivity
+                && actual.ChatGazeScaleEnabled == expected.ChatGazeScaleEnabled
                 && actual.NotificationOpacity == expected.NotificationOpacity
                 && actual.NotificationSizeScale == expected.NotificationSizeScale,
                 "The Phase 4b appearance/gaze settings did not round-trip.");
+            Assert(
+                actual.ChatPlacement.Equals(expected.ChatPlacement),
+                "A hand-dragged chat window position did not survive a save and load.");
 
             UserSettingsStore.ValidateForSave(
                 expected with
@@ -186,6 +225,45 @@ internal static class TraySelfTests
                 && upgraded.NotificationOpacity == 1.0
                 && upgraded.NotificationSizeScale == 1.0,
                 "A settings file written before Phase 4b did not default to today's hardcoded appearance.");
+            // Deliberately the opposite of this file's usual migration rule -
+            // see UserSettings.ChatGazeScaleEnabled for why the grow-on-gaze
+            // animation is the one setting an upgrade is allowed to change.
+            Assert(
+                !upgraded.ChatGazeScaleEnabled,
+                "The grow-on-gaze animation no longer defaults to off.");
+            Assert(
+                upgraded.ChatPlacement.Equals(SvrBridge.Core.OverlayPlacement.Default),
+                "A settings file written before Phase 5 did not default to the hardware-proven chat placement.");
+
+            // The file this field's own shape change left behind: present,
+            // well-formed JSON, and all zeros, because the properties it was
+            // written with no longer exist. It must load as the proven
+            // placement - a zero transform collapses the chat window to
+            // nothing, with no error anywhere to say so.
+            File.WriteAllText(
+                Path.Combine(testDirectory, "settings.json"),
+                """
+                {
+                  "StreamerBotAddress": "ws://127.0.0.1:8080/1",
+                  "ProtectedPassword": "",
+                  "ChatEnabled": true,
+                  "ChatPlacement": {
+                    "ControllerOffset": {
+                      "M00": 0, "M01": 0, "M02": 0, "M03": 0,
+                      "M10": 0, "M11": 0, "M12": 0, "M13": 0,
+                      "M20": 0, "M21": 0, "M22": 0, "M23": 0
+                    },
+                    "HeadOffset": {
+                      "M00": 0, "M01": 0, "M02": 0, "M03": 0,
+                      "M10": 0, "M11": 0, "M12": 0, "M13": 0,
+                      "M20": 0, "M21": 0, "M22": 0, "M23": 0
+                    }
+                  }
+                }
+                """);
+            Assert(
+                store.Load().ChatPlacement.Equals(SvrBridge.Core.OverlayPlacement.Default),
+                "A zeroed saved placement loaded as-is, which puts no chat window in the headset at all.");
 
             AssertThrows(
                 () => UserSettingsStore.Validate(
@@ -468,9 +546,10 @@ internal static class TraySelfTests
     }
 
     /// <summary>
-    /// The Phase 4b tab strip and the Settings page's segmented controls
-    /// follow the same shared-rectangle-table rule as the bottom bar tested
-    /// above: every control the renderer draws is declared once in
+    /// The tab strip (three tabs since Phase 6: Shortcuts, Chat,
+    /// Notifications) and the Chat/Notifications settings pages' segmented
+    /// controls follow the same shared-rectangle-table rule as the bottom bar
+    /// tested above: every control the renderer draws is declared once in
     /// <see cref="VrDashboardLayout"/> and hit-tests to itself, and no two
     /// controls on the same page overlap.
     /// </summary>
@@ -547,7 +626,9 @@ internal static class TraySelfTests
             .. VrDashboardLayout.ChatAnchorHand,
             .. VrDashboardLayout.NotificationAnchorMode,
             .. VrDashboardLayout.NotificationAnchorHand,
-            .. VrDashboardLayout.GazeSensitivity
+            .. VrDashboardLayout.GazeSensitivity,
+            VrDashboardLayout.ResetPlacement,
+            VrDashboardLayout.GazeScaleToggle
         ];
         foreach (var control in allControls)
         {
@@ -558,6 +639,39 @@ internal static class TraySelfTests
                 && control.Right <= 1400,
                 "A settings-page control falls outside the canvas or under the tab strip.");
         }
+
+        // The reset control sits below the gaze-sensitivity row - the last
+        // row above it on the Chat page since Phase 6 split Chat and
+        // Notifications into separate tabs. A Y-band dispatch cannot tell
+        // two rows apart if they touch, and this page has no bottom bar to
+        // bound it from below.
+        Assert(
+            VrDashboardLayout.ResetPlacement.Top
+            >= VrDashboardLayout.GazeSensitivityY + VrDashboardLayout.SettingsRowHeight,
+            "The chat placement reset overlaps the gaze-sensitivity row above it.");
+
+        // Chat and Notifications became separate pages in Phase 6, so their
+        // first two rows intentionally now share the same Y - each page
+        // starts fresh below its own tab strip rather than the Notifications
+        // page continuing to sit lower down where it used to share a page
+        // with Chat. Pinned down so this reads as a deliberate choice, not
+        // leftover drift, the same way VrDashboardLayout's own comment on
+        // NotificationControlsY explains it.
+        Assert(
+            VrDashboardLayout.NotificationControlsY == VrDashboardLayout.ChatControlsY
+            && VrDashboardLayout.NotificationSlidersY == VrDashboardLayout.ChatSlidersY,
+            "The Chat and Notifications pages' first two rows drifted apart even though each now starts fresh below its own tab strip.");
+
+        // The reset button and the grow-on-gaze toggle share the bottom row,
+        // so a Y-band dispatch alone cannot tell them apart - they must not
+        // overlap along X either, exactly like the surface rows above.
+        Assert(
+            !VrDashboardLayout.ResetPlacement.IntersectsWith(VrDashboardLayout.GazeScaleToggle),
+            "The placement reset and the grow-on-gaze toggle overlap.");
+        Assert(
+            VrDashboardLayout.GazeScaleToggle.Left == VrDashboardLayout.ChatToggle.Left
+            && VrDashboardLayout.GazeScaleToggle.Width == VrDashboardLayout.ChatToggle.Width,
+            "The grow-on-gaze toggle is not aligned with the column of on/off toggles above it.");
 
         // The List page's row count dropped from 6 to 5 to make room for the
         // tab strip - its last row must still clear the bottom bar.
@@ -760,6 +874,671 @@ internal static class TraySelfTests
     }
 
     /// <summary>
+    /// The reset control's whole promise: an install that has never dragged
+    /// the window, and one that has dragged it and pressed reset, both land on
+    /// the exact transform hardware testing validated - not an approximation
+    /// of it. Asserted as transform equality rather than by eye, because
+    /// <see cref="SvrBridge.Core.OverlayPlacement"/> reconstructs the tilt
+    /// from a constant rather than storing it, and a wrong sign there would be
+    /// invisible in a settings file and obvious only in a headset.
+    /// </summary>
+    private static void TestOverlayPlacementDefaultMatchesProvenTransforms()
+    {
+        var defaults = SvrBridge.Core.OverlayPlacement.Default;
+        Assert(
+            defaults.ToTransform(SvrBridge.Core.OverlayAnchorMode.Controller)
+                .Equals(SvrBridge.Core.OverlayAnchor.ControllerOffset),
+            "The default controller placement is no longer the proven wrist transform.");
+        Assert(
+            defaults.ToTransform(SvrBridge.Core.OverlayAnchorMode.Head)
+                .Equals(SvrBridge.Core.OverlayAnchor.HeadOffset),
+            "The default head placement is no longer the proven head transform.");
+
+        // Placing one mode must not disturb the other: the two are independent
+        // saved settings, and switching anchor mode has to land somewhere the
+        // wearer already chose for that mode.
+        var placed = SvrBridge.Core.VrOverlayTransform.Translation(0.2f, 0.3f, -0.4f)
+                     * SvrBridge.Core.VrOverlayTransform.RotationY(0.5f);
+        var moved = defaults.With(SvrBridge.Core.OverlayAnchorMode.Controller, placed);
+        Assert(
+            moved.HeadOffset.Equals(defaults.HeadOffset)
+            && moved.ControllerOffset.Equals(placed),
+            "Placing one anchor mode's offset changed the other mode's.");
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Default.Equals(defaults),
+            "Reset no longer restores the hardware-proven default exactly.");
+
+        // A tracking dropout can produce a NaN, and SteamVR accepts one without
+        // complaint - the panel simply vanishes to somewhere it can never be
+        // pointed at to drag it back.
+        var wild = defaults.With(
+            SvrBridge.Core.OverlayAnchorMode.Controller,
+            SvrBridge.Core.VrOverlayTransform.Translation(float.NaN, 0f, 0f));
+        Assert(
+            wild.ToTransform(SvrBridge.Core.OverlayAnchorMode.Controller)
+                .Equals(SvrBridge.Core.OverlayAnchor.ControllerOffset),
+            "A non-finite placement was applied instead of falling back to the proven default.");
+
+        var far = defaults.With(
+            SvrBridge.Core.OverlayAnchorMode.Head,
+            SvrBridge.Core.VrOverlayTransform.Translation(0f, 900f, -900f));
+        var clamped = far.ToTransform(SvrBridge.Core.OverlayAnchorMode.Head);
+        Assert(
+            clamped.M13 == SvrBridge.Core.OverlayPlacement.LimitMeters
+            && clamped.M23 == -SvrBridge.Core.OverlayPlacement.LimitMeters,
+            "An out-of-range placement was not brought back within reach.");
+    }
+
+    /// <summary>
+    /// A zero placement must never reach SteamVR, at any layer.
+    /// <para>
+    /// This is a regression test for a real failure, and for the reason it was
+    /// hard to spot. A settings file written before this field changed shape -
+    /// three numbers per anchor mode, rather than a full transform -
+    /// deserialises to an all-zero matrix. That is not absent, not a JSON
+    /// error, and not non-finite, so every check that existed at the time let
+    /// it through. SteamVR then accepts it without an error and collapses the
+    /// overlay quad to nothing: no exception, no log line, no misplaced panel,
+    /// just no chat window at all. The only defence is refusing a rotation
+    /// block that is not a rotation.
+    /// </para>
+    /// </summary>
+    private static void TestDegeneratePlacementFallsBackInsteadOfVanishing()
+    {
+        var zero = default(SvrBridge.Core.OverlayPlacement);
+        Assert(
+            !zero.ControllerOffset.IsUsable() && !zero.HeadOffset.IsUsable(),
+            "An all-zero transform was judged usable - it collapses the overlay to nothing.");
+
+        // The layer that keeps the panel on screen.
+        Assert(
+            zero.ToTransform(SvrBridge.Core.OverlayAnchorMode.Controller)
+                .Equals(SvrBridge.Core.OverlayAnchor.ControllerOffset)
+            && zero.ToTransform(SvrBridge.Core.OverlayAnchorMode.Head)
+                .Equals(SvrBridge.Core.OverlayAnchor.HeadOffset),
+            "A zero placement was handed to SteamVR instead of the proven default.");
+
+        // The layer that stops it being written back to disk as though the
+        // wearer had chosen it.
+        Assert(
+            zero.Sanitised().Equals(SvrBridge.Core.OverlayPlacement.Default),
+            "A zero placement survived sanitising.");
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Parse(zero.ToArgument())
+                .Equals(SvrBridge.Core.OverlayPlacement.Default),
+            "A zero placement survived the worker's command line.");
+
+        // One half bad, one half good - the shape a partially-written or
+        // hand-edited file takes. The good half must be kept.
+        var placed = SvrBridge.Core.VrOverlayTransform.Translation(0.2f, 0.1f, -0.3f)
+                     * SvrBridge.Core.VrOverlayTransform.RotationY(0.4f);
+        var half = new SvrBridge.Core.OverlayPlacement(placed, default);
+        Assert(
+            half.Sanitised().ControllerOffset.Equals(placed)
+            && half.Sanitised().HeadOffset.Equals(SvrBridge.Core.OverlayAnchor.HeadOffset),
+            "Sanitising one bad half discarded the good one.");
+
+        // A real dragged placement must not be mistaken for garbage: it is
+        // tracked poses composed with an inverse, so it carries float error.
+        var dragged = SvrBridge.Core.VrOverlayTransform.Translation(0.4f, -1.1f, 2.3f)
+                      * SvrBridge.Core.VrOverlayTransform.RotationX(0.6f)
+                      * SvrBridge.Core.VrOverlayTransform.RotationY(-1.2f)
+                      * SvrBridge.Core.VrOverlayTransform.RotationZ(0.3f);
+        Assert(
+            dragged.IsUsable() && (dragged * dragged.InverseRigid() * dragged).IsUsable(),
+            "A legitimately composed transform was rejected as degenerate.");
+    }
+
+    /// <summary>
+    /// Gaze must follow the <em>window</em>, not the device it hangs off.
+    /// <para>
+    /// The first version measured the direction to the anchor controller in a
+    /// yaw-only body frame, which was indistinguishable from measuring the
+    /// window while the window was welded 12 cm off the wrist - and wrong the
+    /// moment the wearer could drag it elsewhere. The reported symptom was
+    /// that the grow-and-shrink trigger "does not adjust with the
+    /// positioning", which is exactly this: the window moved and the thing
+    /// being measured did not.
+    /// </para>
+    /// </summary>
+    private static void TestPanelViewMeasuresTheWindowRatherThanItsAnchor()
+    {
+        // Head at the origin, looking down -Z, which is where OpenVR puts a
+        // device's forward axis.
+        var head = SvrBridge.Core.VrOverlayTransform.Identity;
+
+        var ahead = SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, -1f);
+        var aheadView = SvrBridge.Core.PanelView.From(head, ahead);
+        Assert(
+            Close(aheadView.GazeDot, 1f) && Close(aheadView.DistanceMeters, 1f),
+            $"A panel straight ahead measured as gaze {aheadView.GazeDot}, {aheadView.DistanceMeters} m.");
+
+        // Same distance, off to the side: looked away from, not at.
+        var beside = SvrBridge.Core.VrOverlayTransform.Translation(1f, 0f, 0f);
+        Assert(
+            Close(SvrBridge.Core.PanelView.From(head, beside).GazeDot, 0f),
+            "A panel at ninety degrees did not measure as being looked away from.");
+
+        // And behind.
+        var behind = SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, 1f);
+        Assert(
+            Close(SvrBridge.Core.PanelView.From(head, behind).GazeDot, -1f),
+            "A panel directly behind did not measure as being looked away from.");
+
+        // Pitch counts, unlike the yaw-only body frame this replaced: a panel
+        // low down is not being looked at by someone staring straight ahead.
+        var low = SvrBridge.Core.VrOverlayTransform.Translation(0f, -1f, -1f);
+        var lowDot = SvrBridge.Core.PanelView.From(head, low).GazeDot;
+        Assert(
+            lowDot > 0.6f && lowDot < 0.8f,
+            $"A panel 45 degrees below the eye line measured {lowDot}; pitch is being ignored.");
+
+        // Facing is a separate question from gaze. An overlay's texture faces
+        // its own +Z, so a panel placed in front of the wearer with no
+        // rotation already faces back at them.
+        Assert(
+            Close(aheadView.FacingDot, 1f),
+            "A panel placed in front of the wearer did not measure as facing them.");
+        var turnedAway = SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, -1f)
+                         * SvrBridge.Core.VrOverlayTransform.RotationY(MathF.PI);
+        Assert(
+            SvrBridge.Core.PanelView.From(head, turnedAway).FacingDot < -0.9f,
+            "A panel turned to face away was still measured as facing the wearer.");
+
+        // The two really are independent: this one is looked straight at and
+        // is edge-on, which is the case worth hiding.
+        var edgeOn = SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, -1f)
+                     * SvrBridge.Core.VrOverlayTransform.RotationY(MathF.PI / 2f);
+        var edgeView = SvrBridge.Core.PanelView.From(head, edgeOn);
+        Assert(
+            Close(edgeView.GazeDot, 1f) && MathF.Abs(edgeView.FacingDot) < 0.01f,
+            "An edge-on panel being stared at was not distinguished from one facing the wearer.");
+
+        // The proven wrist placement, on a level controller half a metre in
+        // front and below the head, must still read as facing the wearer -
+        // this is the case the -0.6 rad tilt exists for, and a sign error in
+        // the normal would hide the window at its own default placement.
+        var wrist = SvrBridge.Core.VrOverlayTransform.Translation(0.1f, -0.5f, -0.4f);
+        var wristPanel = wrist * SvrBridge.Core.OverlayAnchor.ControllerOffset;
+        Assert(
+            SvrBridge.Core.PanelView.From(head, wristPanel).FacingDot > 0.5f,
+            "The default wrist placement measured as facing away, which would hide it on sight.");
+    }
+
+    /// <summary>
+    /// The hide rules, including the hysteresis that stops a panel flickering
+    /// at either boundary and the asymmetry that stops it flickering at both
+    /// at once.
+    /// </summary>
+    private static void TestPanelVisibilityGateHidesTurnedAwayAndDistantPanels()
+    {
+        var gate = new SvrBridge.Core.PanelVisibilityGate();
+        Assert(gate.IsVisible, "A fresh visibility gate started hidden.");
+        Assert(gate.Update(1f, 0.5f), "A panel facing the wearer at arm's length was hidden.");
+
+        // Turned nearly edge-on: hidden.
+        Assert(!gate.Update(0.05f, 0.5f), "A panel turned away was not hidden.");
+
+        // Coming back needs more than just crossing the same line again, or
+        // pose noise at the boundary flickers it.
+        Assert(!gate.Update(0.25f, 0.5f), "A panel came back inside the hysteresis dead zone.");
+        Assert(gate.Update(0.5f, 0.5f), "A panel turned back towards the wearer stayed hidden.");
+
+        // Distance is the other rule, and it is generous - a deliberately
+        // placed arm's-length panel must survive it.
+        Assert(gate.Update(1f, 1.5f), "A panel 1.5 m away was hidden.");
+        Assert(!gate.Update(1f, 2.5f), "A panel 2.5 m away was not hidden.");
+        Assert(!gate.Update(1f, 1.9f), "A distant panel came back inside the hysteresis dead zone.");
+        Assert(gate.Update(1f, 1.5f), "A panel brought back within reach stayed hidden.");
+
+        // Either rule alone hides; coming back needs both to pass, so a panel
+        // that is both turned away and far off does not flicker back the
+        // instant one of them recovers.
+        Assert(!gate.Update(0.05f, 2.5f), "A panel failing both rules was not hidden.");
+        Assert(!gate.Update(1f, 2.5f), "A panel still too far away came back on facing alone.");
+        Assert(!gate.Update(0.05f, 0.5f), "A panel still turned away came back on distance alone.");
+        Assert(gate.Update(1f, 0.5f), "A panel that recovered on both rules stayed hidden.");
+
+        // Taking hold of the window overrules the gate outright - nothing
+        // being handled may be hidden out from under the person handling it.
+        gate.Update(0.05f, 2.5f);
+        Assert(!gate.IsVisible, "Could not set up the forced-visible case.");
+        gate.ForceVisible();
+        Assert(gate.IsVisible, "Forcing the panel visible did not.");
+    }
+
+    /// <summary>
+    /// The rigid-grab arithmetic, with no headset: a panel taken hold of and
+    /// carried by a controller keeps exactly its relationship to that
+    /// controller, through rotation as well as translation. The first version
+    /// of this drag could only translate, which the headset rejected - so
+    /// rotation is the property most worth pinning down here.
+    /// </summary>
+    private static void TestOverlayDragCarriesRotationAsWellAsPosition()
+    {
+        var anchorPose = SvrBridge.Core.VrOverlayTransform.Translation(0.1f, 1.2f, -0.3f)
+                         * SvrBridge.Core.VrOverlayTransform.RotationY(0.4f);
+        var pointerPose = SvrBridge.Core.VrOverlayTransform.Translation(0.5f, 1.1f, -0.6f)
+                          * SvrBridge.Core.VrOverlayTransform.RotationX(-0.2f);
+        var offset = SvrBridge.Core.OverlayPlacement.Default.ControllerOffset;
+
+        var drag = SvrBridge.Core.OverlayDrag.Begin(
+            SvrBridge.Core.OverlayAnchorMode.Controller,
+            offset,
+            anchorPose,
+            pointerPose);
+
+        // Nothing has moved yet, so the panel must not have moved either. This
+        // is the check that catches an inverted or transposed term: any sign
+        // error shows up as a panel that jumps the instant it is grabbed.
+        AssertClose(
+            drag.OffsetAt(anchorPose, pointerPose),
+            offset,
+            "Grabbing the panel without moving anything moved it.");
+
+        // Carry the pointing controller 30 cm right and turn the wrist. The
+        // panel is rigidly attached, so its world pose must be exactly the
+        // grab-time pose carried by the same movement.
+        var carry = SvrBridge.Core.VrOverlayTransform.Translation(0.3f, 0f, 0f)
+                    * SvrBridge.Core.VrOverlayTransform.RotationZ(0.7f);
+        var movedPointer = carry * pointerPose;
+        var expectedWorld = carry * (pointerPose * drag.PanelInPointer);
+        var actualWorld = anchorPose * drag.OffsetAt(anchorPose, movedPointer);
+        AssertClose(
+            actualWorld,
+            expectedWorld,
+            "A rigid grab did not carry the panel with the controller.");
+
+        // The rotation actually arrived. A translation-only drag leaves the
+        // panel's rotation block untouched, which is exactly the headset
+        // failure this replaced, and it would pass every check above.
+        var before = anchorPose * offset;
+        Assert(
+            !Close(actualWorld.M00, before.M00) || !Close(actualWorld.M01, before.M01),
+            "Turning the controller left the panel's orientation unchanged - the drag is translation-only.");
+
+        // Moving the anchor device must leave the panel where it is in the
+        // world: it is attached to that device and travels with it already, so
+        // a drag that also followed it would move the panel twice over.
+        var anchorCarry = SvrBridge.Core.VrOverlayTransform.Translation(0f, -0.2f, 0.4f);
+        var movedAnchor = anchorCarry * anchorPose;
+        var afterAnchorMove = movedAnchor * drag.OffsetAt(movedAnchor, pointerPose);
+        AssertClose(
+            afterAnchorMove,
+            pointerPose * drag.PanelInPointer,
+            "Moving the anchor hand during a drag dragged the panel with it.");
+    }
+
+    /// <summary>
+    /// <see cref="SvrBridge.Core.VrOverlayTransform.InverseRigid"/> is the one
+    /// piece of new arithmetic the grab rests on, and a transposed term in it
+    /// would present as a panel flying off on grab rather than as a wrong
+    /// number anywhere legible.
+    /// </summary>
+    private static void TestRigidInverseRoundTrips()
+    {
+        var transform = SvrBridge.Core.VrOverlayTransform.Translation(0.4f, -1.1f, 2.3f)
+                        * SvrBridge.Core.VrOverlayTransform.RotationX(0.6f)
+                        * SvrBridge.Core.VrOverlayTransform.RotationY(-1.2f)
+                        * SvrBridge.Core.VrOverlayTransform.RotationZ(0.3f);
+        AssertClose(
+            transform * transform.InverseRigid(),
+            SvrBridge.Core.VrOverlayTransform.Identity,
+            "A rigid transform composed with its own inverse is not the identity.");
+        AssertClose(
+            transform.InverseRigid() * transform,
+            SvrBridge.Core.VrOverlayTransform.Identity,
+            "A rigid inverse is not a left inverse.");
+        Assert(
+            !SvrBridge.Core.VrOverlayTransform.Translation(float.NaN, 0f, 0f).IsUsable()
+            && SvrBridge.Core.VrOverlayTransform.Identity.IsUsable(),
+            "A non-finite transform was not rejected.");
+    }
+
+    /// <summary>
+    /// The placement survives the one hop it makes as text - the OpenVR
+    /// worker's command line - and a worker spawned without the argument at
+    /// all falls back to the proven default rather than to the origin.
+    /// </summary>
+    private static void TestOverlayPlacementArgumentRoundTrip()
+    {
+        // Exact binary fractions, so this proves the round trip rather than
+        // the round-trip format's precision - "R" already covers that, and a
+        // failure here should mean a lost or reordered element.
+        var placement = new SvrBridge.Core.OverlayPlacement(
+            SvrBridge.Core.VrOverlayTransform.Translation(0.125f, -0.0625f, -0.375f)
+            * SvrBridge.Core.VrOverlayTransform.RotationY(0.5f),
+            SvrBridge.Core.VrOverlayTransform.Translation(-0.25f, 0.5f, -1.25f));
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Parse(placement.ToArgument()).Equals(placement),
+            "A chat placement did not survive the worker's command line.");
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Parse(null).Equals(SvrBridge.Core.OverlayPlacement.Default)
+            && SvrBridge.Core.OverlayPlacement.Parse("0.1,0.2").Equals(
+                SvrBridge.Core.OverlayPlacement.Default)
+            && SvrBridge.Core.OverlayPlacement.Parse(
+                    string.Join(",", Enumerable.Repeat("x", 24)))
+                .Equals(SvrBridge.Core.OverlayPlacement.Default),
+            "A missing or malformed placement argument did not fall back to the proven default.");
+
+        // A placement that arrives non-finite must not be accepted from the
+        // command line either - it would be applied before anything else got
+        // the chance to reject it.
+        var poisoned = string.Join(
+            ",",
+            SvrBridge.Core.VrOverlayTransform.Translation(float.NaN, 0f, 0f).ToFloats()
+                .Concat(SvrBridge.Core.OverlayAnchor.HeadOffset.ToFloats())
+                .Select(value => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)));
+        Assert(
+            SvrBridge.Core.OverlayPlacement.Parse(poisoned)
+                .Equals(SvrBridge.Core.OverlayPlacement.Default),
+            "A non-finite placement argument was accepted.");
+    }
+
+    /// <summary>
+    /// The move handle hit-tests to the move handle and to nothing else - the
+    /// structural rule <see cref="ChatOverlayLayout"/> exists for. Every
+    /// corner and the centre resolve to it; every point outside resolves to
+    /// nothing, deliberately unlike the dashboard's button rows, where the
+    /// gaps belong to the nearest button.
+    /// </summary>
+    private static void TestChatHandleHitTestMatchesTheDrawnRectangle()
+    {
+        var buttons = ChatOverlayLayout.Buttons;
+        var handle = buttons[ChatOverlayLayout.MoveHandleIndex];
+
+        (float X, float Y)[] inside =
+        [
+            (handle.Left + (handle.Width / 2f), handle.Top + (handle.Height / 2f)),
+            (handle.Left, handle.Top),
+            (handle.Right - 1, handle.Top),
+            (handle.Left, handle.Bottom - 1),
+            (handle.Right - 1, handle.Bottom - 1)
+        ];
+        foreach (var (x, y) in inside)
+        {
+            Assert(
+                ChatOverlayLayout.IndexAt(buttons, x, y) == ChatOverlayLayout.MoveHandleIndex,
+                $"A point inside the move handle ({x}, {y}) did not hit it.");
+        }
+
+        (float X, float Y)[] outside =
+        [
+            (handle.Left - 1, handle.Top + 1),
+            (handle.Right, handle.Top + 1),
+            (handle.Left + 1, handle.Top - 1),
+            (handle.Left + 1, handle.Bottom),
+            (0, 0),
+            (ChatOverlayLayout.PanelWidth - 1, ChatOverlayLayout.PanelHeight - 1)
+        ];
+        foreach (var (x, y) in outside)
+        {
+            Assert(
+                ChatOverlayLayout.IndexAt(buttons, x, y) == ChatOverlayLayout.NoButton,
+                $"A point outside the move handle ({x}, {y}) hit it anyway.");
+        }
+
+        Assert(
+            handle.Right <= ChatOverlayLayout.PanelWidth
+            && handle.Bottom <= ChatOverlayLayout.PanelHeight
+            && handle.Left >= 0
+            && handle.Top >= 0,
+            "The move handle is partly off the panel, so part of it can never be clicked.");
+    }
+
+    /// <summary>
+    /// Counts repaints rather than inspecting the highlight, because the bug
+    /// this guards against is entirely one of frequency: a per-move repaint
+    /// highlights exactly the right control and still drags a 10 Hz panel
+    /// through hundreds of WPF renders a second. Asserting the highlight looks
+    /// right would pass either way - the same class of mistake as the gaze
+    /// animation that eased forever with correct values.
+    /// </summary>
+    private static void TestChatHoverRepaintsOncePerRectangleCrossed()
+    {
+        // Two rectangles, so "crossing into a second" is a real crossing
+        // rather than a trip through empty space. Production ships one today;
+        // the rule has to hold for the table as it grows.
+        Rectangle[] buttons = [new(400, 10, 60, 60), new(300, 10, 60, 60)];
+        var input = new ChatOverlayInput(buttons);
+        input.SetGazing(true);
+
+        Move(input, 410, 20);
+        Move(input, 430, 30);
+        Move(input, 450, 55);
+        Assert(
+            input.HoverRepaintCount == 1 && input.HoveredIndex == 0,
+            $"Moving within one control asked for {input.HoverRepaintCount} repaints instead of 1.");
+
+        Move(input, 320, 20);
+        Move(input, 340, 40);
+        Assert(
+            input.HoverRepaintCount == 2 && input.HoveredIndex == 1,
+            $"Crossing into a second control asked for {input.HoverRepaintCount} repaints instead of 2.");
+
+        Move(input, 100, 400);
+        Move(input, 120, 420);
+        Assert(
+            input.HoverRepaintCount == 3 && input.HoveredIndex == ChatOverlayLayout.NoButton,
+            $"Leaving the controls asked for {input.HoverRepaintCount} repaints instead of 3.");
+
+        // The laser leaving the panel is the same transition, reported by
+        // SteamVR rather than inferred from a coordinate - and it must not
+        // repaint again when hover is already nothing.
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.FocusLeave,
+                0,
+                0,
+                0));
+        Assert(
+            input.HoverRepaintCount == 3,
+            "Losing laser focus with nothing hovered asked for a repaint anyway.");
+
+        Assert(
+            input.TakeRepaintOwed() && !input.TakeRepaintOwed(),
+            "A single hover change was owed either no repaints or more than one.");
+    }
+
+    /// <summary>
+    /// §B2: input is accepted only while the window is in its gazed-at state,
+    /// so an accidental grab needs the wearer to be both looking at the window
+    /// and pointing at it. Losing gaze mid-drag abandons the drag rather than
+    /// leaving one running on a window that has shrunk away.
+    /// </summary>
+    private static void TestChatInputIsRejectedOutsideTheGazedState()
+    {
+        var handle = ChatOverlayLayout.Buttons[ChatOverlayLayout.MoveHandleIndex];
+        var centreX = handle.Left + (handle.Width / 2f);
+        var centreY = handle.Top + (handle.Height / 2f);
+        var input = new ChatOverlayInput();
+
+        Move(input, centreX, centreY);
+        Assert(
+            input.HoveredIndex == ChatOverlayLayout.NoButton && input.HoverRepaintCount == 0,
+            "The window highlighted a control while the wearer was not looking at it.");
+        Assert(
+            Press(input) == ChatInputOutcome.None && !input.IsHolding,
+            "A laser click started a drag while the wearer was not looking at the window.");
+
+        input.SetGazing(true);
+        Move(input, centreX, centreY);
+        Assert(
+            Press(input) == ChatInputOutcome.DragBegan && input.IsHolding,
+            "A laser click on the handle did not start a drag while gazing.");
+
+        input.SetGazing(false);
+        Assert(
+            !input.IsHolding && input.HoveredIndex == ChatOverlayLayout.NoButton,
+            "Looking away left a drag running on a window that had shrunk away.");
+
+        // The invariant ChatOverlay's per-tick reconcile depends on: every
+        // path that withdraws input also drops the hold, so "a live drag with
+        // no live hold" is always a state that can be detected and cancelled.
+        // A drag can only end through a release event, and a release event can
+        // only arrive while input is on - so a hold that outlived its input
+        // would strand the panel on the wearer's hand with no way to let go,
+        // which is exactly what shipped and had to be fixed.
+        foreach (var withdraw in new (string Name, Action<ChatOverlayInput> Act)[]
+                 {
+                     ("looking away", i => i.SetGazing(false)),
+                     ("the laser leaving the panel", i => i.Handle(
+                         new SvrBridge.Core.OverlayMouseEvent(
+                             SvrBridge.Core.OverlayMouseEventKind.FocusLeave,
+                             0,
+                             0,
+                             0))),
+                     ("an explicit cancel", i => i.CancelDrag())
+                 })
+        {
+            var held = new ChatOverlayInput();
+            held.SetGazing(true);
+            Move(held, centreX, centreY);
+            Assert(
+                Press(held) == ChatInputOutcome.DragBegan && held.IsHolding,
+                $"Could not set up the {withdraw.Name} case.");
+
+            withdraw.Act(held);
+            Assert(
+                !held.IsHolding,
+                $"After {withdraw.Name} the handle was still held, so the drag could never be released.");
+        }
+    }
+
+    /// <summary>
+    /// The grab and release signalling, which is all the router owns now that
+    /// the drag arithmetic lives in <see cref="SvrBridge.Core.OverlayDrag"/>:
+    /// only the handle starts a grab, and a release is only reported for a
+    /// grab that was actually started.
+    /// </summary>
+    private static void TestOnlyTheHandleStartsAndEndsAGrab()
+    {
+        var handle = ChatOverlayLayout.Buttons[ChatOverlayLayout.MoveHandleIndex];
+        var centreX = handle.Left + (handle.Width / 2f);
+        var centreY = handle.Top + (handle.Height / 2f);
+        var input = new ChatOverlayInput();
+        input.SetGazing(true);
+
+        // Chat text, not a control: this is where most of the panel is, and
+        // grabbing the window every time the wearer points at a message would
+        // make it unreadable.
+        Move(input, 40, 700);
+        Assert(
+            Press(input) == ChatInputOutcome.None && !input.IsHolding,
+            "A laser click on the chat text started a grab.");
+        Assert(
+            Release(input) == ChatInputOutcome.None,
+            "A release with nothing held was reported as the end of a drag.");
+
+        Move(input, centreX, centreY);
+        Assert(
+            Press(input) == ChatInputOutcome.DragBegan && input.IsHolding,
+            "A laser click on the move handle did not start a grab.");
+        Assert(
+            Release(input) == ChatInputOutcome.DragEnded && !input.IsHolding,
+            "Releasing the trigger did not end the grab.");
+        Assert(
+            Release(input) == ChatInputOutcome.None,
+            "A second release reported a second drag ending.");
+
+        // Losing laser focus mid-grab has to let go: the wearer has pointed
+        // away, and a panel that kept following would be being dragged by a
+        // laser that is no longer on it.
+        Move(input, centreX, centreY);
+        Press(input);
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.FocusLeave,
+                0,
+                0,
+                0));
+        Assert(!input.IsHolding, "The laser leaving the panel left the handle held.");
+    }
+
+    /// <summary>
+    /// §B5's rule, applied to a hand drag: placing the window by hand is an
+    /// explicit user edit, so it wins over an active Streamer.bot anchor
+    /// override rather than leaving one in force that a later <c>reset</c>
+    /// could use to move a hand-placed window somewhere else.
+    /// </summary>
+    private static void TestHandPlacedOffsetClearsAStreamerBotOverride()
+    {
+        var savedDefault = new SvrBridge.Core.OverlayAnchor(
+            SvrBridge.Core.OverlayAnchorMode.Controller,
+            SvrBridge.Core.OverlayAnchorHand.Left);
+        var state = new SvrBridge.Core.SurfaceOverrideState(savedDefault);
+        state.Apply(
+            new SvrBridge.Core.StreamerBotEventPayload
+            {
+                Command = "anchor",
+                RequestedAnchorMode = SvrBridge.Core.OverlayAnchorMode.Head
+            });
+        Assert(
+            state.AnchorOverride is not null
+            && state.EffectiveAnchor.Mode == SvrBridge.Core.OverlayAnchorMode.Head,
+            "The anchor control command under test did not take effect.");
+
+        // The wearer drags the window while it is on the headset anchor.
+        state.AdoptEffectiveAnchorAsSavedDefault();
+        Assert(
+            state.AnchorOverride is null
+            && state.SavedDefault.Mode == SvrBridge.Core.OverlayAnchorMode.Head,
+            "A hand-placed window left the Streamer.bot anchor override in force.");
+
+        state.Apply(new SvrBridge.Core.StreamerBotEventPayload { Command = "reset" });
+        Assert(
+            state.EffectiveAnchor.Mode == SvrBridge.Core.OverlayAnchorMode.Head,
+            "A later reset moved the hand-placed window off the anchor it was placed on.");
+    }
+
+    private static void Move(ChatOverlayInput input, float x, float y) =>
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.Move,
+                x,
+                y,
+                0));
+
+    private static ChatInputOutcome Press(ChatOverlayInput input) =>
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.ButtonDown,
+                0,
+                0,
+                0));
+
+    private static ChatInputOutcome Release(ChatOverlayInput input) =>
+        input.Handle(
+            new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.ButtonUp,
+                0,
+                0,
+                0));
+
+    private static bool Close(float actual, float expected) => MathF.Abs(actual - expected) < 1e-4f;
+
+    /// <summary>
+    /// Element-wise transform comparison. Composing four rotations and an
+    /// inverse accumulates float error well past what exact equality tolerates,
+    /// and an exact check here would fail for reasons that say nothing about
+    /// whether the grab is right.
+    /// </summary>
+    private static void AssertClose(
+        SvrBridge.Core.VrOverlayTransform actual,
+        SvrBridge.Core.VrOverlayTransform expected,
+        string message)
+    {
+        var actualValues = actual.ToFloats();
+        var expectedValues = expected.ToFloats();
+        for (var index = 0; index < actualValues.Length; index++)
+        {
+            Assert(
+                Close(actualValues[index], expectedValues[index]),
+                $"{message} (element {index}: {actualValues[index]} vs {expectedValues[index]})");
+        }
+    }
+
+    /// <summary>
     /// Covers the control-command semantics from §B3 of the Phase 4 plan
     /// without OpenVR: each command applies the expected override,
     /// <c>reset</c> restores the saved default, and an unrecognised command
@@ -838,6 +1617,238 @@ internal static class TraySelfTests
             Target = SvrBridge.Core.StreamerBotEventTarget.Control,
             Command = command
         };
+
+    /// <summary>
+    /// Every platform icon this build ships must actually be findable by the
+    /// source name it is named for.
+    /// <para>
+    /// This exists because the first version of the lookup missed all of them
+    /// and nothing said so. MSBuild derives a manifest resource name from a
+    /// file's path but replaces characters that are not valid in an
+    /// identifier, so <c>assets\source-icons\twitch.png</c> embeds as
+    /// <c>...assets.source_icons.twitch.png</c> - underscore, not hyphen. The
+    /// resolver's prefix had the hyphen, every icon embedded correctly, every
+    /// lookup missed, and the chip fallback rendered a perfectly good-looking
+    /// picker with no icons in it and no error anywhere. Reading the manifest
+    /// rather than hardcoding the expected names is the point: this fails the
+    /// moment the two disagree, whatever the reason.
+    /// </para>
+    /// <para>
+    /// Shipping no icons at all is a valid state - the chip fallback is the
+    /// design - so an empty icon set passes. What cannot pass is shipping one
+    /// the app then fails to find.
+    /// </para>
+    /// </summary>
+    private static void TestSourceIconResourceFindsEveryEmbeddedIcon()
+    {
+        var embedded = System.Reflection.Assembly.GetExecutingAssembly()
+            .GetManifestResourceNames()
+            .Where(name => name.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        foreach (var name in embedded)
+        {
+            var source = Path.GetFileNameWithoutExtension(name).Split('.').Last();
+            Assert(
+                SourceIconResource.TryResolve(source) is not null,
+                $"The embedded icon \"{name}\" was not resolvable as source \"{source}\" - "
+                + "the resolver's resource prefix and the one MSBuild generated disagree.");
+        }
+
+        Assert(
+            SourceIconResource.TryResolve("Zorblatt") is null,
+            "A source with no icon file resolved to one, so the chip fallback would never be reached.");
+        Assert(
+            SourceIconResource.TryResolve("") is null && SourceIconResource.TryResolve(null) is null,
+            "An empty source name threw or resolved to an icon.");
+    }
+
+    /// <summary>
+    /// The regression guard for the failure that got two earlier versions of
+    /// this picker rejected live. Both listed every available event and built
+    /// one control per entry; against the 467 events a real Streamer.bot
+    /// instance reports, that was hundreds of live WinForms controls each
+    /// triggering its own relayout, and it read as the whole app freezing on
+    /// every keystroke.
+    /// <para>
+    /// What is asserted here is the structural property, not a timing: the
+    /// number of controls built has no relationship to the catalog size. A
+    /// generous time bound comes with it only to catch a future change that
+    /// reintroduces per-entry work somewhere off to the side - it is a
+    /// tripwire, not a benchmark, and is loose enough not to fail on a busy
+    /// machine.
+    /// </para>
+    /// </summary>
+    private static void TestNotificationEventPickerStaysBoundedAtARealCatalogSize()
+    {
+        var catalog = BuildRealisticEventCatalog();
+        Assert(
+            catalog.Count >= 187,
+            "The realistic catalog fixture is smaller than the event count this design has to survive.");
+
+        using var picker = new NotificationEventPicker();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        picker.SetCatalog(catalog);
+
+        Assert(
+            picker.RenderedResultRowCount
+            == SvrBridge.Core.StreamerBotEventSearch.DefaultResultLimit,
+            "An unfiltered picker built more rows than the cap, so the control count tracks the catalog.");
+
+        // Typing "follow" one letter at a time, the way the rebuilt-per-
+        // keystroke failure was actually reached.
+        foreach (var query in new[] { "f", "fo", "fol", "foll", "follo", "follow" })
+        {
+            picker.ApplySearchNow(query);
+            Assert(
+                picker.RenderedResultRowCount
+                <= SvrBridge.Core.StreamerBotEventSearch.DefaultResultLimit,
+                $"Searching \"{query}\" built more rows than the cap.");
+        }
+
+        Assert(
+            picker.RenderedResultRowCount > 0,
+            "Searching a term the catalog definitely contains rendered nothing.");
+
+        picker.ApplySearchNow("nothingmatchesthis");
+        Assert(
+            picker.RenderedResultRowCount == 0,
+            "A query matching nothing still built result rows.");
+
+        clock.Stop();
+        Assert(
+            clock.ElapsedMilliseconds < 5000,
+            $"Filling and searching a {catalog.Count}-event picker took {clock.ElapsedMilliseconds}ms - "
+            + "something is doing per-catalog-entry work again.");
+    }
+
+    /// <summary>
+    /// The enabled list is the setting: it round-trips through
+    /// <see cref="UserSettings.EnabledEvents"/>, adding and removing changes
+    /// what a <c>Subscribe</c> request would carry, and - the part with a real
+    /// failure mode behind it - an enabled event survives a
+    /// <c>GetEvents</c> response that no longer mentions it.
+    /// <para>
+    /// That last case is not hypothetical. Streamer.bot reports what its
+    /// currently installed integrations expose, so a key can vanish because a
+    /// fetch failed or an integration was reloading. Reconciling the enabled
+    /// list against the response would turn the wearer's alerts off with
+    /// nothing on screen to explain it.
+    /// </para>
+    /// </summary>
+    private static void TestNotificationEventPickerRoundTripsAndKeepsUnreportedEvents()
+    {
+        using var picker = new NotificationEventPicker();
+        var changes = 0;
+        picker.EnabledKeysChanged += () => changes++;
+
+        picker.SetEnabledKeys(["Twitch.Follow", "Kick.Subscription"]);
+        Assert(
+            changes == 0,
+            "Applying saved settings raised a change back at the caller that was applying them.");
+        Assert(
+            picker.EnabledKeys.SequenceEqual(["Twitch.Follow", "Kick.Subscription"]),
+            "The enabled keys did not round-trip through the picker unchanged.");
+        Assert(
+            picker.RenderedEnabledRowCount == 2,
+            "An enabled key with no catalog behind it yet did not get a row.");
+
+        // A catalog that knows Twitch.Follow and has never heard of
+        // Kick.Subscription.
+        var catalog = BuildRealisticEventCatalog()
+            .Where(entry => entry.Source != "Kick")
+            .ToArray();
+        picker.SetCatalog(catalog);
+        Assert(
+            picker.EnabledKeys.Contains("Kick.Subscription"),
+            "An enabled event this catalog does not report was silently dropped.");
+        Assert(
+            picker.RenderedEnabledRowCount == 2,
+            "An enabled event this catalog does not report lost its row, so it could not be removed.");
+
+        picker.Add("Twitch.GiftSub");
+        Assert(
+            changes == 1 && picker.EnabledKeys.Contains("Twitch.GiftSub"),
+            "Adding an event did not enable it and report the change exactly once.");
+        picker.Add("Twitch.GiftSub");
+        Assert(
+            changes == 1 && picker.EnabledKeys.Count(key => key == "Twitch.GiftSub") == 1,
+            "Adding an already-enabled event duplicated it or reported a change.");
+
+        picker.Remove("twitch.follow");
+        Assert(
+            changes == 2 && !picker.EnabledKeys.Contains("Twitch.Follow"),
+            "Removing an event by a differently-cased key did not take it out of the enabled list.");
+        picker.Remove("Twitch.NeverEnabled");
+        Assert(
+            changes == 2,
+            "Removing an event that was never enabled reported a change.");
+
+        Assert(
+            picker.EnabledKeys.SequenceEqual(["Kick.Subscription", "Twitch.GiftSub"]),
+            "The final enabled set was not what adding and removing should have left behind.");
+
+        // Nothing is on by default - an upgrading user must not suddenly
+        // start receiving alerts they never chose.
+        using var fresh = new NotificationEventPicker();
+        fresh.SetCatalog(catalog);
+        Assert(
+            fresh.EnabledKeys.Count == 0,
+            "A picker built from a catalog alone enabled something by itself.");
+    }
+
+    /// <summary>
+    /// A catalog the shape and size of a real one, from a live
+    /// <c>GetEvents</c> capture (Streamer.bot 1.0.4): 467 events across its
+    /// real source names. Real platform names appear here because this is a
+    /// test fixture - production code contains none, which is what
+    /// <see cref="SvrBridge.Core.StreamerBotSourceChip"/> exists to make
+    /// possible.
+    /// </summary>
+    private static IReadOnlyList<SvrBridge.Core.StreamerBotEventDescriptor> BuildRealisticEventCatalog()
+    {
+        var sources = new (string Source, int Count, string[] Real)[]
+        {
+            ("Twitch", 137, ["Follow", "Cheer", "Sub", "ReSub", "GiftSub", "Raid", "ChatMessage"]),
+            ("Elgato", 90, ["ActionTriggered"]),
+            ("YouTube", 29, ["Message", "SuperChat", "NewSponsor"]),
+            ("Kick", 21, ["Follow", "Subscription", "ChatMessage"]),
+            ("Trovo", 16, ["Follow"]),
+            ("Misc", 13, ["TimedAction"]),
+            ("Fourthwall", 13, ["OrderPlaced"]),
+            ("MeldStudio", 12, ["SceneChanged"]),
+            ("VTubeStudio", 11, ["ModelLoaded"]),
+            ("Obs", 9, ["SceneChanged"]),
+            ("CrowdControl", 9, ["EffectRedeemed"]),
+            ("ThrowingSystem", 8, ["ObjectThrown"]),
+            ("StreamlabsDesktop", 7, ["SceneChanged"]),
+            ("Streamlabs", 6, ["Donation"]),
+            ("Application", 6, ["Started"]),
+            ("StreamElements", 5, ["Tip"]),
+            ("Kofi", 5, ["Donation"]),
+            ("Patreon", 5, ["PledgeCreated"]),
+            ("HypeRate", 4, ["HeartRatePulse"]),
+            ("StreamDeck", 4, ["ButtonPressed"]),
+            ("Zorblatt", 4, ["SomethingHappened"]),
+            ("Pallygg", 3, ["Tip"]),
+            ("DonorDrive", 3, ["Donation"]),
+            ("General", 1, ["Custom"])
+        };
+
+        var catalog = new List<SvrBridge.Core.StreamerBotEventDescriptor>();
+        foreach (var (source, count, real) in sources)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                catalog.Add(
+                    new SvrBridge.Core.StreamerBotEventDescriptor(
+                        source,
+                        index < real.Length ? real[index] : $"LongTailEvent{index:D3}"));
+            }
+        }
+
+        return catalog;
+    }
 
     /// <summary>
     /// Covers §B1's in-app chat test harness: the burst, ring-buffer-fill,
@@ -939,6 +1950,199 @@ internal static class TraySelfTests
     }
 
     /// <summary>
+    /// A hand-dragged placement crosses the worker message channel as JSON on
+    /// its way back to the tray for saving. A record struct with a
+    /// parameterless constructor that silently deserialised to zeros would put
+    /// the chat window at the controller's own origin, inside the wearer's
+    /// hand, on the first VR settings change - a failure that looks nothing
+    /// like a serialisation bug from the headset.
+    /// </summary>
+    private static void TestChatPlacementSurvivesTheWorkerMessageChannel()
+    {
+        var options = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+        };
+        var receiveOptions = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+        };
+
+        var placement = new SvrBridge.Core.OverlayPlacement(
+            SvrBridge.Core.VrOverlayTransform.Translation(0.07f, 0.13f, -0.21f)
+            * SvrBridge.Core.VrOverlayTransform.RotationX(0.3f),
+            SvrBridge.Core.VrOverlayTransform.Translation(-0.02f, -0.3f, -0.9f));
+        var settings = new SvrBridge.Core.VrSettingsSnapshot(
+            true,
+            new SvrBridge.Core.OverlayAnchor(
+                SvrBridge.Core.OverlayAnchorMode.Controller,
+                SvrBridge.Core.OverlayAnchorHand.Right),
+            placement,
+            0.8,
+            1.2,
+            SvrBridge.Core.GazeSensitivity.Tight,
+            // Deliberately true: the default is false, so a field dropped in
+            // transit would still round-trip if this matched the default.
+            true,
+            true,
+            SvrBridge.Core.OverlayAnchor.Head,
+            0.7,
+            0.6,
+            placement,
+            new SvrBridge.Core.NotificationAppearanceSettings(
+                "#112233",
+                "#FFEEDD",
+                "#00FF00",
+                4200,
+                SvrBridge.Core.NotificationTransition.Slide,
+                SvrBridge.Core.NotificationSlideEdge.Left,
+                "C:\\templates\\banner.png",
+                0.5,
+                12));
+
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: settings),
+            options);
+        var received = System.Text.Json.JsonSerializer
+            .Deserialize<OpenVrWorkerMessage>(json, receiveOptions)
+            ?.VrSettingsChanged;
+
+        Assert(
+            received is not null && received.ChatPlacement.Equals(placement),
+            "A hand-dragged chat placement did not survive the worker message channel.");
+        Assert(
+            received!.ChatAnchor.Equals(settings.ChatAnchor)
+            && received.GazeSensitivity == settings.GazeSensitivity
+            && received.ChatGazeScaleEnabled,
+            "The rest of the VR settings snapshot did not survive the worker message channel.");
+        Assert(
+            received.NotificationPlacement.Equals(placement)
+            && received.NotificationAppearance == settings.NotificationAppearance,
+            "The Phase 7 notification placement/appearance fields did not survive the worker message channel.");
+    }
+
+    /// <summary>
+    /// Guards the exact regression a live headset session caught:
+    /// <c>NotificationPlacement</c> and <c>NotificationAppearance</c> were
+    /// both missing from the hand-written <c>with</c> expression that folds
+    /// a VR-reported <see cref="SvrBridge.Core.VrSettingsSnapshot"/> back into
+    /// saved settings, so every VR-side placement drag or reset applied live
+    /// and then silently reverted to default on the very next restart. Every
+    /// field of the snapshot is given a value that differs from
+    /// <see cref="UserSettings"/>'s own defaults, so a field the merge forgot
+    /// would show up as still-default rather than accidentally matching.
+    /// </summary>
+    private static void TestMergeVrSettingsSnapshotPersistsEveryField()
+    {
+        var previous = new UserSettings();
+        var placement = new SvrBridge.Core.OverlayPlacement(
+            SvrBridge.Core.VrOverlayTransform.Translation(0.11f, 0.22f, -0.33f)
+            * SvrBridge.Core.VrOverlayTransform.RotationY(0.4f),
+            SvrBridge.Core.VrOverlayTransform.Translation(-0.44f, -0.55f, -0.66f)
+            * SvrBridge.Core.VrOverlayTransform.RotationX(0.2f));
+        var appearance = new SvrBridge.Core.NotificationAppearanceSettings(
+            "#ABCDEF",
+            "#123456",
+            "#654321",
+            9999,
+            SvrBridge.Core.NotificationTransition.ScalePop,
+            SvrBridge.Core.NotificationSlideEdge.Right,
+            "C:\\some\\template.png",
+            0.33,
+            22,
+            1234,
+            567);
+        var snapshot = new SvrBridge.Core.VrSettingsSnapshot(
+            true,
+            new SvrBridge.Core.OverlayAnchor(SvrBridge.Core.OverlayAnchorMode.Head, SvrBridge.Core.OverlayAnchorHand.Right),
+            placement,
+            0.81,
+            1.44,
+            SvrBridge.Core.GazeSensitivity.Tight,
+            true,
+            true,
+            new SvrBridge.Core.OverlayAnchor(SvrBridge.Core.OverlayAnchorMode.Controller, SvrBridge.Core.OverlayAnchorHand.Right),
+            0.71,
+            1.66,
+            placement,
+            appearance);
+
+        var updated = TrayApplicationContext.MergeVrSettingsSnapshot(previous, snapshot);
+
+        Assert(updated.ChatEnabled, "ChatEnabled was not merged.");
+        Assert(updated.ChatAnchorMode == SvrBridge.Core.OverlayAnchorMode.Head, "ChatAnchorMode was not merged.");
+        Assert(updated.ChatAnchorHand == SvrBridge.Core.OverlayAnchorHand.Right, "ChatAnchorHand was not merged.");
+        Assert(updated.ChatPlacement.Equals(placement), "ChatPlacement was not merged.");
+        Assert(updated.ChatOpacity == 0.81, "ChatOpacity was not merged.");
+        Assert(updated.ChatSizeScale == 1.44, "ChatSizeScale was not merged.");
+        Assert(updated.GazeSensitivity == SvrBridge.Core.GazeSensitivity.Tight, "GazeSensitivity was not merged.");
+        Assert(updated.ChatGazeScaleEnabled, "ChatGazeScaleEnabled was not merged.");
+        Assert(updated.NotificationsEnabled, "NotificationsEnabled was not merged.");
+        Assert(
+            updated.NotificationAnchorMode == SvrBridge.Core.OverlayAnchorMode.Controller,
+            "NotificationAnchorMode was not merged.");
+        Assert(
+            updated.NotificationAnchorHand == SvrBridge.Core.OverlayAnchorHand.Right,
+            "NotificationAnchorHand was not merged.");
+        Assert(updated.NotificationOpacity == 0.71, "NotificationOpacity was not merged.");
+        Assert(updated.NotificationSizeScale == 1.66, "NotificationSizeScale was not merged.");
+
+        // The two fields the live regression was actually about.
+        Assert(
+            updated.NotificationPlacement.Equals(placement),
+            "NotificationPlacement was not merged - this is the exact bug a live headset session caught: "
+            + "a VR-side placement drag applied live and then reverted to default on restart.");
+        Assert(
+            updated.NotificationAppearance == appearance,
+            "NotificationAppearance was not merged - every Phase 7 appearance field would revert on restart.");
+        Assert(
+            updated.NotificationPanelWidth == 1234 && updated.NotificationPanelHeight == 567,
+            "The configured panel size was not merged, so a resized panel would revert on restart.");
+
+        TestPanelSizeReadsAnOlderSettingsFileAsTheProvenDefault();
+    }
+
+    /// <summary>
+    /// A settings file written before the panel size was configurable
+    /// deserialises those fields to zero, and zero is not a panel - it is a
+    /// texture with no area. System.Text.Json cannot tell "written by an
+    /// older shape" from "legitimately zero", so the type has to recognise
+    /// its own invalid values, which is what
+    /// <see cref="SvrBridge.Core.NotificationAppearanceSettings.SafePanelWidth"/>
+    /// is for.
+    /// </summary>
+    private static void TestPanelSizeReadsAnOlderSettingsFileAsTheProvenDefault()
+    {
+        var upgraded = SvrBridge.Core.NotificationAppearanceSettings.Default with
+        {
+            PanelWidthPixels = 0,
+            PanelHeightPixels = 0
+        };
+        Assert(
+            upgraded.SafePanelWidth == SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelWidth
+            && upgraded.SafePanelHeight == SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelHeight,
+            "A settings file predating the panel size did not fall back to the proven default, so an "
+            + "upgrading user would get a zero-area notification.");
+
+        var absurd = SvrBridge.Core.NotificationAppearanceSettings.Default with
+        {
+            PanelWidthPixels = 999999,
+            PanelHeightPixels = 1
+        };
+        Assert(
+            absurd.SafePanelWidth == SvrBridge.Core.NotificationAppearanceSettings.MaximumPanelDimension
+            && absurd.SafePanelHeight == SvrBridge.Core.NotificationAppearanceSettings.MinimumPanelDimension,
+            "An out-of-range panel size was not clamped - this texture is re-uploaded every animation "
+            + "frame, so an unbounded value costs real per-frame bandwidth.");
+
+        Assert(
+            SvrBridge.Core.NotificationAppearanceSettings.Default.SafePanelWidth == 900
+            && SvrBridge.Core.NotificationAppearanceSettings.Default.SafePanelHeight == 260,
+            "The default panel size changed from the 900x260 every live headset test to date was run at.");
+    }
+
+    /// <summary>
     /// A desktop settings save must restart the runtime for anything
     /// connection- or shortcut-shaped, but apply live for the Phase 4b
     /// appearance/anchor/enable fields alone - otherwise every opacity or
@@ -1006,6 +2210,44 @@ internal static class TraySelfTests
         Assert(
             !TrayApplicationContext.RequiresRuntimeRestart(baseline, same),
             "An unchanged settings object with a new Shortcuts array instance was seen as requiring a restart.");
+
+        // §B2's toggles change the Subscribe request itself, which only a
+        // full restart (and the RestartEventStreamLockedAsync it reaches)
+        // rebuilds - the live-apply path never touches the event stream.
+        Assert(
+            TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with { EnabledEvents = ["Twitch.Follow"] }),
+            "Enabling a notification event did not require a restart.");
+        Assert(
+            TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with
+                {
+                    EventTemplates = new Dictionary<string, string> { ["Twitch.Follow"] = "{targetUser.name}!" }
+                }),
+            "Changing a per-event template override did not require a restart.");
+        Assert(
+            TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with { ShowTestEvents = false }),
+            "Toggling test-event visibility did not require a restart.");
+
+        // Same hazard as the Shortcuts case above, for the two §B2 collections:
+        // a freshly-read EnabledEvents/EventTemplates is a new instance every
+        // call even when unchanged, and order must not matter either.
+        var sameEvents = baseline with
+        {
+            EnabledEvents = new List<string> { "Twitch.Follow", "Twitch.Raid" },
+            EventTemplates = new Dictionary<string, string> { ["Twitch.Follow"] = "hi" }
+        };
+        var reorderedEvents = sameEvents with
+        {
+            EnabledEvents = new List<string> { "Twitch.Raid", "Twitch.Follow" }
+        };
+        Assert(
+            !TrayApplicationContext.RequiresRuntimeRestart(sameEvents, reorderedEvents),
+            "Reordering the same enabled-events selection was seen as requiring a restart.");
     }
 
     /// <summary>
@@ -1127,6 +2369,358 @@ internal static class TraySelfTests
         };
 
     /// <summary>
+    /// The most important test in Phase 7: proves each of the three named
+    /// transitions converges on <see cref="SvrBridge.Core.NotificationPlayer"/>'s
+    /// own bounded fade timeline and then issues <b>zero</b> further calls for
+    /// the whole Holding phase - the property behind the hard rule that a
+    /// non-converging animation looks perfectly still yet issues overlay calls
+    /// forever, the exact bug <c>ChatOverlay.AnimateGaze</c> shipped with once.
+    /// A visual check cannot catch this; only counting calls does.
+    /// </summary>
+    private static void TestNotificationTransitionAnimatorConvergesAndStopsIssuingCalls()
+    {
+        AssertTransitionIsSilentAtSteadyState(
+            SvrBridge.Core.NotificationTransition.Fade,
+            SvrBridge.Core.NotificationSlideEdge.Bottom);
+        AssertTransitionIsSilentAtSteadyState(
+            SvrBridge.Core.NotificationTransition.Slide,
+            SvrBridge.Core.NotificationSlideEdge.Left);
+        AssertTransitionIsSilentAtSteadyState(
+            SvrBridge.Core.NotificationTransition.ScalePop,
+            SvrBridge.Core.NotificationSlideEdge.Top);
+
+        // Re-asserting the same progress every tick (exactly what a real
+        // caller does, since it recomputes progress from the player on every
+        // call) must not itself keep re-opening a value already reported.
+        var animator = new SvrBridge.Core.NotificationTransitionAnimator();
+        Assert(
+            animator.Advance(
+                SvrBridge.Core.NotificationTransition.Fade,
+                SvrBridge.Core.NotificationSlideEdge.Bottom,
+                1f,
+                0.5f,
+                out _),
+            "A fresh transition animator reported no change on its first call.");
+        for (var index = 0; index < 50; index++)
+        {
+            Assert(
+                !animator.Advance(
+                    SvrBridge.Core.NotificationTransition.Fade,
+                    SvrBridge.Core.NotificationSlideEdge.Bottom,
+                    1f,
+                    0.5f,
+                    out _),
+                "A converged transition animator issued a call even though nothing changed - "
+                + "steady state must be zero overlay calls per tick.");
+        }
+
+        animator.Reset();
+        Assert(
+            animator.Advance(
+                SvrBridge.Core.NotificationTransition.Fade,
+                SvrBridge.Core.NotificationSlideEdge.Bottom,
+                1f,
+                0.5f,
+                out _),
+            "Resetting the animator did not force its next call to report a change - a new "
+            + "notification's first frame must never be skipped as unchanged against the "
+            + "previous one's final value.");
+    }
+
+    /// <summary>
+    /// Plays one notification's whole timeline through
+    /// <see cref="SvrBridge.Core.NotificationPlayer"/> and counts the transition
+    /// animator's calls during the Holding phase specifically - the one phase
+    /// that lasts long enough (most of a notification's 5 seconds) for a
+    /// non-converging animation to matter.
+    /// </summary>
+    private static void AssertTransitionIsSilentAtSteadyState(
+        SvrBridge.Core.NotificationTransition transition,
+        SvrBridge.Core.NotificationSlideEdge edge)
+    {
+        var player = new SvrBridge.Core.NotificationPlayer();
+        player.Enqueue(NotificationFor("transition", 5000));
+        var animator = new SvrBridge.Core.NotificationTransitionAnimator();
+
+        var holdTicksSeen = 0;
+        var callsAfterTheFirstHoldTick = 0;
+        for (var nowMs = 0L; nowMs <= 5000; nowMs += 10)
+        {
+            var frame = player.Tick(nowMs);
+            if (frame.Phase == SvrBridge.Core.NotificationPhase.Idle)
+            {
+                break;
+            }
+
+            var changed = animator.Advance(transition, edge, frame.Alpha, 0.5f, out _);
+            if (frame.Phase != SvrBridge.Core.NotificationPhase.Holding)
+            {
+                continue;
+            }
+
+            holdTicksSeen++;
+            // The very first Holding tick is allowed one call, transitioning
+            // in from wherever the fade-in left off - every tick after that
+            // is steady state and must issue nothing.
+            if (holdTicksSeen > 1 && changed)
+            {
+                callsAfterTheFirstHoldTick++;
+            }
+        }
+
+        Assert(
+            holdTicksSeen > 5,
+            $"Not enough simulated Holding ticks ({holdTicksSeen}) to be a meaningful test of {transition}.");
+        Assert(
+            callsAfterTheFirstHoldTick == 0,
+            $"The {transition} transition issued {callsAfterTheFirstHoldTick} overlay call(s) during "
+            + "Holding, where progress never changes - steady state must be zero calls per tick.");
+    }
+
+    /// <summary>
+    /// §B5: a malformed, truncated or missing PNG template must each degrade
+    /// to no background rather than throwing - the same discipline
+    /// <see cref="SvrBridge.Core.StreamerBotEventPayload.TryParse(string, out SvrBridge.Core.StreamerBotEventPayload, out string)"/>
+    /// applies to hand-authored payloads.
+    /// </summary>
+    private static void TestNotificationTemplateLoaderDegradesGracefully()
+    {
+        Assert(
+            WpfNotificationRenderer.LoadTemplate(
+                Path.Combine(Path.GetTempPath(), $"svr-bridge-missing-{Guid.NewGuid():N}.png")) is null,
+            "A missing template path did not degrade to no background.");
+
+        var malformedPath = Path.Combine(Path.GetTempPath(), $"svr-bridge-malformed-{Guid.NewGuid():N}.png");
+        File.WriteAllBytes(malformedPath, [0x01, 0x02, 0x03, 0x04, 0x05]);
+        try
+        {
+            Assert(
+                WpfNotificationRenderer.LoadTemplate(malformedPath) is null,
+                "A malformed (non-PNG) template file did not degrade to no background.");
+        }
+        finally
+        {
+            File.Delete(malformedPath);
+        }
+
+        var truncatedPath = Path.Combine(Path.GetTempPath(), $"svr-bridge-truncated-{Guid.NewGuid():N}.png");
+        using (var bitmap = new System.Drawing.Bitmap(64, 64))
+        {
+            bitmap.Save(truncatedPath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+
+        var wholeFile = File.ReadAllBytes(truncatedPath);
+        File.WriteAllBytes(truncatedPath, wholeFile[..(wholeFile.Length / 3)]);
+        try
+        {
+            Assert(
+                WpfNotificationRenderer.LoadTemplate(truncatedPath) is null,
+                "A truncated PNG template did not degrade to no background.");
+        }
+        finally
+        {
+            File.Delete(truncatedPath);
+        }
+    }
+
+    /// <summary>
+    /// §B5: a template larger than this panel could ever usefully show is
+    /// downscaled on load, capped memory rather than caching a user's
+    /// full-resolution photo for a 900x260 panel; a template already under
+    /// the cap must not be upscaled.
+    /// </summary>
+    /// <summary>
+    /// The panel honours its configured pixel size, draws the source's icon
+    /// when one ships, and grows short text rather than leaving it small in a
+    /// large panel.
+    /// <para>
+    /// Asserted on the rendered pixels rather than on the WPF tree, because
+    /// what matters is what reaches the overlay. Ink coverage - how many
+    /// pixels differ from the flat background - is the measurable stand-in
+    /// for "the text got bigger": the same two words in a panel of the same
+    /// size must cover materially more of it once they are allowed to scale
+    /// up, and an icon must add ink on the side of the panel it sits on.
+    /// </para>
+    /// </summary>
+    private static void TestNotificationRendersAtTheConfiguredSizeWithItsIcon()
+    {
+        using var renderer = new WpfNotificationRenderer();
+
+        var custom = renderer.Render(
+            new NotificationContent("Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 640, 400));
+        Assert(
+            custom.Width == 640 && custom.Height == 400,
+            $"The panel ignored its configured pixel size - rendered {custom.Width}x{custom.Height}.");
+        Assert(
+            custom.Rgba.Length == 640 * 400 * 4,
+            "The rendered buffer did not match the configured panel size.");
+
+        var defaulted = renderer.Render(
+            new NotificationContent("Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0));
+        Assert(
+            defaulted.Width == SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelWidth
+            && defaulted.Height == SvrBridge.Core.NotificationAppearanceSettings.DefaultPanelHeight,
+            "A caller that named no panel size did not get the proven default.");
+
+        // Out of range on the way in, clamped rather than trusted - the same
+        // texture is re-uploaded every animation frame.
+        var absurd = renderer.Render(
+            new NotificationContent("x", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 99999, 10));
+        Assert(
+            absurd.Width == SvrBridge.Core.NotificationAppearanceSettings.MaximumPanelDimension
+            && absurd.Height == SvrBridge.Core.NotificationAppearanceSettings.MinimumPanelDimension,
+            "The renderer did not clamp an out-of-range panel size.");
+
+        // Two words in a wide panel: with the Viewbox scaling them up they
+        // have to cover far more of it than they would at a fixed 32pt.
+        var shortText = renderer.Render(
+            new NotificationContent("Hi", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 900, 260));
+        var longText = renderer.Render(
+            new NotificationContent(
+                "Ashling — Follow",
+                "A much longer accompanying message that has to wrap across several lines to fit "
+                + "inside a panel of this size at all, which is exactly when scaling down matters.",
+                "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 900, 260));
+        Assert(
+            InkCoverage(shortText) > 0.02,
+            "Two words in a 900x260 panel covered almost none of it - the text is not being scaled up "
+            + "to fill the box.");
+        Assert(
+            InkCoverage(longText) > 0.02,
+            "A long message rendered almost no ink, so it was not scaled down to fit either.");
+
+        // An icon has to add ink where there was none. Skipped rather than
+        // failed when this build ships no icons at all, since shipping none
+        // is a valid state - the coloured chip is the desktop fallback and a
+        // notification simply has no icon.
+        var anySource = System.Reflection.Assembly.GetExecutingAssembly()
+            .GetManifestResourceNames()
+            .Where(name => name.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            .Select(name => Path.GetFileNameWithoutExtension(name).Split('.').Last())
+            .FirstOrDefault();
+        if (anySource is not null)
+        {
+            var withIcon = renderer.Render(
+                new NotificationContent(
+                    "Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, anySource, 900, 260));
+            var withoutIcon = renderer.Render(
+                new NotificationContent(
+                    "Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0, "", 900, 260));
+            Assert(
+                InkCoverage(withIcon) > InkCoverage(withoutIcon),
+                $"Drawing the \"{anySource}\" icon did not add any ink, so no icon reached the panel.");
+            Assert(
+                InkCoverage(renderer.Render(
+                    new NotificationContent(
+                        "Ashling — Follow", "", "#60C8FF", "#182030", "#FFFFFF", "", 1d, 0,
+                        "NoSuchPlatform", 900, 260)))
+                == InkCoverage(withoutIcon),
+                "An unknown source changed the panel, so it did not fall through to drawing no icon.");
+        }
+    }
+
+    /// <summary>
+    /// The fraction of a rendered panel whose pixels differ from its
+    /// top-left corner - a proxy for "how much was drawn on it". Compared
+    /// between renders rather than against an absolute figure, since the
+    /// exact number depends on font rasterisation.
+    /// </summary>
+    private static double InkCoverage(RenderedPanel panel)
+    {
+        var backgroundR = panel.Rgba[0];
+        var backgroundG = panel.Rgba[1];
+        var backgroundB = panel.Rgba[2];
+        var differing = 0;
+        for (var index = 0; index + 3 < panel.Rgba.Length; index += 4)
+        {
+            if (Math.Abs(panel.Rgba[index] - backgroundR) > 12
+                || Math.Abs(panel.Rgba[index + 1] - backgroundG) > 12
+                || Math.Abs(panel.Rgba[index + 2] - backgroundB) > 12)
+            {
+                differing++;
+            }
+        }
+
+        return differing / (double)(panel.Width * panel.Height);
+    }
+
+    private static void TestNotificationTemplateLoaderDownscalesAnOversizedImage()
+    {
+        var oversizedPath = Path.Combine(Path.GetTempPath(), $"svr-bridge-oversized-{Guid.NewGuid():N}.png");
+        using (var bitmap = new System.Drawing.Bitmap(WpfNotificationRenderer.MaxDecodePixelWidth + 400, 300))
+        {
+            bitmap.Save(oversizedPath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+
+        try
+        {
+            var loaded = WpfNotificationRenderer.LoadTemplate(oversizedPath);
+            Assert(loaded is not null, "A valid oversized PNG template failed to load at all.");
+            Assert(
+                loaded!.PixelWidth <= WpfNotificationRenderer.MaxDecodePixelWidth,
+                $"An oversized template ({loaded.PixelWidth}px wide) was not downscaled to the "
+                + $"{WpfNotificationRenderer.MaxDecodePixelWidth}px cap.");
+        }
+        finally
+        {
+            File.Delete(oversizedPath);
+        }
+
+        var smallPath = Path.Combine(Path.GetTempPath(), $"svr-bridge-small-{Guid.NewGuid():N}.png");
+        using (var bitmap = new System.Drawing.Bitmap(64, 32))
+        {
+            bitmap.Save(smallPath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+
+        try
+        {
+            var loaded = WpfNotificationRenderer.LoadTemplate(smallPath);
+            Assert(
+                loaded is not null && loaded.PixelWidth == 64,
+                "A template already under the decode cap was resized anyway.");
+        }
+        finally
+        {
+            File.Delete(smallPath);
+        }
+    }
+
+    /// <summary>
+    /// §B4's precedence rule: a payload's own duration/accent/image win when
+    /// present; a settings-level default applies only when the payload is
+    /// silent. Pure - proven directly against
+    /// <see cref="SvrBridge.Core.StreamerBotEventPayload.WithNotificationDefaults"/>
+    /// rather than through a live <c>NotificationOverlay</c>, which needs OpenVR.
+    /// </summary>
+    private static void TestNotificationPayloadPrecedenceResolvesSettingsDefaults()
+    {
+        var silent = new SvrBridge.Core.StreamerBotEventPayload
+        {
+            Target = SvrBridge.Core.StreamerBotEventTarget.Notification,
+            Text = "hello"
+        };
+        var resolvedSilent = silent.WithNotificationDefaults(9000, "#112233", "C:\\default.png");
+        Assert(
+            resolvedSilent.DurationMs == 9000
+            && resolvedSilent.Accent == "#112233"
+            && resolvedSilent.Image == "C:\\default.png",
+            "A payload silent about duration/accent/image did not take the settings-level defaults.");
+
+        Assert(
+            SvrBridge.Core.StreamerBotEventPayload.TryParse(
+                """{"target":"notification","duration":1234,"accent":"#ABCDEF","image":"C:\\custom.png","text":"hi"}""",
+                out var explicitPayload,
+                out _),
+            "A well-formed notification payload with duration/accent/image was rejected.");
+        var resolvedExplicit = explicitPayload!.WithNotificationDefaults(9000, "#112233", "C:\\default.png");
+        Assert(
+            resolvedExplicit.DurationMs == 1234
+            && resolvedExplicit.Accent == "#ABCDEF"
+            && resolvedExplicit.Image == "C:\\custom.png",
+            "A payload's own duration/accent/image did not win over the settings-level defaults.");
+    }
+
+    /// <summary>
     /// Proves the render thread actually runs dispatched work and that
     /// <see cref="WpfRenderThread.Dispose"/> joins the OS thread rather than
     /// merely asking it to stop - a hung dispatcher shutdown would otherwise
@@ -1246,6 +2840,68 @@ internal static class TraySelfTests
         Assert(
             throttle.ShouldRepaint(buffer.Version, nowMs: 150),
             "The chat repaint throttle did not allow a repaint once its interval had elapsed.");
+    }
+
+    /// <summary>
+    /// Proves §B3 of the Phase 6 plan's exact requirement for the dashboard
+    /// repaint throttle: leading edge, not trailing. The first request in a
+    /// burst must paint immediately, a burst within the window must coalesce
+    /// into exactly one further paint (not zero, not one per request), and
+    /// that one paint must show the final state - not the first, and not a
+    /// stale intermediate one. Asserting the render count and the final
+    /// value together is deliberate: a naive per-click render would also
+    /// leave <c>lastValue</c> at the final state and look correct on that
+    /// check alone.
+    /// </summary>
+    private static void TestDashboardRepaintCoordinatorCoalescesBurst()
+    {
+        var coordinator = new SvrBridge.Core.DashboardRepaintCoordinator(minimumIntervalMs: 60);
+        var renderCount = 0;
+        var lastValue = -1;
+
+        void RequestValue(int value, long nowMs) =>
+            coordinator.Request(
+                () =>
+                {
+                    renderCount++;
+                    lastValue = value;
+                },
+                nowMs);
+
+        RequestValue(1, 0);
+        Assert(
+            renderCount == 1 && lastValue == 1,
+            "The first update in a burst was not rendered immediately (leading edge).");
+
+        RequestValue(2, 10);
+        RequestValue(3, 20);
+        RequestValue(4, 30);
+        Assert(
+            renderCount == 1,
+            $"A burst inside the throttle window rendered {renderCount} times before the window elapsed instead of coalescing.");
+
+        coordinator.Flush(59);
+        Assert(
+            renderCount == 1,
+            "The coalesced repaint fired one millisecond before its throttle window elapsed.");
+
+        coordinator.Flush(60);
+        Assert(
+            renderCount == 2 && lastValue == 4,
+            $"The coalesced burst produced {renderCount} render(s) showing value {lastValue} instead of exactly 2 renders, the second showing the final value 4 - this is the per-click-render bug the throttle exists to catch.");
+
+        // Nothing left pending: a flush with no new request must not render
+        // again, proving the throttle does not keep re-firing on a stale
+        // version once it has caught up.
+        coordinator.Flush(1000);
+        Assert(renderCount == 2, "A flush with nothing pending rendered anyway.");
+
+        // A single isolated request, well clear of the previous burst, is
+        // its own leading edge and must not be held back by the earlier one.
+        RequestValue(5, 1000);
+        Assert(
+            renderCount == 3 && lastValue == 5,
+            "A request arriving after the throttle window had long elapsed was not treated as a fresh leading edge.");
     }
 
     /// <summary>

@@ -50,6 +50,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _mainForm.SettingsChanged += QueueSettingsApply;
         _mainForm.TestRequested += TestStreamerBot;
         _mainForm.FindActionsRequested += FindStreamerBotActions;
+        _mainForm.NotificationEventsRefreshRequested += () => _ = RefreshNotificationEventsAsync();
         _mainForm.SteamVrSetupRequested += RepairSteamVrSetup;
         _mainForm.BindingsRequested += OpenControllerBindings;
         _mainForm.DashboardRequested += OpenVrDashboard;
@@ -119,6 +120,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // broken and the tray menu is on a monitor they cannot see.
         var chatInputProbe =
             new ToolStripMenuItem("Probe chat laser input for 60s (developer)");
+        // Testing an alert otherwise needs a real viewer to subscribe or
+        // follow at the exact moment you are wearing the headset, which is
+        // not something anyone can arrange on demand. These drive the same
+        // dispatch a real event does - see StreamerBotEventStream's
+        // InjectSyntheticEvent - so the enabled-events filter and the
+        // template are the real ones, not a notification shown directly.
+        var notificationTestHarness =
+            new ToolStripMenuItem("Notification test harness (developer)");
+        var fireEnabledAlerts =
+            new ToolStripMenuItem("Fire a test alert for every enabled event");
+        var fireUnenabledAlert =
+            new ToolStripMenuItem("Fire an event that is NOT enabled (expect nothing)");
+        var fireTestFlaggedAlert =
+            new ToolStripMenuItem("Fire an enabled event flagged isTest");
+        notificationTestHarness.DropDownItems.AddRange(
+        [
+            fireEnabledAlerts,
+            fireUnenabledAlert,
+            fireTestFlaggedAlert
+        ]);
         chatTestHarness.DropDownItems.AddRange(
         [
             injectBurst,
@@ -162,6 +183,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         dashboardTexturePath.Click += (_, _) => ToggleDashboardTexturePath(dashboardTexturePath);
         overlayTexturePath.Click += (_, _) => ToggleOverlayTexturePath(overlayTexturePath);
         chatInputProbe.Click += (_, _) => StartChatInputProbe();
+        fireEnabledAlerts.Click += (_, _) => FireEnabledNotificationTests(isTest: false);
+        fireTestFlaggedAlert.Click += (_, _) => FireEnabledNotificationTests(isTest: true);
+        fireUnenabledAlert.Click += (_, _) => FireUnenabledNotificationTest();
         exit.Click += (_, _) => ExitApplication();
 
         menu.Items.AddRange(
@@ -174,6 +198,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             logs,
             testOverlay,
             chatTestHarness,
+            notificationTestHarness,
             new ToolStripSeparator(),
             exit
         ]);
@@ -297,19 +322,46 @@ internal sealed class TrayApplicationContext : ApplicationContext
         || previous.ActionId != updated.ActionId
         || previous.StartBridgeWhenAppOpens != updated.StartBridgeWhenAppOpens
         || previous.EventStreamEnabled != updated.EventStreamEnabled
-        || !previous.GetShortcuts().SequenceEqual(updated.GetShortcuts());
+        || !previous.GetShortcuts().SequenceEqual(updated.GetShortcuts())
+        // §B2's toggles change the Subscribe request itself, which only a
+        // full restart (and the RestartEventStreamLockedAsync it reaches)
+        // rebuilds - the live-apply path never touches the event stream.
+        || CanonicaliseEventKeys(previous.EnabledEvents) != CanonicaliseEventKeys(updated.EnabledEvents)
+        || CanonicaliseEventTemplates(previous.EventTemplates) != CanonicaliseEventTemplates(updated.EventTemplates)
+        || previous.ShowTestEvents != updated.ShowTestEvents;
+
+    /// <summary>Order-independent canonical form of a "Source.Type" selection - see <see cref="EventStreamSettings"/>.</summary>
+    private static string CanonicaliseEventKeys(IReadOnlyCollection<string> keys) =>
+        string.Join(
+            '|',
+            keys.Select(key => key.Trim())
+                .Where(key => key.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(key => key, StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>Order-independent canonical form of the per-event template overrides - see <see cref="EventStreamSettings"/>.</summary>
+    private static string CanonicaliseEventTemplates(IReadOnlyDictionary<string, string> templates) =>
+        string.Join(
+            '|',
+            templates
+                .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(entry => $"{entry.Key}={entry.Value}"));
 
     private static VrSettingsSnapshot BuildVrSettingsSnapshot(UserSettings settings) =>
         new(
             settings.ChatEnabled,
             settings.ChatAnchor,
+            settings.ChatPlacement,
             settings.ChatOpacity,
             settings.ChatSizeScale,
             settings.GazeSensitivity,
+            settings.ChatGazeScaleEnabled,
             settings.NotificationsEnabled,
             settings.NotificationAnchor,
             settings.NotificationOpacity,
-            settings.NotificationSizeScale);
+            settings.NotificationSizeScale,
+            settings.NotificationPlacement,
+            settings.NotificationAppearance);
 
     private async Task RestartRuntimeAsync()
     {
@@ -422,7 +474,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var wanted = new EventStreamSettings(
             _settings.EventStreamEnabled,
             _settings.StreamerBotAddress.Trim(),
-            _settings.Password);
+            _settings.Password,
+            CanonicaliseEventKeys(_settings.EnabledEvents),
+            CanonicaliseEventTemplates(_settings.EventTemplates),
+            _settings.ShowTestEvents);
         if (wanted == _appliedEventStream)
         {
             return;
@@ -439,19 +494,74 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         var stream = new StreamerBotEventStream(
             _settings.ToAppConfig().StreamerBot,
-            OnActivity);
+            OnActivity,
+            _settings.NotificationEvents);
         stream.StateChanged += state =>
         {
             _mainForm.UpdateEventStreamState(state);
             if (state == StreamerBotStreamState.Connected)
             {
                 _ = EnsureEmoteCatalogAsync();
+                // Refreshed on every (re)connect, not just the first one, so
+                // the Notifications tab's toggle list stays current if the
+                // connected Streamer.bot instance's own action/event set
+                // changed between sessions.
+                _ = RefreshNotificationEventsAsync();
             }
         };
         _eventStream = stream;
         _eventPump = ConsumeEventStreamAsync(stream);
         _mainForm.UpdateEventStreamState(stream.State);
         stream.Start();
+    }
+
+    /// <summary>
+    /// Populates the Notifications tab's toggle list from a live
+    /// <c>GetEvents</c> response - §B2 of the Phase 7 plan. Requires the
+    /// event feed to already be connected: <c>GetEvents</c> is an ordinary
+    /// request/response over the same long-lived socket the feed itself
+    /// uses, and standing up a second, short-lived connection just for this
+    /// (the way <see cref="RefreshStreamerBotActionsAsync"/> does for
+    /// actions) was judged not worth a second connection type - the toggle
+    /// list is a convenience, not something a shortcut is waiting on.
+    /// <para>
+    /// A failure here must not take the feed down - see §B2 - so it is
+    /// caught and logged rather than propagated; whatever selection is
+    /// already saved keeps subscribing exactly as before.
+    /// </para>
+    /// </summary>
+    private async Task RefreshNotificationEventsAsync()
+    {
+        var stream = _eventStream;
+        if (stream is null || stream.State != StreamerBotStreamState.Connected)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.events_catalog_unavailable",
+                    "Turn on the Streamer.bot event feed and wait for it to connect before "
+                    + "refreshing the notification event list.",
+                    BridgeLogLevel.Warning));
+            return;
+        }
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var events = await stream.GetEventsAsync(timeout.Token);
+            _mainForm.ShowNotificationEvents(events);
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.events_catalog",
+                    $"Loaded {events.Count} Streamer.bot events for the Notifications tab."));
+        }
+        catch (Exception exception)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "streamerbot.events_catalog_failed",
+                    $"Could not load the Streamer.bot event list: {exception.Message}",
+                    BridgeLogLevel.Warning));
+        }
     }
 
     /// <summary>Bounded retry window for delivering a fetched catalog to a worker that is not up yet.</summary>
@@ -935,20 +1045,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _mainForm.BeginInvoke(() =>
         {
-            var updated = _settings with
-            {
-                ChatEnabled = snapshot.ChatEnabled,
-                ChatAnchorMode = snapshot.ChatAnchor.Mode,
-                ChatAnchorHand = snapshot.ChatAnchor.Hand,
-                ChatOpacity = snapshot.ChatOpacity,
-                ChatSizeScale = snapshot.ChatSizeScale,
-                GazeSensitivity = snapshot.GazeSensitivity,
-                NotificationsEnabled = snapshot.NotificationsEnabled,
-                NotificationAnchorMode = snapshot.NotificationAnchor.Mode,
-                NotificationAnchorHand = snapshot.NotificationAnchor.Hand,
-                NotificationOpacity = snapshot.NotificationOpacity,
-                NotificationSizeScale = snapshot.NotificationSizeScale
-            };
+            var updated = MergeVrSettingsSnapshot(_settings, snapshot);
 
             try
             {
@@ -967,6 +1064,49 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
         });
     }
+
+    /// <summary>
+    /// Folds every field of a <see cref="VrSettingsSnapshot"/> reported back
+    /// from the VR dashboard/worker into <paramref name="previous"/>. Pure
+    /// and <c>internal static</c> - like <see cref="RequiresRuntimeRestart"/>
+    /// - specifically so a self-test can assert every one of
+    /// <see cref="VrSettingsSnapshot"/>'s fields actually lands somewhere,
+    /// rather than trusting a hand-written <c>with</c> expression to have
+    /// remembered all of them. It did not: <see cref="VrSettingsSnapshot.NotificationPlacement"/>
+    /// and <see cref="VrSettingsSnapshot.NotificationAppearance"/> were both
+    /// missing from this method for the whole of Phase 7, so every VR-side
+    /// placement drag or reset applied live and then silently reverted to
+    /// default on the very next restart - confirmed live, not theoretical.
+    /// </summary>
+    internal static UserSettings MergeVrSettingsSnapshot(UserSettings previous, VrSettingsSnapshot snapshot) =>
+        previous with
+        {
+            ChatEnabled = snapshot.ChatEnabled,
+            ChatAnchorMode = snapshot.ChatAnchor.Mode,
+            ChatAnchorHand = snapshot.ChatAnchor.Hand,
+            ChatPlacement = snapshot.ChatPlacement,
+            ChatOpacity = snapshot.ChatOpacity,
+            ChatSizeScale = snapshot.ChatSizeScale,
+            GazeSensitivity = snapshot.GazeSensitivity,
+            ChatGazeScaleEnabled = snapshot.ChatGazeScaleEnabled,
+            NotificationsEnabled = snapshot.NotificationsEnabled,
+            NotificationAnchorMode = snapshot.NotificationAnchor.Mode,
+            NotificationAnchorHand = snapshot.NotificationAnchor.Hand,
+            NotificationOpacity = snapshot.NotificationOpacity,
+            NotificationSizeScale = snapshot.NotificationSizeScale,
+            NotificationPlacement = snapshot.NotificationPlacement,
+            NotificationBackgroundColour = snapshot.NotificationAppearance.BackgroundHex,
+            NotificationTextColour = snapshot.NotificationAppearance.TextHex,
+            NotificationAccentColour = snapshot.NotificationAppearance.AccentHex,
+            NotificationDefaultDurationMs = snapshot.NotificationAppearance.DefaultDurationMs,
+            NotificationTransitionKind = snapshot.NotificationAppearance.Transition,
+            NotificationSlideEdge = snapshot.NotificationAppearance.SlideEdge,
+            NotificationTemplatePath = snapshot.NotificationAppearance.TemplatePath,
+            NotificationBackgroundOpacity = snapshot.NotificationAppearance.BackgroundOpacity,
+            NotificationCornerRadiusPixels = snapshot.NotificationAppearance.CornerRadiusPixels,
+            NotificationPanelWidth = snapshot.NotificationAppearance.SafePanelWidth,
+            NotificationPanelHeight = snapshot.NotificationAppearance.SafePanelHeight
+        };
 
     private async void FindStreamerBotActions() =>
         await RefreshStreamerBotActionsAsync(
@@ -1360,6 +1500,129 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// this from a Streamer.bot C# action, which could not be diagnosed from
     /// this app's own logs because the failure was in another program.
     /// </summary>
+    /// <summary>
+    /// Fires one synthetic event for each alert the wearer has enabled -
+    /// whatever those happen to be. Carries no list of its own, so it tests
+    /// the actual selection rather than a set of events somebody hardcoded
+    /// here, and needs no edit when Streamer.bot gains new ones.
+    /// </summary>
+    private void FireEnabledNotificationTests(bool isTest)
+    {
+        var enabled = _settings.EnabledEvents;
+        if (enabled.Count == 0)
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "notification.dev_inject_skipped",
+                    "No alerts are enabled yet - add one on the Connection & setup tab first.",
+                    BridgeLogLevel.Warning));
+            return;
+        }
+
+        var fired = 0;
+        foreach (var key in enabled)
+        {
+            if (TryFireSyntheticEvent(key, isTest))
+            {
+                fired++;
+            }
+        }
+
+        OnActivity(
+            new BridgeActivity(
+                "notification.dev_injected",
+                $"Fired {fired} of {enabled.Count} enabled alert(s)"
+                + (isTest ? " flagged isTest" : "")
+                + (isTest
+                    ? " - each should appear only if \"Show test-fired events\" is on."
+                    : " - each should appear in the headset."),
+                BridgeLogLevel.Info));
+    }
+
+    /// <summary>
+    /// The other half of the check, and the one a passing notification cannot
+    /// prove on its own: an event the wearer never enabled must produce
+    /// nothing at all. Uses a deliberately absurd key so it cannot collide
+    /// with a real selection, and says so in the log, because "nothing
+    /// happened" is otherwise indistinguishable from "the harness is broken".
+    /// </summary>
+    private void FireUnenabledNotificationTest()
+    {
+        const string source = "SvrBridgeHarness";
+        const string type = "DefinitelyNotEnabled";
+        var key = $"{source}.{type}";
+        if (_settings.EnabledEvents.Contains(key, StringComparer.OrdinalIgnoreCase))
+        {
+            OnActivity(
+                new BridgeActivity(
+                    "notification.dev_inject_skipped",
+                    $"{key} is somehow enabled, so this check cannot prove anything - remove it first.",
+                    BridgeLogLevel.Warning));
+            return;
+        }
+
+        var reached = TryFireSyntheticEvent(key, isTest: false);
+        OnActivity(
+            new BridgeActivity(
+                "notification.dev_injected",
+                reached
+                    ? $"Fired {key}, which is not enabled. Nothing should appear in the headset; "
+                      + "an \"Ignored an unsubscribed Streamer.bot event\" line below is the pass."
+                    : $"Could not fire {key} - the Streamer.bot event feed is not running.",
+                reached ? BridgeLogLevel.Info : BridgeLogLevel.Warning));
+    }
+
+    /// <summary>
+    /// Sends one synthetic event through the live stream's own dispatch.
+    /// <para>
+    /// <b>These fields are invented, not observed.</b> No real Streamer.bot
+    /// event payload has been captured, so this stands in with the field
+    /// names the generic default template looks for - enough to prove the
+    /// wiring and to exercise a template, but not evidence of what any real
+    /// event carries. The payload is marked <c>synthetic</c> so it is
+    /// unmistakable in the activity log beside a real one, and every event
+    /// that arrives now logs its whole payload
+    /// (<c>streamerbot.event_payload</c>), which is how the real field names
+    /// get established - fire the event from Streamer.bot's own Test button
+    /// and read them off.
+    /// </para>
+    /// </summary>
+    private bool TryFireSyntheticEvent(string key, bool isTest)
+    {
+        var stream = _eventStream;
+        if (stream is null)
+        {
+            return false;
+        }
+
+        var separator = key.IndexOf('.');
+        if (separator <= 0 || separator == key.Length - 1)
+        {
+            return false;
+        }
+
+        using var data = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(
+                new
+                {
+                    isTest,
+                    synthetic = true,
+                    // Shaped after the payloads Streamer.bot documents rather
+                    // than invented now: Twitch.Sub keeps its actor under
+                    // "user" as {id, login, name, type}, Twitch.Follow under
+                    // "targetUser", and duration_months/sub_tier really do sit
+                    // in snake_case beside camelCase systemMessage. Still a
+                    // stand-in, but one shaped like the real thing.
+                    user = new { id = "0", login = "testviewer", name = "TestViewer", type = "" },
+                    targetUser = new { id = "0", login = "testviewer", name = "TestViewer", type = "" },
+                    systemMessage = "TestViewer subscribed at Tier 1. They've subscribed for 3 months!",
+                    duration_months = 3,
+                    sub_tier = "1000"
+                }));
+        stream.InjectSyntheticEvent(key[..separator], key[(separator + 1)..], data.RootElement);
+        return true;
+    }
+
     private void InjectDeveloperChatMessages(
         IReadOnlyList<StreamerBotEventPayload> messages,
         string description)
@@ -1495,10 +1758,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>The only settings the event feed is built from.</summary>
+    /// <param name="EnabledEventsKey">
+    /// A canonical, order-independent string built from §B2's "Source.Type"
+    /// selection - never the raw <see cref="IReadOnlyCollection{T}"/> itself.
+    /// A freshly-read <c>UserSettings.EnabledEvents</c> is a new list instance
+    /// on every save even when its contents are unchanged, exactly the same
+    /// hazard already documented on <c>UserSettings.Shortcuts</c> - a record
+    /// holding the collection directly would see every save as "something
+    /// changed" and reconnect the feed needlessly.
+    /// </param>
+    /// <param name="EventTemplatesKey">Same reasoning as <paramref name="EnabledEventsKey"/>, for the per-event template overrides.</param>
     private sealed record EventStreamSettings(
         bool Enabled,
         string Address,
-        string Password);
+        string Password,
+        string EnabledEventsKey,
+        string EventTemplatesKey,
+        bool ShowTestEvents);
 
     private const int ShowWindowNormal = 1;
 

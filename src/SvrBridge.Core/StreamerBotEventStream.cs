@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Net.WebSockets;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -22,6 +23,124 @@ public enum StreamerBotStreamState
 public sealed record StreamerBotEvent(
     DateTimeOffset ReceivedAt,
     StreamerBotEventPayload Payload);
+
+/// <summary>
+/// How directly-subscribed Streamer.bot events (everything beyond
+/// <c>General.Custom</c>/<c>Twitch.ChatMessage</c>) become notifications -
+/// per §B2 of the Phase 7 plan.
+/// <para>
+/// Opt-in, not "subscribe to everything": a live headset session tried the
+/// broader design first, and it does not hold up. Streamer.bot's own
+/// documentation and API expose <b>no</b> way to ask which events currently
+/// have an enabled trigger, and confirmed live: disabling every event in
+/// Streamer.bot's own Settings > Events panel did not stop this app
+/// receiving them. There is no server-side signal this app can rely on to
+/// avoid noise (OBS scene changes and other non-alert plumbing came through
+/// indistinguishable from real alerts), so the selection has to live here,
+/// client-side - defaulting to nothing enabled, exactly today's behaviour
+/// for a settings file predating this feature.
+/// </para>
+/// </summary>
+/// <param name="EnabledEvents">
+/// "Source.Type" keys (<see cref="StreamerBotEventDescriptor.Key"/>) the
+/// wearer has explicitly turned on. Never includes <c>General.Custom</c> or
+/// <c>Twitch.ChatMessage</c> - those two are subscribed unconditionally and
+/// have nothing to do with this list.
+/// </param>
+/// <param name="Templates">Per-event template override, keyed the same way. An event with no entry here uses <see cref="DefaultTemplate"/>.</param>
+/// <param name="DefaultTemplate">Resolved against an enabled event with no entry in <see cref="Templates"/>.</param>
+/// <param name="ShowTestEvents">
+/// Whether an event whose <c>data.isTest</c> is <c>true</c> still produces a
+/// notification. Defaults to showing them, per §B2: a wearer firing a test
+/// from Streamer.bot wants to see the result.
+/// </param>
+public sealed record NotificationEventSettings(
+    IReadOnlyCollection<string> EnabledEvents,
+    IReadOnlyDictionary<string, string> Templates,
+    string DefaultTemplate,
+    bool ShowTestEvents)
+{
+    /// <summary>
+    /// What an enabled event says when the wearer has not written wording of
+    /// their own. Names an actor if the payload carries one under any of the
+    /// usual field names, and always names the event readably.
+    /// <para>
+    /// The alternatives are why this can be one string rather than a table of
+    /// which event uses which field: a follow, a raid and a prediction name
+    /// their subject differently, and the first field actually present wins.
+    /// These are ordinary payload field names, not platform or event names -
+    /// an event carrying none of them still renders through the
+    /// <c>"Someone"</c> literal rather than leaving a gap.
+    /// </para>
+    /// <para>
+    /// <b>Field naming is genuinely mixed, so the chain covers both
+    /// conventions.</b> Streamer.bot <em>does</em> document event payloads
+    /// (docs.streamer.bot/api/websocket/events/…), unlike <c>GetEvents</c>
+    /// itself, and they disagree with each other: <c>Twitch.Sub</c> carries
+    /// <c>messageId</c>, <c>systemMessage</c> and <c>createdAt</c> alongside
+    /// <c>sub_tier</c>, <c>is_prime</c> and <c>duration_months</c> in the same
+    /// object. A live <c>Twitch.PredictionCreated</c> captured on 2026-07-31
+    /// was snake_case throughout (<c>locks_at</c>, <c>started_at</c>,
+    /// <c>channel_points</c>) - there Streamer.bot had flattened Twitch's
+    /// EventSub <c>payload.event</c> straight into <c>data</c>, keeping
+    /// Twitch's own naming. Betting on either convention would be wrong for
+    /// half the catalog.
+    /// </para>
+    /// <para>
+    /// The actor lives under a different key per event, which is exactly what
+    /// alternatives are for: <c>Twitch.Sub</c> and <c>GiftSub</c> use
+    /// <c>user</c>, <c>Twitch.Follow</c> uses <c>targetUser</c>, and both are
+    /// objects shaped <c>{id, login, name, type}</c>.
+    /// </para>
+    /// <para>
+    /// That captured prediction carried <b>no actor at all</b> - a prediction
+    /// is a channel-wide event, not a viewer's action - which is why
+    /// <c>title</c> sits near the end: for predictions, polls and stream
+    /// updates it is the only human-meaningful field present.
+    /// </para>
+    /// </summary>
+    public const string GenericDefaultTemplate =
+        "{user.name|user.display|userName|displayName|targetUser.name|targetUser.display"
+        + "|recipient.name|user_name|user_login|from_broadcaster_user_name|broadcaster_user_name"
+        + "|from|fromName|sender|title|\"Someone\"} — {eventName}";
+
+    /// <summary>
+    /// The field Twitch already fills with a written-out sentence - "Viper
+    /// subscribed at Tier 1. They've subscribed for 3 months!" - which is
+    /// better wording than this app can assemble from parts, and is exactly
+    /// what a wearer expects an alert to say.
+    /// <para>
+    /// Preferred over <see cref="GenericDefaultTemplate"/> whenever it is
+    /// present and the wearer has not written their own template. Documented
+    /// on <c>Twitch.Sub</c>, <c>ReSub</c> and <c>GiftSub</c> among others;
+    /// absent from <c>Twitch.Follow</c> and from channel-wide events, which
+    /// fall through to the generic form. One generic field name and one rule,
+    /// not a table of which event says what.
+    /// </para>
+    /// </summary>
+    public const string SystemMessageField = "systemMessage";
+
+    /// <summary>
+    /// Where an event keeps whatever the viewer actually typed alongside it -
+    /// the note on a cheer, the message with a donation.
+    /// <para>
+    /// Drawn under the headline rather than folded into it, because it is
+    /// somebody's own words and deserves its own line. <c>Twitch.Cheer</c>
+    /// documents it as <c>text</c> (beside <c>bits</c>); tip and donation
+    /// integrations more often use <c>message</c>, and a few use
+    /// <c>comment</c> - so all three are tried, in that order, and an event
+    /// carrying none of them simply has no second line.
+    /// </para>
+    /// </summary>
+    public const string MessageTemplate = "{text|message|comment}";
+
+    /// <summary>No extra events enabled - exactly today's behaviour, for a caller that has not opted into any.</summary>
+    public static readonly NotificationEventSettings None = new(
+        [],
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+        GenericDefaultTemplate,
+        true);
+}
 
 /// <summary>
 /// The long-lived half of the Streamer.bot connection: it subscribes to
@@ -67,6 +186,7 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
     private const int EventCapacity = 256;
 
     private readonly StreamerBotConfig _config;
+    private readonly NotificationEventSettings _notificationEvents;
     private readonly Action<BridgeActivity> _log;
     private readonly Channel<StreamerBotEvent> _events =
         Channel.CreateBounded<StreamerBotEvent>(
@@ -90,10 +210,28 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
     private volatile StreamerBotStreamState _state = StreamerBotStreamState.Stopped;
     private bool _disposed;
 
-    public StreamerBotEventStream(StreamerBotConfig config, Action<BridgeActivity>? log = null)
+    public StreamerBotEventStream(
+        StreamerBotConfig config,
+        Action<BridgeActivity>? log = null,
+        NotificationEventSettings? notificationEvents = null)
     {
         _config = config;
+        _notificationEvents = notificationEvents ?? NotificationEventSettings.None;
         _log = log ?? (activity => Console.WriteLine(activity.Message));
+    }
+
+    /// <summary>
+    /// Asks the connected Streamer.bot instance what it can emit, for the
+    /// Notifications tab's toggle list - see <see cref="StreamerBotEventCatalog"/>.
+    /// Callers must treat a thrown exception the same way §B2 requires: fall
+    /// back to whatever selection is already saved rather than taking the
+    /// feed down.
+    /// </summary>
+    public async Task<IReadOnlyList<StreamerBotEventDescriptor>> GetEventsAsync(
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendRequestAsync("GetEvents", cancellationToken);
+        return StreamerBotEventCatalog.Parse(response.RootElement);
     }
 
     /// <summary>Payloads in arrival order. Completes when the stream is disposed.</summary>
@@ -251,6 +389,14 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         var reader = ReadLoopAsync(socket, connection.Token);
         try
         {
+            // The catalog is fetched for the desktop picker's search, not to
+            // decide what to subscribe to - see BuildSubscribeEvents, which
+            // works purely from what the wearer enabled. A GetEvents failure
+            // must not take down the feed, and now also must not quietly turn
+            // the wearer's alerts off, so a failure here costs an empty
+            // search list and nothing else.
+            var catalog = await TryFetchEventCatalogAsync(socket, connection.Token);
+
             // The acknowledgement carries nothing worth keeping, and holding it
             // would pin its pooled buffers for the life of the connection.
             (await SendRequestAsync(
@@ -258,19 +404,7 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
                 "Subscribe",
                 new Dictionary<string, object>
                 {
-                    ["events"] = new Dictionary<string, string[]>
-                    {
-                        // General.Custom stays the escape hatch for
-                        // SB-side-filtered alerts and notifications - see
-                        // NotificationOverlay - and Twitch.ChatMessage is the
-                        // direct route added per §B6 so chat works with no
-                        // relay action required. Streamer.bot still owns the
-                        // entire platform integration either way: this event
-                        // is the parsed output of its own Twitch connection,
-                        // not anything raw from Twitch itself.
-                        ["General"] = ["Custom"],
-                        ["Twitch"] = ["ChatMessage"]
-                    }
+                    ["events"] = BuildSubscribeEvents(catalog)
                 },
                 connection.Token)).Dispose();
 
@@ -535,6 +669,42 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Feeds one synthetic Streamer.bot broadcast through the exact dispatch
+    /// a real one takes, for the developer notification test harness.
+    /// <para>
+    /// The point is what it does <b>not</b> bypass. Testing whether an alert
+    /// works otherwise needs a real viewer to subscribe or follow at the
+    /// moment you happen to be wearing the headset, which is not a thing
+    /// anyone can arrange on demand - so the alternative was showing a
+    /// notification directly, which proves only that the overlay works and
+    /// is exactly the check that already passes. This goes in one layer
+    /// earlier, so the enabled-events filter, the test-event suppression, the
+    /// template resolution and the payload precedence rules are all the real
+    /// ones. An event the wearer never enabled produces nothing here for the
+    /// same reason it produces nothing in production.
+    /// </para>
+    /// <para>
+    /// <paramref name="data"/> is whatever the caller wants to stand in for
+    /// the platform's payload; a template referring to a field it does not
+    /// carry resolves that field to empty text, exactly as a real malformed
+    /// payload would.
+    /// </para>
+    /// </summary>
+    public void InjectSyntheticEvent(string source, string type, JsonElement data)
+    {
+        using var frame = JsonDocument.Parse(
+            JsonSerializer.Serialize(
+                new
+                {
+                    // The same envelope PublishEvent reads off the wire, so
+                    // this cannot drift into testing a different shape.
+                    e = new { source, type },
+                    data
+                }));
+        PublishEvent(frame.RootElement, frame.RootElement.GetProperty("e"));
+    }
+
     private void PublishEvent(JsonElement root, JsonElement source)
     {
         var eventSource = source.TryGetProperty("source", out var sourceName)
@@ -557,7 +727,9 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         // General.Custom carries a hand-authored payload already in this
         // app's own shape; Twitch.ChatMessage carries Streamer.bot's parsed
         // Twitch event and needs the platform-specific mapper. Anything else
-        // means Streamer.bot sent something this app never subscribed to.
+        // means Streamer.bot sent something this app never subscribed to -
+        // see BuildSubscribeEvents, which only ever asks for
+        // NotificationEventSettings.EnabledEvents beyond those two.
         bool mapped;
         StreamerBotEventPayload? payload;
         string rejection;
@@ -570,6 +742,14 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
             && eventType.Equals("ChatMessage", StringComparison.OrdinalIgnoreCase))
         {
             mapped = TwitchChatMessageMapper.TryMap(data, out payload, out rejection);
+        }
+        else if (IsEnabledNotificationEvent(eventSource, eventType))
+        {
+            // Direct subscription per §B2: no Streamer.bot-side authoring at
+            // all, unlike General.Custom above. The template resolver is
+            // deliberately generic rather than a mapper per event type - see
+            // StreamerBotEventTemplate.
+            mapped = TryBuildNotificationPayload(eventSource, eventType, data, out payload, out rejection);
         }
         else
         {
@@ -593,6 +773,227 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
 
         _events.Writer.TryWrite(new StreamerBotEvent(DateTimeOffset.Now, payload!));
     }
+
+    /// <summary>
+    /// Asks Streamer.bot what it can emit, right after authenticating and
+    /// before subscribing - purely to populate the Notifications tab's
+    /// search-to-add picker. Deliberately <b>not</b> used to validate
+    /// <see cref="NotificationEventSettings.EnabledEvents"/> against what
+    /// still exists: see <see cref="BuildSubscribeEvents"/>. A fetch failure
+    /// here must not take down the feed, so it falls back to an empty catalog
+    /// and the connection still succeeds with the wearer's own selection
+    /// intact.
+    /// </summary>
+    private async Task<IReadOnlyList<StreamerBotEventDescriptor>> TryFetchEventCatalogAsync(
+        ClientWebSocket socket,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await SendRequestAsync(socket, "GetEvents", null, cancellationToken);
+            return StreamerBotEventCatalog.Parse(response.RootElement);
+        }
+        catch (Exception exception)
+        {
+            _log(
+                new BridgeActivity(
+                    "streamerbot.events_catalog_failed",
+                    $"Could not load the Streamer.bot event list at connect: {exception.Message}. "
+                    + "Falling back to General.Custom and Twitch.ChatMessage only.",
+                    BridgeLogLevel.Warning));
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// The <c>events</c> argument for the <c>Subscribe</c> request: the two
+    /// this app always wants, plus whichever of <paramref name="catalog"/>'s
+    /// events §B2's toggles enabled.
+    /// <para>
+    /// Deliberately <b>not</b> "subscribe to everything <paramref name="catalog"/>
+    /// reports" - that was tried and rejected live. Streamer.bot exposes no
+    /// way to ask which events currently have an enabled trigger (confirmed:
+    /// disabling every event in its own Settings > Events panel did not stop
+    /// this app receiving them), so a broad subscription pulls in non-alert
+    /// plumbing - OBS scene changes and the like - indistinguishable from a
+    /// real alert. Filtering has to live here, client-side.
+    /// </para>
+    /// <para>
+    /// General.Custom stays the escape hatch for SB-side-filtered alerts and
+    /// notifications - see NotificationOverlay - and Twitch.ChatMessage is
+    /// the direct route added per §B6 so chat works with no relay action
+    /// required; Streamer.bot still owns the entire platform integration
+    /// either way, since this is the parsed output of its own connection,
+    /// not anything raw from the platform itself.
+    /// </para>
+    /// <para>
+    /// Built from the enabled keys alone, with <paramref name="catalog"/>
+    /// used only to log a mismatch. Cross-checking against the catalog and
+    /// dropping anything missing from it looks like tidiness and is actually
+    /// a silent failure mode: <c>GetEvents</c> reports what the connected
+    /// instance's integrations currently expose, so a fetch that failed or
+    /// came back while an integration was reloading would unsubscribe the
+    /// wearer's alerts with nothing on screen to explain why they stopped.
+    /// An event name Streamer.bot does not recognise costs nothing - it is a
+    /// key in a Subscribe argument that never fires - which is a far cheaper
+    /// wrong answer than the alternative.
+    /// </para>
+    /// </summary>
+    private Dictionary<string, string[]> BuildSubscribeEvents(IReadOnlyList<StreamerBotEventDescriptor> catalog)
+    {
+        var bySource = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["General"] = ["Custom"],
+            ["Twitch"] = ["ChatMessage"]
+        };
+
+        var unreported = new List<string>();
+        foreach (var key in _notificationEvents.EnabledEvents)
+        {
+            var separator = (key ?? "").IndexOf('.');
+            if (separator <= 0 || separator == key!.Length - 1)
+            {
+                continue;
+            }
+
+            var source = key[..separator];
+            var type = key[(separator + 1)..];
+            if (!bySource.TryGetValue(source, out var types))
+            {
+                types = [];
+                bySource[source] = types;
+            }
+
+            if (!types.Contains(type, StringComparer.OrdinalIgnoreCase))
+            {
+                types.Add(type);
+            }
+
+            if (catalog.Count > 0
+                && !catalog.Any(descriptor =>
+                    string.Equals(descriptor.Key, key, StringComparison.OrdinalIgnoreCase)))
+            {
+                unreported.Add(key);
+            }
+        }
+
+        if (unreported.Count > 0)
+        {
+            _log(
+                new BridgeActivity(
+                    "streamerbot.events_unreported",
+                    "Still subscribing to alerts this Streamer.bot instance did not list: "
+                    + $"{string.Join(", ", unreported)}. They will simply never fire if it "
+                    + "genuinely cannot emit them.",
+                    BridgeLogLevel.Debug));
+        }
+
+        return bySource.ToDictionary(
+            entry => entry.Key,
+            entry => entry.Value.ToArray(),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Whether §B2's toggles asked for this event - never true for the two subscribed unconditionally above.</summary>
+    private bool IsEnabledNotificationEvent(string source, string type) =>
+        _notificationEvents.EnabledEvents.Contains($"{source}.{type}", StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Builds a notification payload from a directly-subscribed event by
+    /// resolving its configured (or generic default) template against the
+    /// event's own <c>data</c> - see <see cref="StreamerBotEventTemplate"/>.
+    /// The only rejection case is a test-fired event the wearer has asked not
+    /// to see; a malformed or unexpected shape simply resolves its missing
+    /// pieces to empty text rather than failing, per the template resolver's
+    /// own contract.
+    /// </summary>
+    private bool TryBuildNotificationPayload(
+        string source,
+        string type,
+        JsonElement data,
+        out StreamerBotEventPayload? payload,
+        out string rejection)
+    {
+        payload = null;
+        var isTest = data.ValueKind == JsonValueKind.Object
+                     && data.TryGetProperty("isTest", out var testFlag)
+                     && testFlag.ValueKind == JsonValueKind.True;
+        if (isTest && !_notificationEvents.ShowTestEvents)
+        {
+            rejection = "a test-fired event was suppressed by settings";
+            return false;
+        }
+
+        var eventLabel = $"{source}.{type}";
+        var custom = _notificationEvents.Templates.TryGetValue(eventLabel, out var configured)
+                     && !string.IsNullOrWhiteSpace(configured)
+            ? configured
+            : null;
+
+        // Twitch writes a whole sentence for some events already, and
+        // anything this app assembles from a name and an event label is worse
+        // wording than the platform's own. A wearer who has not asked for
+        // something specific gets that sentence verbatim - and verbatim is
+        // the point, so it is assigned rather than resolved: it is text
+        // somebody else wrote, and a stray brace in it is not a token.
+        var text = custom is null && TryReadSystemMessage(data) is { } systemMessage
+            ? systemMessage
+            : StreamerBotEventTemplate.Resolve(
+                custom ?? _notificationEvents.DefaultTemplate,
+                data,
+                source,
+                type);
+
+        // The whole payload, verbatim, at Debug. Which fields an event
+        // actually carries is the one thing needed to write good wording for
+        // it, and it is not documented anywhere - the same gap GetEvents had
+        // until one response was captured. Recording it here means a wearer
+        // can fire Streamer.bot's own Test button for an event and read the
+        // exact field names out of the log, rather than this app shipping a
+        // guessed table of them.
+        _log(
+            new BridgeActivity(
+                "streamerbot.event_payload",
+                $"{eventLabel} payload: {data.GetRawText()}",
+                BridgeLogLevel.Debug));
+
+        // The viewer's own words, when they left any, go on their own line
+        // under the headline rather than being folded into it - a cheer's
+        // note and a donation's message are the part worth reading. A custom
+        // template is left alone: someone who wrote their own wording has
+        // already said what they want shown, and appending to it would
+        // override that.
+        var message = custom is null
+            ? StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.MessageTemplate, data, source, type)
+            : "";
+
+        payload = new StreamerBotEventPayload
+        {
+            Target = StreamerBotEventTarget.Notification,
+            Source = source,
+            Title = text,
+            Text = message
+        };
+        rejection = "";
+        return true;
+    }
+
+    /// <summary>
+    /// The platform's own written-out sentence for this event, or null when
+    /// it did not send one - see
+    /// <see cref="NotificationEventSettings.SystemMessageField"/>. Whitespace
+    /// counts as absent: an empty string is a field that exists and says
+    /// nothing, which must fall through to the generic wording rather than
+    /// producing a blank notification.
+    /// </summary>
+    private static string? TryReadSystemMessage(JsonElement data) =>
+        data.ValueKind == JsonValueKind.Object
+        && data.TryGetProperty(NotificationEventSettings.SystemMessageField, out var message)
+        && message.ValueKind == JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(message.GetString())
+            ? message.GetString()
+            : null;
 
     private void FailPendingRequests(Exception reason)
     {

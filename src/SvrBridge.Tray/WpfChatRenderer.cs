@@ -36,6 +36,24 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     private static readonly WpfColor BodyColor = WpfColor.FromRgb(225, 230, 240);
     private static readonly WpfColor EmoteColor = WpfColor.FromRgb(190, 140, 255);
 
+    // Faint enough at rest that the handle does not compete with the text on a
+    // window that is mostly read rather than moved, and unmistakable once the
+    // laser is on it - the hover fill is the blue the VR dashboard already
+    // uses for "this is the control you are about to activate".
+    private static readonly WpfColor HandleColor = WpfColor.FromArgb(90, 148, 163, 184);
+    private static readonly WpfColor HandleHoverColor = WpfColor.FromArgb(235, 59, 130, 246);
+    private static readonly WpfColor HandleGlyphColor = WpfColor.FromArgb(220, 235, 240, 250);
+
+    /// <summary>
+    /// A four-way arrow in a 24x24 box, scaled to whatever
+    /// <see cref="ChatOverlayLayout"/> says the handle is. The universal
+    /// "grab this to move it" icon, and the one OVRdrop uses - the interaction
+    /// this phase was modelled on.
+    /// </summary>
+    private const string MoveHandleGlyph =
+        "M12,2 L16,6 L13,6 L13,11 L18,11 L18,8 L22,12 L18,16 L18,13 L13,13 L13,18 L16,18 "
+        + "L12,22 L8,18 L11,18 L11,13 L6,13 L6,16 L2,12 L6,8 L6,11 L11,11 L11,6 L8,6 Z";
+
     private readonly WpfRenderThread _renderThread;
     private readonly ChatImageCache? _chatImages;
     private bool _disposed;
@@ -73,6 +91,20 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     /// </summary>
     internal static Border BuildPanel(ChatContent content, ChatImageCache? chatImages = null)
     {
+        // The padding moved off the outer Border and onto the text's own so
+        // the grid below shares the panel's coordinate space exactly. Controls
+        // are positioned from ChatOverlayLayout, whose rectangles are in the
+        // same panel pixels SteamVR reports mouse events in; an inset origin
+        // would put every hit rectangle 20 px away from what was drawn.
+        var grid = new Grid { Width = PanelWidth, Height = PanelHeight };
+        grid.Children.Add(
+            new Border
+            {
+                Padding = new Thickness(Padding),
+                Child = BuildTextBlock(content.Messages, chatImages)
+            });
+        grid.Children.Add(BuildControl(ChatOverlayLayout.MoveHandleIndex, content.HoveredButtonIndex));
+
         return new Border
         {
             Width = PanelWidth,
@@ -84,8 +116,35 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             // the top - the oldest messages - leaving the newest visible,
             // which is what "newest at the bottom" in §B3 requires.
             ClipToBounds = true,
-            Padding = new Thickness(Padding),
-            Child = BuildTextBlock(content.Messages, chatImages)
+            Child = grid
+        };
+    }
+
+    /// <summary>
+    /// Draws one entry of <see cref="ChatOverlayLayout.Buttons"/> at exactly
+    /// the rectangle the hit test will use for it - the structural rule this
+    /// panel exists to keep. The highlight is keyed on the hovered index and
+    /// nothing else, so it can never light up a control the laser would miss.
+    /// </summary>
+    private static UIElement BuildControl(int index, int hoveredIndex)
+    {
+        var bounds = ChatOverlayLayout.Buttons[index];
+        return new Border
+        {
+            Width = bounds.Width,
+            Height = bounds.Height,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(bounds.Left, bounds.Top, 0, 0),
+            CornerRadius = new CornerRadius(12),
+            Background = new SolidColorBrush(index == hoveredIndex ? HandleHoverColor : HandleColor),
+            Padding = new Thickness(bounds.Width * 0.2),
+            Child = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse(MoveHandleGlyph),
+                Fill = new SolidColorBrush(HandleGlyphColor),
+                Stretch = Stretch.Uniform
+            }
         };
     }
 

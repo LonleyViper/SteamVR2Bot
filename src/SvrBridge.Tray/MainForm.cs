@@ -1,3 +1,4 @@
+using System.Globalization;
 using SvrBridge.Core;
 
 namespace SvrBridge.Tray;
@@ -24,8 +25,46 @@ internal sealed class MainForm : Form
     private readonly TrackBar _chatOpacity = new();
     private readonly TrackBar _chatSizeScale = new();
     private readonly ComboBox _gazeSensitivity = new();
+    private readonly CheckBox _chatGazeScale = new();
     private readonly TrackBar _notificationOpacity = new();
     private readonly TrackBar _notificationSizeScale = new();
+
+    // §B3/§B4/§B5 of the Phase 7 plan - notification appearance.
+    private readonly TextBox _notificationBackgroundColour = new();
+    private readonly TextBox _notificationTextColour = new();
+    private readonly TextBox _notificationAccentColour = new();
+    private readonly Button _pickBackgroundColour = new();
+    private readonly Button _pickTextColour = new();
+    private readonly Button _pickAccentColour = new();
+    private readonly NumericUpDown _notificationDurationSeconds = new();
+    private readonly ComboBox _notificationTransition = new();
+    private readonly ComboBox _notificationSlideEdge = new();
+    private readonly TextBox _notificationTemplatePath = new();
+    private readonly Button _browseTemplatePath = new();
+    private readonly Button _clearTemplatePath = new();
+    private readonly TrackBar _notificationBackgroundOpacity = new();
+    private readonly NumericUpDown _notificationCornerRadius = new();
+    private readonly NumericUpDown _notificationPanelWidth = new();
+    private readonly NumericUpDown _notificationPanelHeight = new();
+
+    // §B2 - direct event subscription. Opt-in, not "subscribe to
+    // everything": Streamer.bot exposes no way to ask which events currently
+    // have an enabled trigger (confirmed live - disabling every event in its
+    // own Settings > Events panel did not stop this app receiving them), so
+    // a broader default pulled in non-alert plumbing (OBS scene changes and
+    // the like) indistinguishable from a real alert.
+    //
+    // The picker itself is NotificationEventPicker, which owns the enabled
+    // set and the search. Two earlier versions that listed every available
+    // event instead were both rejected live; see that type's own remarks for
+    // why the list is inverted rather than merely tidied up.
+    private readonly NotificationEventPicker _eventPicker = new();
+    private readonly ComboBox _templateEventPicker = new();
+    private readonly CheckBox _showTestEvents = new();
+    private readonly Button _editEventTemplate = new();
+    private readonly Dictionary<string, string> _eventTemplates =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly Button _add = new();
     private readonly Button _edit = new();
     private readonly Button _remove = new();
@@ -38,12 +77,29 @@ internal sealed class MainForm : Form
     private readonly TextBox _activity = new();
     private readonly List<ShortcutConfig> _shortcutItems = [];
     private IReadOnlyList<StreamerBotAction> _actions = [];
+
+    /// <summary>
+    /// Carried through untouched by <see cref="ReadSettings"/>, which builds a
+    /// whole <see cref="UserSettings"/> from the form's controls - so a
+    /// setting with no control here would be silently reset to its default by
+    /// the next desktop save. The chat window's placement has no desktop
+    /// control by design: it is chosen by dragging the window in the headset,
+    /// and the reset back to the proven default lives on the VR settings page
+    /// beside it, where a wearer who has put it somewhere unreachable can
+    /// actually get at it.
+    /// </summary>
+    private OverlayPlacement _chatPlacement = OverlayPlacement.Default;
+
+    /// <summary>The notification panel's hand-placed offset - see <see cref="_chatPlacement"/>'s own remarks; the same reasoning applies since §B1 of the Phase 7 plan.</summary>
+    private OverlayPlacement _notificationPlacement = OverlayPlacement.Default;
+
     private bool _allowClose;
     private bool _applyingSettings;
 
     public event Action? SettingsChanged;
     public event Action<ShortcutConfig>? TestRequested;
     public event Action? FindActionsRequested;
+    public event Action? NotificationEventsRefreshRequested;
     public event Action? SteamVrSetupRequested;
     public event Action? BindingsRequested;
     public event Action? DashboardRequested;
@@ -90,13 +146,30 @@ internal sealed class MainForm : Form
             ChatEnabled = _chat.Checked,
             ChatAnchorMode = SelectedAnchorMode(_chatAnchorMode),
             ChatAnchorHand = SelectedAnchorHand(_chatAnchorHand),
+            ChatPlacement = _chatPlacement,
             NotificationAnchorMode = SelectedAnchorMode(_notificationAnchorMode),
             NotificationAnchorHand = SelectedAnchorHand(_notificationAnchorHand),
             ChatOpacity = OpacityFromSlider(_chatOpacity),
             ChatSizeScale = SizeScaleFromSlider(_chatSizeScale),
             GazeSensitivity = (GazeSensitivity)Math.Clamp(_gazeSensitivity.SelectedIndex, 0, 2),
+            ChatGazeScaleEnabled = _chatGazeScale.Checked,
             NotificationOpacity = OpacityFromSlider(_notificationOpacity),
-            NotificationSizeScale = SizeScaleFromSlider(_notificationSizeScale)
+            NotificationSizeScale = SizeScaleFromSlider(_notificationSizeScale),
+            NotificationPlacement = _notificationPlacement,
+            NotificationBackgroundColour = _notificationBackgroundColour.Text.Trim(),
+            NotificationTextColour = _notificationTextColour.Text.Trim(),
+            NotificationAccentColour = _notificationAccentColour.Text.Trim(),
+            NotificationDefaultDurationMs = (int)(_notificationDurationSeconds.Value * 1000),
+            NotificationTransitionKind = (NotificationTransition)Math.Max(0, _notificationTransition.SelectedIndex),
+            NotificationSlideEdge = (NotificationSlideEdge)Math.Max(0, _notificationSlideEdge.SelectedIndex),
+            NotificationTemplatePath = _notificationTemplatePath.Text.Trim(),
+            NotificationBackgroundOpacity = _notificationBackgroundOpacity.Value / 100.0,
+            NotificationCornerRadiusPixels = (double)_notificationCornerRadius.Value,
+            NotificationPanelWidth = (int)_notificationPanelWidth.Value,
+            NotificationPanelHeight = (int)_notificationPanelHeight.Value,
+            EnabledEvents = _eventPicker.EnabledKeys,
+            EventTemplates = new Dictionary<string, string>(_eventTemplates, StringComparer.OrdinalIgnoreCase),
+            ShowTestEvents = _showTestEvents.Checked
         };
     }
 
@@ -138,13 +211,52 @@ internal sealed class MainForm : Form
             _chat.Checked = settings.ChatEnabled;
             ApplyAnchorMode(_chatAnchorMode, settings.ChatAnchorMode);
             ApplyAnchorHand(_chatAnchorHand, settings.ChatAnchorHand);
+            _chatPlacement = settings.ChatPlacement;
             ApplyAnchorMode(_notificationAnchorMode, settings.NotificationAnchorMode);
             ApplyAnchorHand(_notificationAnchorHand, settings.NotificationAnchorHand);
             ApplyOpacityToSlider(_chatOpacity, settings.ChatOpacity);
             ApplySizeScaleToSlider(_chatSizeScale, settings.ChatSizeScale);
             _gazeSensitivity.SelectedIndex = (int)settings.GazeSensitivity;
+            _chatGazeScale.Checked = settings.ChatGazeScaleEnabled;
             ApplyOpacityToSlider(_notificationOpacity, settings.NotificationOpacity);
             ApplySizeScaleToSlider(_notificationSizeScale, settings.NotificationSizeScale);
+            _notificationPlacement = settings.NotificationPlacement;
+            _notificationBackgroundColour.Text = settings.NotificationBackgroundColour;
+            _notificationTextColour.Text = settings.NotificationTextColour;
+            _notificationAccentColour.Text = settings.NotificationAccentColour;
+            _notificationDurationSeconds.Value = Math.Clamp(
+                settings.NotificationDefaultDurationMs / 1000m,
+                _notificationDurationSeconds.Minimum,
+                _notificationDurationSeconds.Maximum);
+            _notificationTransition.SelectedIndex = (int)settings.NotificationTransitionKind;
+            _notificationSlideEdge.SelectedIndex = (int)settings.NotificationSlideEdge;
+            RefreshSlideEdgeEnabled();
+            _notificationTemplatePath.Text = settings.NotificationTemplatePath;
+            _notificationBackgroundOpacity.Value = (int)Math.Round(
+                Math.Clamp(settings.NotificationBackgroundOpacity, 0, 1) * 100);
+            _notificationCornerRadius.Value = (decimal)Math.Clamp(
+                settings.NotificationCornerRadiusPixels,
+                (double)_notificationCornerRadius.Minimum,
+                (double)_notificationCornerRadius.Maximum);
+            // Through the appearance record's Safe* properties, so a settings
+            // file written before the panel size existed shows the proven
+            // default here rather than the zero it deserialised to.
+            _notificationPanelWidth.Value = Math.Clamp(
+                settings.NotificationAppearance.SafePanelWidth,
+                _notificationPanelWidth.Minimum,
+                _notificationPanelWidth.Maximum);
+            _notificationPanelHeight.Value = Math.Clamp(
+                settings.NotificationAppearance.SafePanelHeight,
+                _notificationPanelHeight.Minimum,
+                _notificationPanelHeight.Maximum);
+            _showTestEvents.Checked = settings.ShowTestEvents;
+            _eventPicker.SetEnabledKeys(settings.EnabledEvents);
+            _eventTemplates.Clear();
+            foreach (var (key, value) in settings.EventTemplates)
+            {
+                _eventTemplates[key] = value;
+            }
+
             _shortcutItems.Clear();
             _shortcutItems.AddRange(settings.GetShortcuts());
             RefreshShortcutGrid();
@@ -273,6 +385,80 @@ internal sealed class MainForm : Form
         }
 
         _actions = actions;
+    }
+
+    /// <summary>
+    /// Hands a live <c>GetEvents</c> response to the Notifications section's
+    /// picker and to the per-event template dropdown - §B2 of the Phase 7
+    /// plan. Never hardcoded: every entry comes from what the connected
+    /// Streamer.bot instance itself reported.
+    /// <para>
+    /// This can arrive well after <see cref="ApplySettings"/> has already run,
+    /// so it deliberately only supplies the searchable catalog. The enabled
+    /// set belongs to <see cref="NotificationEventPicker"/> and is not
+    /// reconciled against the response - an event this instance no longer
+    /// reports stays enabled, since it is far more likely to be a failed
+    /// fetch or a momentarily unavailable integration than a decision the
+    /// user made.
+    /// </para>
+    /// </summary>
+    public void ShowNotificationEvents(IReadOnlyList<StreamerBotEventDescriptor> events)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => ShowNotificationEvents(events));
+            return;
+        }
+
+        _eventPicker.SetCatalog(events);
+
+        _templateEventPicker.Items.Clear();
+        foreach (var descriptor in events
+                     .OrderBy(entry => entry.Source, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(entry => entry.Type, StringComparer.OrdinalIgnoreCase))
+        {
+            _templateEventPicker.Items.Add(descriptor);
+        }
+    }
+
+    private void RefreshSlideEdgeEnabled() =>
+        _notificationSlideEdge.Enabled =
+            (NotificationTransition)Math.Max(0, _notificationTransition.SelectedIndex)
+            == NotificationTransition.Slide;
+
+    /// <summary>Opens a colour picker seeded with <paramref name="target"/>'s current value, writing the chosen colour back as "#RRGGBB".</summary>
+    private void PickColour(TextBox target)
+    {
+        using var dialog = new ColorDialog();
+        if (TryParseHexColour(target.Text) is { } current)
+        {
+            dialog.Color = current;
+        }
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        target.Text = $"#{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}";
+        NotifySettingsChanged();
+    }
+
+    private static Color? TryParseHexColour(string hex)
+    {
+        var trimmed = hex.Trim();
+        if (trimmed.Length != 7
+            || trimmed[0] != '#'
+            || !int.TryParse(
+                trimmed.AsSpan(1),
+                NumberStyles.HexNumber,
+                CultureInfo.InvariantCulture,
+                out var value))
+        {
+            return null;
+        }
+
+        return Color.FromArgb((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF);
     }
 
     public void AllowCloseAndClose()
@@ -413,6 +599,19 @@ internal sealed class MainForm : Form
         return panel;
     }
 
+    // --- Settings page layout ---
+    // Every setting row puts its label in a column of this fixed width, so
+    // the controls beside them line up down the page. The previous layout
+    // gave each row its own AutoSize label, which meant the control after it
+    // started at a different x on every single row - three "Pick…" buttons in
+    // a column of three landed in three different places. A fixed column is
+    // the whole fix; nothing here is cleverer than that.
+    private const int LabelColumnWidth = 300;
+    private const int RowControlHeight = 26;
+
+    /// <summary>The page's own left edge for section bodies, so every section indents identically.</summary>
+    private const int SectionBodyIndent = 14;
+
     private Control CreateSettingsPage()
     {
         var panel = new FlowLayoutPanel
@@ -423,116 +622,233 @@ internal sealed class MainForm : Form
             AutoScroll = true,
             Padding = new Padding(14)
         };
-        panel.Controls.Add(FieldLabel("Streamer.bot WebSocket address"));
-        _address.Width = 620;
+
+        panel.Controls.Add(ConnectionSection());
+        panel.Controls.Add(NotificationsSection());
+        panel.Controls.Add(NotificationAppearanceSection());
+        panel.Controls.Add(NotificationEventsSection());
+        panel.Controls.Add(ChatSection());
+        panel.Controls.Add(ControllerSection());
+
+        panel.Controls.Add(new Label
+        {
+            Text = "SteamVR2Bot stays available in SteamVR and runs your shortcuts whenever this app "
+                   + "is open. Changes save automatically.",
+            AutoSize = true,
+            MaximumSize = new Size(650, 0),
+            ForeColor = MutedForeColour,
+            Margin = new Padding(0, 18, 0, 0)
+        });
+        return panel;
+    }
+
+    /// <summary>Where and how to reach Streamer.bot, and whether to listen to it at all.</summary>
+    private Control ConnectionSection()
+    {
+        _address.Width = 420;
         _address.PlaceholderText = "ws://127.0.0.1:8080/1";
-        panel.Controls.Add(_address);
-        panel.Controls.Add(FieldLabel("Password (only if Streamer.bot requires one)"));
-        _password.Width = 620;
+        _password.Width = 420;
         _password.UseSystemPasswordChar = true;
-        panel.Controls.Add(_password);
-        _showPassword.Text = "Show password";
+        _showPassword.Text = "Show";
+        _showPassword.AutoSize = true;
         _showPassword.CheckedChanged += (_, _) =>
             _password.UseSystemPasswordChar = !_showPassword.Checked;
-        panel.Controls.Add(_showPassword);
 
-        _eventStream.Text = "Listen for Streamer.bot chat and events (preview)";
+        _eventStream.Text = "Listen for Streamer.bot chat and events";
         _eventStream.AutoSize = true;
-        _eventStream.Margin = new Padding(0, 14, 0, 0);
         _eventStream.CheckedChanged += (_, _) => NotifySettingsChanged();
-        panel.Controls.Add(_eventStream);
-        panel.Controls.Add(new Label
-        {
-            Text = "Streamer.bot actions can broadcast messages to this app with the "
-                   + "“WebsocketBroadcastJson” sub-action. Turn this on to see them arrive "
-                   + "on the Activity tab.",
-            AutoSize = true,
-            MaximumSize = new Size(650, 0),
-            ForeColor = Color.FromArgb(92, 101, 112),
-            Margin = new Padding(20, 0, 0, 2)
-        });
         _eventStreamState.AutoSize = true;
-        _eventStreamState.ForeColor = Color.FromArgb(92, 101, 112);
-        _eventStreamState.Margin = new Padding(20, 0, 0, 6);
+        _eventStreamState.ForeColor = MutedForeColour;
         _eventStreamState.Text = "Not listening.";
-        panel.Controls.Add(_eventStreamState);
 
-        _notifications.Text = "Show notification broadcasts in the headset (preview)";
+        return Section(
+            "Streamer.bot connection",
+            "Everything below needs this connection. Streamer.bot actions can also broadcast "
+            + "straight to this app with the “WebsocketBroadcastJson” sub-action.",
+            SettingRow("WebSocket address:", _address),
+            SettingRow("Password (if required):", _password, _showPassword),
+            Indented(_eventStream),
+            Indented(_eventStreamState));
+    }
+
+    /// <summary>Whether headset notifications appear at all, and where.</summary>
+    private Control NotificationsSection()
+    {
+        _notifications.Text = "Show notifications in the headset";
         _notifications.AutoSize = true;
-        _notifications.Margin = new Padding(20, 6, 0, 0);
         _notifications.CheckedChanged += (_, _) => NotifySettingsChanged();
-        panel.Controls.Add(_notifications);
-        panel.Controls.Add(new Label
-        {
-            Text = "Payloads with “target”: “notification” draw a panel "
-                   + "in VR for a few seconds. Requires the event feed above to be turned on.",
-            AutoSize = true,
-            MaximumSize = new Size(650, 0),
-            ForeColor = Color.FromArgb(92, 101, 112),
-            Margin = new Padding(40, 0, 0, 6)
-        });
-        panel.Controls.Add(
-            AnchorRow("Anchor:", _notificationAnchorMode, _notificationAnchorHand));
-        panel.Controls.Add(SliderRow("Opacity:", _notificationOpacity));
-        panel.Controls.Add(SliderRow("Size:", _notificationSizeScale));
 
-        _chat.Text = "Show chat messages on your wrist (preview)";
+        return Section(
+            "Notifications",
+            "A panel appears in VR for a few seconds. Position it by hand from the VR "
+            + "dashboard's Notifications tab.",
+            Indented(_notifications),
+            AnchorRow("Anchor:", _notificationAnchorMode, _notificationAnchorHand),
+            SliderRow("Opacity:", _notificationOpacity),
+            SliderRow("Size:", _notificationSizeScale));
+    }
+
+    /// <summary>The wrist chat window and its gaze behaviour.</summary>
+    private Control ChatSection()
+    {
+        _chat.Text = "Show chat messages on your wrist";
         _chat.AutoSize = true;
-        _chat.Margin = new Padding(20, 6, 0, 0);
         _chat.CheckedChanged += (_, _) => NotifySettingsChanged();
-        panel.Controls.Add(_chat);
-        panel.Controls.Add(new Label
-        {
-            Text = "Your Twitch chat appears in a window that "
-                   + "grows and brightens when you look at it - no Streamer.bot action needed. "
-                   + "Payloads with “target”: “chat” from your own actions appear there too. "
-                   + "Requires the event feed above to be turned on.",
-            AutoSize = true,
-            MaximumSize = new Size(650, 0),
-            ForeColor = Color.FromArgb(92, 101, 112),
-            Margin = new Padding(40, 0, 0, 6)
-        });
-        panel.Controls.Add(AnchorRow("Anchor:", _chatAnchorMode, _chatAnchorHand));
-        panel.Controls.Add(SliderRow("Opacity:", _chatOpacity));
-        panel.Controls.Add(SliderRow("Size:", _chatSizeScale));
-        panel.Controls.Add(GazeSensitivityRow());
 
-        ConfigureButton(_findActions, "Refresh Streamer.bot actions", false);
-        _findActions.Click += (_, _) => FindActionsRequested?.Invoke();
-        panel.Controls.Add(_findActions);
-        panel.Controls.Add(new Label
-        {
-            Text = "Controller",
-            Font = new Font(Font, FontStyle.Bold),
-            AutoSize = true,
-            Margin = new Padding(0, 20, 0, 4)
-        });
+        _gazeSensitivity.DropDownStyle = ComboBoxStyle.DropDownList;
+        _gazeSensitivity.Items.AddRange(["Relaxed", "Normal", "Tight"]);
+        _gazeSensitivity.Width = 130;
+        _gazeSensitivity.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
+
+        // Off leaves the window at its configured size and opacity instead of
+        // growing it on gaze. Gaze is still measured either way - it is what
+        // decides whether the window accepts the laser pointer - so this is
+        // purely about whether the window changes size while you read it.
+        _chatGazeScale.Text = "Grow and brighten the window when you look at it";
+        _chatGazeScale.AutoSize = true;
+        _chatGazeScale.CheckedChanged += (_, _) => NotifySettingsChanged();
+
+        return Section(
+            "Chat window",
+            "Your Twitch chat appears in a window on your wrist - no Streamer.bot action needed. "
+            + "Grab it with the laser from the VR dashboard's Chat tab to place it.",
+            Indented(_chat),
+            AnchorRow("Anchor:", _chatAnchorMode, _chatAnchorHand),
+            SliderRow("Opacity:", _chatOpacity),
+            SliderRow("Size:", _chatSizeScale),
+            SettingRow("Gaze sensitivity:", _gazeSensitivity),
+            Indented(_chatGazeScale));
+    }
+
+    /// <summary>Controller status and the SteamVR repair/binding buttons.</summary>
+    private Control ControllerSection()
+    {
         _controllerFamily.AutoSize = true;
         _controllerFamily.Text = "Waiting for active VR controllers";
         _bindingDetail.AutoSize = true;
-        _bindingDetail.ForeColor = Color.FromArgb(92, 101, 112);
-        panel.Controls.Add(_controllerFamily);
-        panel.Controls.Add(_bindingDetail);
+        _bindingDetail.ForeColor = MutedForeColour;
 
-        var setupRow = new FlowLayoutPanel { AutoSize = true };
+        ConfigureButton(_findActions, "Refresh Streamer.bot actions", false);
+        _findActions.Click += (_, _) => FindActionsRequested?.Invoke();
         ConfigureButton(_setUpSteamVr, "Repair SteamVR setup", false);
         ConfigureButton(_changeBindings, "SteamVR input bindings", false);
         ConfigureButton(_vrDashboard, "Open SteamVR dashboard", true);
         _setUpSteamVr.Click += (_, _) => SteamVrSetupRequested?.Invoke();
         _changeBindings.Click += (_, _) => BindingsRequested?.Invoke();
         _vrDashboard.Click += (_, _) => DashboardRequested?.Invoke();
-        setupRow.Controls.AddRange([_setUpSteamVr, _changeBindings, _vrDashboard]);
-        panel.Controls.Add(setupRow);
 
-        panel.Controls.Add(new Label
+        var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 6, 0, 0) };
+        buttons.Controls.AddRange([_findActions, _setUpSteamVr, _changeBindings, _vrDashboard]);
+
+        return Section(
+            "Controller and SteamVR",
+            null,
+            Indented(_controllerFamily),
+            Indented(_bindingDetail),
+            Indented(buttons));
+    }
+
+    /// <summary>The grey this page uses for every explanatory line, so "secondary text" is one decision rather than sixteen copies of an RGB triple.</summary>
+    private static readonly Color MutedForeColour = Color.FromArgb(92, 101, 112);
+
+    private static readonly Color SectionRuleColour = Color.FromArgb(226, 230, 235);
+
+    /// <summary>
+    /// One titled group of settings, with an optional line of explanation and
+    /// a hairline above it. Sections exist because this page had grown to
+    /// hold the connection, notifications, their appearance, the alert
+    /// picker, chat and the controller in one undifferentiated column, where
+    /// the only thing separating "background opacity" from "SteamVR input
+    /// bindings" was how far you had scrolled.
+    /// </summary>
+    private Control Section(string title, string? description, params Control[] body)
+    {
+        var section = new FlowLayoutPanel
         {
-            Text = "SteamVR2Bot stays available in SteamVR and runs your shortcuts whenever this app is open. Changes save automatically.",
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
             AutoSize = true,
-            MaximumSize = new Size(650, 0),
-            ForeColor = Color.FromArgb(92, 101, 112),
-            Margin = new Padding(0, 18, 0, 0)
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 0, 0, 18)
+        };
+
+        section.Controls.Add(new Panel
+        {
+            Height = 1,
+            Width = 660,
+            BackColor = SectionRuleColour,
+            Margin = new Padding(0, 0, 0, 10)
         });
-        return panel;
+        section.Controls.Add(new Label
+        {
+            Text = title,
+            Font = new Font("Segoe UI", 11F, FontStyle.Bold),
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, description is null ? 8 : 2)
+        });
+        if (description is not null)
+        {
+            section.Controls.Add(new Label
+            {
+                Text = description,
+                AutoSize = true,
+                MaximumSize = new Size(640, 0),
+                ForeColor = MutedForeColour,
+                Margin = new Padding(0, 0, 0, 10)
+            });
+        }
+
+        foreach (var control in body)
+        {
+            section.Controls.Add(control);
+        }
+
+        return section;
+    }
+
+    /// <summary>
+    /// One setting: its label in a fixed-width column, then its controls.
+    /// <para>
+    /// The fixed column is the entire point. Every row used to size its own
+    /// label, so the control after it began at whatever x that label happened
+    /// to end at - which is why three colour rows put their three identical
+    /// "Pick…" buttons in three different places. Nothing here is cleverer
+    /// than giving them all the same column to start from.
+    /// </para>
+    /// </summary>
+    private static Control SettingRow(string label, params Control[] controls)
+    {
+        var row = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Margin = new Padding(SectionBodyIndent, 0, 0, 8)
+        };
+        row.Controls.Add(new Label
+        {
+            Text = label,
+            AutoSize = false,
+            Width = LabelColumnWidth,
+            Height = RowControlHeight,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(0, 0, 8, 0)
+        });
+
+        foreach (var control in controls)
+        {
+            control.Margin = new Padding(0, 0, 8, 0);
+            row.Controls.Add(control);
+        }
+
+        return row;
+    }
+
+    /// <summary>A control that has no label column of its own - a checkbox, a status line - lined up with the labels above and below it.</summary>
+    private static Control Indented(Control control)
+    {
+        control.Margin = new Padding(SectionBodyIndent, 0, 0, 8);
+        return control;
     }
 
     /// <summary>A "Controller / Headset" mode combo plus a "Left / Right" hand combo, the latter only meaningful in Controller mode.</summary>
@@ -540,31 +856,17 @@ internal sealed class MainForm : Form
     {
         modeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         modeCombo.Items.AddRange(["Controller", "Headset"]);
-        modeCombo.Width = 110;
+        modeCombo.Width = 120;
         handCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         handCombo.Items.AddRange(["Left hand", "Right hand"]);
-        handCombo.Width = 110;
+        handCombo.Width = 120;
         modeCombo.SelectedIndexChanged += (_, _) =>
         {
             handCombo.Enabled = modeCombo.SelectedIndex != 1;
             NotifySettingsChanged();
         };
         handCombo.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
-
-        var row = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Margin = new Padding(40, 0, 0, 10)
-        };
-        row.Controls.Add(new Label
-        {
-            Text = label,
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        row.Controls.Add(modeCombo);
-        row.Controls.Add(handCombo);
-        return row;
+        return SettingRow(label, modeCombo, handCombo);
     }
 
     /// <summary>A single 0-100 TrackBar row for an opacity or size setting, labelled and change-notifying.</summary>
@@ -575,42 +877,186 @@ internal sealed class MainForm : Form
         slider.TickFrequency = 10;
         slider.Width = 260;
         slider.ValueChanged += (_, _) => NotifySettingsChanged();
-
-        var row = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Margin = new Padding(40, 0, 0, 10)
-        };
-        row.Controls.Add(new Label
-        {
-            Text = label,
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        row.Controls.Add(slider);
-        return row;
+        return SettingRow(label, slider);
     }
 
-    private Control GazeSensitivityRow()
+    /// <summary>§B3/§B4/§B5 of the Phase 7 plan: colours, duration, transition and an optional PNG template.</summary>
+    private Control NotificationAppearanceSection()
     {
-        _gazeSensitivity.DropDownStyle = ComboBoxStyle.DropDownList;
-        _gazeSensitivity.Items.AddRange(["Relaxed", "Normal", "Tight"]);
-        _gazeSensitivity.Width = 130;
-        _gazeSensitivity.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
+        _notificationBackgroundOpacity.Minimum = 0;
+        _notificationBackgroundOpacity.Maximum = 100;
+        _notificationBackgroundOpacity.TickFrequency = 10;
+        _notificationBackgroundOpacity.Width = 260;
+        _notificationBackgroundOpacity.ValueChanged += (_, _) => NotifySettingsChanged();
 
-        var row = new FlowLayoutPanel
+        _notificationCornerRadius.Minimum = 0;
+        _notificationCornerRadius.Maximum = 60;
+        _notificationCornerRadius.Width = 80;
+        _notificationCornerRadius.ValueChanged += (_, _) => NotifySettingsChanged();
+
+        foreach (var size in (NumericUpDown[])[_notificationPanelWidth, _notificationPanelHeight])
         {
-            AutoSize = true,
-            Margin = new Padding(40, 0, 0, 10)
+            size.Minimum = NotificationAppearanceSettings.MinimumPanelDimension;
+            size.Maximum = NotificationAppearanceSettings.MaximumPanelDimension;
+            size.Increment = 20;
+            size.Width = 80;
+            size.ValueChanged += (_, _) => NotifySettingsChanged();
+        }
+
+        _notificationDurationSeconds.Minimum = 0.5m;
+        _notificationDurationSeconds.Maximum = 60m;
+        _notificationDurationSeconds.Increment = 0.5m;
+        _notificationDurationSeconds.DecimalPlaces = 1;
+        _notificationDurationSeconds.Width = 80;
+        _notificationDurationSeconds.ValueChanged += (_, _) => NotifySettingsChanged();
+
+        _notificationTransition.DropDownStyle = ComboBoxStyle.DropDownList;
+        _notificationTransition.Items.AddRange(["Fade", "Slide", "Scale pop"]);
+        _notificationTransition.Width = 120;
+        _notificationSlideEdge.DropDownStyle = ComboBoxStyle.DropDownList;
+        _notificationSlideEdge.Items.AddRange(["Top", "Bottom", "Left", "Right"]);
+        _notificationSlideEdge.Width = 100;
+        _notificationTransition.SelectedIndexChanged += (_, _) =>
+        {
+            RefreshSlideEdgeEnabled();
+            NotifySettingsChanged();
         };
-        row.Controls.Add(new Label
+        _notificationSlideEdge.SelectedIndexChanged += (_, _) => NotifySettingsChanged();
+
+        _notificationTemplatePath.Width = 340;
+        _notificationTemplatePath.TextChanged += (_, _) => NotifySettingsChanged();
+        ConfigureButton(_browseTemplatePath, "Browse…", false);
+        _browseTemplatePath.Click += (_, _) =>
         {
-            Text = "Gaze sensitivity:",
-            AutoSize = true,
-            Margin = new Padding(0, 6, 8, 0)
-        });
-        row.Controls.Add(_gazeSensitivity);
-        return row;
+            using var dialog = new OpenFileDialog
+            {
+                Filter = "PNG images (*.png)|*.png",
+                Title = "Choose a notification background image"
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                _notificationTemplatePath.Text = dialog.FileName;
+                NotifySettingsChanged();
+            }
+        };
+        ConfigureButton(_clearTemplatePath, "Clear", false);
+        _clearTemplatePath.Click += (_, _) =>
+        {
+            _notificationTemplatePath.Text = "";
+            NotifySettingsChanged();
+        };
+
+        return Section(
+            "Notification appearance",
+            "A payload can override the accent colour, the duration and the image for its own "
+            + "notification; these are the defaults for everything that does not.",
+            ColourRow("Background colour:", _notificationBackgroundColour, _pickBackgroundColour),
+            ColourRow("Text colour:", _notificationTextColour, _pickTextColour),
+            ColourRow("Accent colour:", _notificationAccentColour, _pickAccentColour),
+            SettingRow("Background opacity:", _notificationBackgroundOpacity),
+            SettingRow(
+                "Panel size (pixels):",
+                _notificationPanelWidth,
+                PanelSizeByLabel(),
+                _notificationPanelHeight),
+            SettingRow("Corner radius (pixels):", _notificationCornerRadius),
+            SettingRow("Default duration (seconds):", _notificationDurationSeconds),
+            SettingRow("Transition:", _notificationTransition, SlideFromLabel(), _notificationSlideEdge),
+            SettingRow(
+                "Background image (optional):",
+                _notificationTemplatePath,
+                _browseTemplatePath,
+                _clearTemplatePath));
+    }
+
+    /// <summary>The inline second label on the transition row - "Slide from:" only qualifies the combo beside it, so it does not get a column of its own.</summary>
+    private static Label SlideFromLabel() => new()
+    {
+        Text = "Slide from:",
+        AutoSize = false,
+        Width = 76,
+        Height = RowControlHeight,
+        TextAlign = ContentAlignment.MiddleLeft
+    };
+
+    /// <summary>The "x" between the panel's width and height - an inline separator, not a labelled setting of its own.</summary>
+    private static Label PanelSizeByLabel() => new()
+    {
+        Text = "×",
+        AutoSize = false,
+        Width = 16,
+        Height = RowControlHeight,
+        TextAlign = ContentAlignment.MiddleCenter
+    };
+
+    /// <summary>One "label + hex textbox + pick…" row, shared by the three notification colour settings.</summary>
+    private Control ColourRow(string label, TextBox hexBox, Button pickButton)
+    {
+        hexBox.Width = 90;
+        hexBox.PlaceholderText = "#RRGGBB";
+        hexBox.TextChanged += (_, _) => NotifySettingsChanged();
+        ConfigureButton(pickButton, "Pick…", false);
+        pickButton.Click += (_, _) => PickColour(hexBox);
+
+        return SettingRow(label, hexBox, pickButton);
+    }
+
+    /// <summary>§B2 of the Phase 7 plan: direct Streamer.bot event subscription, driven entirely by a live <c>GetEvents</c> response.</summary>
+    private Control NotificationEventsSection()
+    {
+        _eventPicker.EnabledKeysChanged += NotifySettingsChanged;
+        _eventPicker.RefreshRequested += () => NotificationEventsRefreshRequested?.Invoke();
+
+        _templateEventPicker.DropDownStyle = ComboBoxStyle.DropDown;
+        _templateEventPicker.Width = 240;
+        _templateEventPicker.Format += (_, args) =>
+        {
+            if (args.ListItem is StreamerBotEventDescriptor descriptor)
+            {
+                args.Value = descriptor.Key;
+            }
+        };
+        ConfigureButton(_editEventTemplate, "Edit template…", false);
+        _editEventTemplate.Click += (_, _) =>
+        {
+            if (_templateEventPicker.SelectedItem is not StreamerBotEventDescriptor descriptor)
+            {
+                ShowSettingsError("Choose an event first (type to search).");
+                return;
+            }
+
+            _eventTemplates.TryGetValue(descriptor.Key, out var existing);
+            using var dialog = new EventTemplateForm(descriptor.Key, existing ?? "");
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(dialog.Template))
+            {
+                _eventTemplates.Remove(descriptor.Key);
+            }
+            else
+            {
+                _eventTemplates[descriptor.Key] = dialog.Template.Trim();
+            }
+
+            NotifySettingsChanged();
+        };
+
+        _showTestEvents.Text = "Show test-fired events (Streamer.bot's own “Test” button)";
+        _showTestEvents.AutoSize = true;
+        _showTestEvents.Checked = true;
+        _showTestEvents.CheckedChanged += (_, _) => NotifySettingsChanged();
+
+        return Section(
+            "Alerts",
+            "Nothing is on until you add it here. Streamer.bot has no way to tell this app which "
+            + "events you have already enabled on its side, so this list is its own switch, not a "
+            + "mirror of Streamer.bot's Events panel.",
+            Indented(_eventPicker),
+            SettingRow("Customise wording for:", _templateEventPicker, _editEventTemplate),
+            Indented(_showTestEvents));
     }
 
     private Control CreateActivityPage()
@@ -1092,5 +1538,92 @@ internal sealed class ShortcutEditorForm : Form
         button.BackColor = primary ? Color.FromArgb(37, 99, 235) : Color.White;
         button.ForeColor = primary ? Color.White : Color.FromArgb(32, 37, 43);
         button.Margin = new Padding(0, 4, 10, 4);
+    }
+}
+
+/// <summary>
+/// A small modal for one event's template override - §B2 of the Phase 7
+/// plan. Deliberately just a multiline textbox and the dotted-path
+/// explanation: the resolver itself (<see cref="StreamerBotEventTemplate"/>)
+/// is generic, so there is nothing per-event to validate here beyond letting
+/// the wearer type a path they read off Streamer.bot's own event
+/// documentation.
+/// </summary>
+internal sealed class EventTemplateForm : Form
+{
+    private readonly TextBox _template = new();
+
+    public EventTemplateForm(string eventKey, string existingTemplate)
+    {
+        Text = $"Template for {eventKey}";
+        StartPosition = FormStartPosition.CenterParent;
+        Size = new Size(600, 520);
+        MinimumSize = Size;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        Font = new Font("Segoe UI", 10F);
+        BackColor = Color.FromArgb(247, 248, 250);
+
+        var panel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(22)
+        };
+        panel.Controls.Add(new Label
+        {
+            Text = "Use {dotted.path} to read a field from the event's own data, e.g. "
+                   + "{targetUser.name} just followed! A missing or null field resolves to "
+                   + "nothing rather than an error.\n\n"
+                   + "List alternatives with | and the first one present wins; end with a "
+                   + "\"quoted\" literal as a last resort:\n"
+                   + "    {user.name|targetUser.name|\"Someone\"} just subscribed!\n\n"
+                   + "{eventName} is the event's readable name (\"Gift Sub\"), {eventSource} "
+                   + "its source, {event} both.\n\n"
+                   + "To find an event's real field names, either read them from "
+                   + "docs.streamer.bot/api/websocket/events, or turn the event on here and let "
+                   + "it happen once - every event that arrives records its whole payload "
+                   + "verbatim in the Activity log as streamerbot.event_payload.\n\n"
+                   + "Leave blank to use the default: for events where the platform writes its "
+                   + "own sentence (subs and gift subs do) that sentence is used as-is; "
+                   + "otherwise it names whoever the event is about, then the event.",
+            AutoSize = true,
+            MaximumSize = new Size(520, 0),
+            ForeColor = Color.FromArgb(92, 101, 112),
+            Margin = new Padding(0, 0, 0, 10)
+        });
+        _template.Text = existingTemplate;
+        _template.Width = 520;
+        _template.Multiline = true;
+        _template.Height = 70;
+        panel.Controls.Add(_template);
+
+        var buttons = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 16, 0, 0) };
+        var save = new Button();
+        var cancel = new Button();
+        ConfigureButtonStatic(save, "Save", true);
+        ConfigureButtonStatic(cancel, "Cancel", false);
+        save.DialogResult = DialogResult.OK;
+        cancel.DialogResult = DialogResult.Cancel;
+        buttons.Controls.AddRange([save, cancel]);
+        panel.Controls.Add(buttons);
+        Controls.Add(panel);
+        AcceptButton = save;
+        CancelButton = cancel;
+    }
+
+    public string Template => _template.Text;
+
+    private static void ConfigureButtonStatic(Button button, string text, bool primary)
+    {
+        button.Text = text;
+        button.AutoSize = true;
+        button.MinimumSize = new Size(112, 38);
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderSize = primary ? 0 : 1;
+        button.BackColor = primary ? Color.FromArgb(37, 99, 235) : Color.White;
+        button.ForeColor = primary ? Color.White : Color.FromArgb(32, 37, 43);
+        button.Margin = new Padding(0, 0, 10, 0);
     }
 }

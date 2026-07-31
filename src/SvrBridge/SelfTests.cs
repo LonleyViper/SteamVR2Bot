@@ -28,12 +28,20 @@ internal static class SelfTests
         TestStreamerBotEventPayload();
         TestTwitchChatMessageMapper();
         TestTwitchEmoteCatalog();
+        TestStreamerBotEventTemplateResolvesDottedPaths();
+        TestStreamerBotEventCatalogParsesGetEventsResponse();
+        TestStreamerBotEventCatalogSpacesRunTogetherEventNames();
+        TestStreamerBotEventSearchFiltersAndCapsResults();
+        TestStreamerBotSourceChipHandlesAnySourceDeterministically();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
         await TestStreamerBotRestartRecoveryAsync();
         await TestUnconfirmedDeliveryIsNotRetriedAsync();
         await TestStreamerBotEventStreamAsync();
         await TestStreamerBotEventStreamPendingRequestsAsync();
+        await TestStreamerBotEventStreamSubscribesToEnabledEventsAsync();
+        await TestStreamerBotEventStreamFallsBackWhenGetEventsFailsAtConnectAsync();
+        await TestStreamerBotEventStreamGetEventsFailureDoesNotStopTheFeedAsync();
         await TestSteamVrSessionRestartAsync();
         Console.WriteLine(
             "SELF-TEST PASS: chord detection, physical controller mapping, authentication, SteamVR worker " +
@@ -696,6 +704,511 @@ internal static class SelfTests
             "A response with no emotes object did not produce an empty catalog.");
     }
 
+    /// <summary>
+    /// §B2's template resolver: a dotted path resolves; a missing path, a
+    /// null intermediate (<c>targetUser: null</c>, exactly as Twitch.Follow's
+    /// own schema allows it), and a null leaf each resolve to empty rather
+    /// than throwing. Also covers the special <c>{event}</c> token and an
+    /// unbalanced <c>{</c> with no closing brace.
+    /// </summary>
+    private static void TestStreamerBotEventTemplateResolvesDottedPaths()
+    {
+        using var data = JsonDocument.Parse(
+            """
+            {
+              "targetUser": { "name": "Ashling", "id": null },
+              "nullTargetUser": null,
+              "followedAt": "2026-07-30T12:00:00Z",
+              "viewerCount": 42
+            }
+            """);
+        var root = data.RootElement;
+
+        Assert(
+            StreamerBotEventTemplate.Resolve("{targetUser.name} just followed!", root, "Twitch.Follow")
+            == "Ashling just followed!",
+            "A dotted path into a present nested object did not resolve.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{targetUser.id}", root, "Twitch.Follow") == "",
+            "A null leaf did not resolve to an empty string.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{nullTargetUser.name}", root, "Twitch.Follow") == "",
+            "A null intermediate segment did not resolve to an empty string.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{doesNotExist.name}", root, "Twitch.Follow") == "",
+            "A missing path did not resolve to an empty string.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{viewerCount} viewers", root, "Twitch.Raid") == "42 viewers",
+            "A numeric field did not resolve to its plain string form.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("New {event}!", root, "Twitch.Raid") == "New Twitch.Raid!",
+            "The {event} token did not resolve to the event's own Source.Type label.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("no tokens here", root, "Twitch.Raid") == "no tokens here",
+            "A template with no tokens at all was not passed through unchanged.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("trailing {unterminated", root, "Twitch.Raid")
+            == "trailing {unterminated",
+            "An unterminated token (no closing brace) lost its literal tail instead of being copied through.");
+
+        // Alternatives are what let one template cover events that name their
+        // actor in different fields, which is the alternative to this app
+        // carrying a table of which event uses which.
+        Assert(
+            StreamerBotEventTemplate.Resolve("{user.name|targetUser.name}", root, "Twitch.Follow")
+            == "Ashling",
+            "A token's second alternative was not tried after the first resolved to nothing.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{targetUser.name|viewerCount}", root, "Twitch.Follow")
+            == "Ashling",
+            "A later alternative overrode an earlier one that had already resolved.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{nope.here|alsoMissing|\"Someone\"}", root, "Twitch.Follow")
+            == "Someone",
+            "A quoted literal did not act as the last resort when every path was missing.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{nope|alsoNope}", root, "Twitch.Follow") == "",
+            "A token whose alternatives all failed, with no literal, did not resolve to empty.");
+
+        Assert(
+            StreamerBotEventTemplate.Resolve("{eventName}", root, "Twitch.GiftSub") == "Gift Sub",
+            "{eventName} did not resolve to the event's own name in readable form.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{eventSource}", root, "Twitch.GiftSub") == "Twitch",
+            "{eventSource} did not resolve to the source alone.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{event}", root, "Twitch.GiftSub") == "Twitch.GiftSub",
+            "{event} stopped resolving to the full Source.Type label.");
+
+        // The shipped default, against a payload naming its actor the way
+        // Twitch.Follow actually does.
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate, root, "Twitch.Follow")
+                .StartsWith("Ashling", StringComparison.Ordinal),
+            "The shipped default template did not lead with the actor it found in the payload.");
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate,
+                JsonDocument.Parse("{}").RootElement,
+                "Twitch.Follow")
+                .StartsWith("Someone", StringComparison.Ordinal),
+            "The shipped default template left a gap instead of its literal when the payload named nobody.");
+
+        TestGenericTemplateAgainstDocumentedPayloadShapes();
+    }
+
+    /// <summary>
+    /// The shipped default against the payload shapes Streamer.bot actually
+    /// documents, rather than against anything invented here.
+    /// <para>
+    /// Three real shapes, and the reason the default is a chain of
+    /// alternatives rather than one field: <c>Twitch.Sub</c> keeps its actor
+    /// under <c>user</c>, <c>Twitch.Follow</c> under <c>targetUser</c>, and a
+    /// <c>Twitch.PredictionCreated</c> captured live from this very machine
+    /// has no actor at all and is snake_case throughout. One field name would
+    /// have been right for at most one of them.
+    /// </para>
+    /// <para>
+    /// Real platform payload shapes appear here because this is a test
+    /// fixture; production code holds one chain of generic field names and no
+    /// per-event knowledge at all.
+    /// </para>
+    /// </summary>
+    private static void TestGenericTemplateAgainstDocumentedPayloadShapes()
+    {
+        // docs.streamer.bot/api/websocket/events/twitch/follow
+        using var follow = JsonDocument.Parse(
+            """
+            {"broadcaster":null,"isInSharedChat":true,"createdAt":"2026-07-31T15:00:00Z",
+             "isTest":false,"targetUser":{"id":"1","login":"ashling","name":"Ashling","type":""},
+             "followedAt":"2026-07-31T15:00:00Z"}
+            """);
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate, follow.RootElement, "Twitch.Follow")
+            == "Ashling — Follow",
+            "The default did not name a follower from the targetUser object Twitch.Follow documents.");
+
+        // docs.streamer.bot/api/websocket/events/twitch/sub - note sub_tier
+        // and duration_months sitting beside camelCase systemMessage in the
+        // same object, which is why the chain covers both conventions.
+        using var sub = JsonDocument.Parse(
+            """
+            {"user":{"id":"2","login":"viper","name":"Viper","type":""},
+             "messageId":null,"systemMessage":null,"isTest":false,
+             "createdAt":"2026-07-31T15:00:00Z","sub_tier":"1000","is_prime":true,
+             "duration_months":3}
+            """);
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate, sub.RootElement, "Twitch.Sub")
+            == "Viper — Sub",
+            "The default did not name a subscriber from the user object Twitch.Sub documents.");
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                "{user.name} subscribed for {duration_months} months at tier {sub_tier}!",
+                sub.RootElement,
+                "Twitch.Sub")
+            == "Viper subscribed for 3 months at tier 1000!",
+            "A hand-written template could not reach the snake_case fields in a documented payload.");
+
+        // Captured live from this machine on 2026-07-31: a real prediction,
+        // snake_case throughout, and carrying no actor whatsoever.
+        using var prediction = JsonDocument.Parse(
+            """
+            {"locks_at":"2026-07-31T15:33:27Z","id":"2e5b82a4","title":"Poop",
+             "outcomes":[{"id":"cf525541","title":"1","color":"blue","users":0,"channel_points":0}],
+             "started_at":"2026-07-31T15:32:57Z"}
+            """);
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate,
+                prediction.RootElement,
+                "Twitch.PredictionCreated")
+            == "Poop — Prediction Created",
+            "A channel-wide event with no actor did not fall through to its title.");
+    }
+
+    /// <summary>
+    /// §B2: <c>GetEvents</c>' own reference/events pages are both marked
+    /// "Documentation Needed", so this proves the parser against the shape
+    /// that mirrors the (documented) Subscribe request's own argument -
+    /// source name keyed to an array of event type names - and that a
+    /// response this cannot make sense of degrades to an empty list rather
+    /// than throwing, since a GetEvents failure must not take down the feed.
+    /// </summary>
+    private static void TestStreamerBotEventCatalogParsesGetEventsResponse()
+    {
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "status": "ok",
+              "id": "req-1",
+              "events": {
+                "General": ["Custom"],
+                "Twitch": ["Follow", "Raid", "ChatMessage"],
+                "YouTube": ["Message"],
+                "Broken": "not-an-array",
+                "Objects": [{ "type": "Cheer" }, { "name": "Sub" }, { "nothingUseful": true }, 42]
+              }
+            }
+            """);
+
+        var events = StreamerBotEventCatalog.Parse(document.RootElement);
+        Assert(
+            events.Any(entry => entry is { Source: "Twitch", Type: "Follow" }),
+            "A plain string event entry was not parsed.");
+        Assert(
+            events.Any(entry => entry is { Source: "YouTube", Type: "Message" }),
+            "An event under a different source was not parsed.");
+        Assert(
+            events.Count(entry => entry.Source == "Broken") == 0,
+            "A source whose value was not an array produced entries instead of being skipped.");
+        Assert(
+            events.Any(entry => entry is { Source: "Objects", Type: "Cheer" })
+            && events.Any(entry => entry is { Source: "Objects", Type: "Sub" }),
+            "An object-shaped event entry (type/name instead of a bare string) was not read.");
+        Assert(
+            events.Count(entry => entry.Source == "Objects") == 2,
+            "A malformed object entry with neither type nor name was not skipped.");
+        Assert(
+            events.First(entry => entry is { Source: "Twitch", Type: "Follow" }).Key == "Twitch.Follow",
+            "StreamerBotEventDescriptor.Key did not build the expected \"Source.Type\" form.");
+
+        Assert(
+            StreamerBotEventCatalog.Parse(JsonDocument.Parse("{}").RootElement).Count == 0,
+            "A response with no events object did not produce an empty list.");
+        Assert(
+            StreamerBotEventCatalog.Parse(JsonDocument.Parse("""{"events": "not-an-object"}""").RootElement).Count
+            == 0,
+            "A response whose events property was not an object did not degrade to an empty list.");
+    }
+
+    /// <summary>
+    /// A live <c>GetEvents</c> capture (Streamer.bot 1.0.4) showed event names
+    /// arrive run-together - <c>GiftSub</c>, <c>HypeTrainLevelUp</c> - not in
+    /// the spaced form Streamer.bot's own UI displays, which an earlier
+    /// screenshot had made look like the wire format. So the picker has to put
+    /// the word breaks back, and this pins that it does so as a transform
+    /// rather than a lookup table: every case here is handled by the same
+    /// rules, and an event nobody has seen yet gets the same treatment.
+    /// </summary>
+    private static void TestStreamerBotEventCatalogSpacesRunTogetherEventNames()
+    {
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("GiftSub") == "Gift Sub",
+            "An ordinary PascalCase event name did not gain its word break.");
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("HypeTrainLevelUp") == "Hype Train Level Up",
+            "A four-word event name was not fully separated.");
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("Follow") == "Follow",
+            "A single-word event name was altered.");
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("SevenTVEmoteAdded") == "Seven TV Emote Added",
+            "An embedded acronym was split letter by letter instead of kept together.");
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("") == "",
+            "An empty event name did not survive the transform.");
+        Assert(
+            new StreamerBotEventDescriptor("Twitch", "RewardRedemption").DisplayName
+            == "Reward Redemption",
+            "StreamerBotEventDescriptor.DisplayName did not use the spaced form.");
+    }
+
+    /// <summary>
+    /// The picker's whole defence against the freeze that got two earlier
+    /// designs rejected: the result set is filtered as data and capped before
+    /// any control is built, so the number of rows is bounded by the cap and
+    /// not by the catalog. Proven here against a catalog the size of a real
+    /// one - the live capture reported 467 events across 44 sources.
+    /// <para>
+    /// Real platform and event names appear here because this is a test
+    /// fixture; production code contains none, which is the point of
+    /// searching them by string rather than switching on them.
+    /// </para>
+    /// </summary>
+    private static void TestStreamerBotEventSearchFiltersAndCapsResults()
+    {
+        var catalog = BuildRealisticEventCatalog();
+        Assert(
+            catalog.Count >= 187,
+            "The realistic catalog fixture is smaller than the event count this design has to survive.");
+
+        var everything = StreamerBotEventSearch.Search(catalog, "");
+        Assert(
+            everything.MatchCount == catalog.Count,
+            "An empty query did not match the whole catalog.");
+        Assert(
+            everything.Matches.Count == StreamerBotEventSearch.DefaultResultLimit,
+            "An empty query rendered more rows than the cap - the freeze this design exists to prevent.");
+        Assert(
+            everything.Truncated,
+            "A capped result set did not report itself as truncated, so the count line would understate it.");
+
+        var follows = StreamerBotEventSearch.Search(catalog, "follow");
+        Assert(
+            follows.Matches.Any(entry => entry is { Source: "Twitch", Type: "Follow" })
+            && follows.Matches.Any(entry => entry is { Source: "Kick", Type: "Follow" }),
+            "Searching one word did not find the same event across two different sources.");
+        Assert(
+            follows.Matches.All(entry =>
+                entry.Source.Contains("follow", StringComparison.OrdinalIgnoreCase)
+                || entry.Type.Contains("follow", StringComparison.OrdinalIgnoreCase)),
+            "A result matched neither the source nor the event name.");
+
+        var narrowed = StreamerBotEventSearch.Search(catalog, "kick follow");
+        Assert(
+            narrowed.MatchCount < follows.MatchCount && narrowed.MatchCount > 0,
+            "Adding a second search term did not narrow the results.");
+        Assert(
+            narrowed.Matches.All(entry => entry.Source == "Kick"),
+            "A second term matching only the source did not constrain the results to it.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "follow kick").MatchCount == narrowed.MatchCount,
+            "Search results depended on the order the terms were typed in.");
+
+        // The wire format is run-together and the row on screen is not, so a
+        // search that only matched one of them would look broken from
+        // whichever side the user happened to type.
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "giftsub").Matches
+                .Any(entry => entry is { Source: "Twitch", Type: "GiftSub" }),
+            "Searching the raw run-together name did not find the event.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "gift sub").Matches
+                .Any(entry => entry is { Source: "Twitch", Type: "GiftSub" }),
+            "Searching the spaced display name did not find the event.");
+
+        // Ranking, not merely filtering - and this is the case that proves
+        // why it matters. Sorted alphabetically, "sub" filled the visible
+        // twenty with Twitch's EventSub/subscriber-mode plumbing and left
+        // Twitch.Sub at position 28, GiftSub at 22: the cap threw away
+        // precisely the three events anyone typing that word wants.
+        var subs = StreamerBotEventSearch.Search(catalog, "sub");
+        Assert(
+            subs.Matches[0] is { Source: "Twitch", Type: "Sub" },
+            "An event whose name is exactly the query did not rank first.");
+        Assert(
+            subs.Matches.Any(entry => entry is { Source: "Twitch", Type: "GiftSub" })
+            && subs.Matches.Any(entry => entry is { Source: "Twitch", Type: "ReSub" }),
+            "Twitch's own sub events were pushed out of the visible results by the cap.");
+        Assert(
+            IndexOfKey(subs.Matches, "Twitch.GiftSub")
+            < IndexOfKey(subs.Matches, "Twitch.BotEventSubConnected"),
+            "A word-boundary match (Gift Sub) did not outrank an incidental one (BotEventSubConnected).");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "follow").Matches[0].Type == "Follow",
+            "An exact name match did not lead the results for a differently-cased query.");
+
+        // A plural search term has to find a singular event name, or "subs"
+        // silently returns none of Twitch's three sub events.
+        var plural = StreamerBotEventSearch.Search(catalog, "subs");
+        Assert(
+            plural.Matches[0] is { Source: "Twitch", Type: "Sub" },
+            "A plural query did not find the singular event name.");
+        Assert(
+            plural.MatchCount == subs.MatchCount,
+            "A plural query matched a different set from its singular form.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "raid").Matches[0].Type == "Raid",
+            "Stripping a plural \"s\" narrowed a query that was never plural.");
+
+        // The one deliberate exception to "no hardcoded event names": a
+        // search-only synonym table, because Twitch's bits arrive as Cheer
+        // and being told "no results" for "bits" is indistinguishable from
+        // the feature being broken. It only ever widens a search - see
+        // StreamerBotEventSearch.SynonymGroups.
+        var bits = StreamerBotEventSearch.Search(catalog, "bits");
+        Assert(
+            bits.Matches[0] is { Source: "Twitch", Type: "Cheer" },
+            "Searching \"bits\" did not lead with the event Streamer.bot actually calls Cheer.");
+        Assert(
+            IndexOfKey(bits.Matches, "Twitch.Cheer") < IndexOfKey(bits.Matches, "Twitch.BitsBadgeTier"),
+            "An exact synonym match did not outrank a weaker direct match on the literal word.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "host").Matches.Any(entry => entry.Type == "Raid"),
+            "A synonym group did not connect the word searched to the word Streamer.bot uses.");
+
+        // The rule the exception must not break: a synonym can reorder
+        // results, never gate them. A direct name match always wins.
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "cheer").Matches[0] is { Type: "Cheer" }
+            && StreamerBotEventSearch.Search(catalog, "raid").Matches[0].Type == "Raid"
+            && StreamerBotEventSearch.Search(catalog, "follow").Matches[0].Type == "Follow",
+            "The synonym table displaced a direct name match from the top of the results.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "somethinghappened").Matches
+                .Any(entry => entry.Source == "Zorblatt"),
+            "A source outside the synonym table stopped being findable, which is the thing it must never do.");
+
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "nothingmatchesthis").MatchCount == 0,
+            "A query matching nothing still produced results.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "", limit: 5).Matches.Count == 5,
+            "An explicit smaller cap was not honoured.");
+        Assert(
+            StreamerBotEventSearch.Search([], "follow").TotalCount == 0,
+            "An empty catalog did not report a zero total.");
+    }
+
+    /// <summary>Where one key sits in a ranked result set, or int.MaxValue when the cap left it out - so an "A outranks B" assertion reads the right way round when B is missing entirely.</summary>
+    private static int IndexOfKey(IReadOnlyList<StreamerBotEventDescriptor> matches, string key)
+    {
+        for (var index = 0; index < matches.Count; index++)
+        {
+            if (string.Equals(matches[index].Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return index;
+            }
+        }
+
+        return int.MaxValue;
+    }
+
+    /// <summary>
+    /// Proves no hardcoded platform list crept into the chip lookup, using a
+    /// source name that exists nowhere: it must resolve to a drawable badge
+    /// with a palette colour, exactly as a well-known source does, and give
+    /// the same answer on every call and every run. Colour stability is not
+    /// cosmetic - <see cref="object.GetHashCode"/> is randomised per process,
+    /// so a chip built on it would change colour at each launch.
+    /// </summary>
+    private static void TestStreamerBotSourceChipHandlesAnySourceDeterministically()
+    {
+        const string fabricated = "Zorblatt";
+        var badge = StreamerBotSourceChip.BadgeFor(fabricated);
+        Assert(
+            badge.Source == fabricated && badge.Abbreviation.Length > 0,
+            "A source nobody anticipated did not produce a usable chip.");
+        Assert(
+            badge.Colour.StartsWith('#') && badge.Colour.Length == 7,
+            "A chip colour was not the \"#RRGGBB\" form the rest of this app uses.");
+        Assert(
+            StreamerBotSourceChip.ColourFor(fabricated) == badge.Colour
+            && StreamerBotSourceChip.ColourFor(fabricated.ToUpperInvariant()) == badge.Colour,
+            "The same source resolved to two different colours, so chips would not be stable.");
+
+        // Sources from the live capture, checked only for the generic rules -
+        // capitals when there are two, first two letters otherwise. No branch
+        // in the resolver knows any of these names.
+        Assert(
+            StreamerBotSourceChip.AbbreviationFor("YouTube") == "YT"
+            && StreamerBotSourceChip.AbbreviationFor("StreamElements") == "SE"
+            && StreamerBotSourceChip.AbbreviationFor("Twitch") == "TW"
+            && StreamerBotSourceChip.AbbreviationFor("Kick") == "KI",
+            "The generic abbreviation rules did not produce the expected short labels.");
+        Assert(
+            StreamerBotSourceChip.AbbreviationFor("") == "?"
+            && StreamerBotSourceChip.AbbreviationFor(null) == "?"
+            && StreamerBotSourceChip.BadgeFor(null).Colour.Length == 7,
+            "An empty or missing source threw or produced something undrawable.");
+    }
+
+    /// <summary>
+    /// A catalog the shape and size of a real one, for the search tests and
+    /// for the picker's own responsiveness check. Source names and counts are
+    /// from a live <c>GetEvents</c> capture (Streamer.bot 1.0.4): 467 events
+    /// across 44 sources. The first events under each source are that
+    /// source's real names so search assertions mean something; the rest are
+    /// filler standing in for the long tail, which is all the picker has to
+    /// scroll past anyway.
+    /// </summary>
+    private static IReadOnlyList<StreamerBotEventDescriptor> BuildRealisticEventCatalog()
+    {
+        var sources = new (string Source, int Count, string[] Real)[]
+        {
+            // BotEventSubConnected and ChatSubscriberModeOff are real Twitch
+            // events and are here on purpose: they are the incidental "sub"
+            // matches that used to crowd Twitch.Sub out of the visible
+            // twenty, so the ranking test needs them present to mean anything.
+            ("Twitch", 137, ["Follow", "Cheer", "Sub", "ReSub", "GiftSub", "GiftBomb", "Raid",
+                "HypeTrainStart", "HypeTrainLevelUp", "RewardRedemption", "ChatMessage", "Whisper",
+                "BotEventSubConnected", "BroadcasterEventSubConnected", "ChatSubscriberModeOff",
+                "ChatSubscriberModeOn", "SubCounterRollover", "SharedChatSub"]),
+            ("Elgato", 90, ["ActionTriggered"]),
+            ("YouTube", 29, ["BroadcastStarted", "Message", "SuperChat", "NewSponsor"]),
+            ("Kick", 21, ["Follow", "Subscription", "GiftSubscription", "MassGiftSubscription",
+                "Resubscription", "ChatMessage", "StreamOnline"]),
+            ("Trovo", 16, ["Follow", "Subscription", "GiftSubscription"]),
+            ("Misc", 13, ["TimedAction"]),
+            ("Fourthwall", 13, ["OrderPlaced"]),
+            ("MeldStudio", 12, ["SceneChanged"]),
+            ("VTubeStudio", 11, ["ModelLoaded"]),
+            ("Obs", 9, ["SceneChanged", "StreamingStarted"]),
+            ("CrowdControl", 9, ["EffectRedeemed"]),
+            ("ThrowingSystem", 8, ["ObjectThrown"]),
+            ("StreamlabsDesktop", 7, ["SceneChanged"]),
+            ("Streamlabs", 6, ["Donation"]),
+            ("Application", 6, ["Started"]),
+            ("StreamElements", 5, ["Tip"]),
+            ("Kofi", 5, ["Donation"]),
+            ("Patreon", 5, ["PledgeCreated"]),
+            ("General", 1, ["Custom"]),
+            ("Pallygg", 3, ["Tip"]),
+            ("DonorDrive", 3, ["Donation"]),
+            ("HypeRate", 4, ["HeartRatePulse", "Connected"]),
+            ("StreamDeck", 4, ["ButtonPressed"]),
+            ("Zorblatt", 4, ["SomethingHappened"])
+        };
+
+        var catalog = new List<StreamerBotEventDescriptor>();
+        foreach (var (source, count, real) in sources)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                catalog.Add(
+                    new StreamerBotEventDescriptor(
+                        source,
+                        index < real.Length ? real[index] : $"LongTailEvent{index:D3}"));
+            }
+        }
+
+        return catalog;
+    }
+
     private static StreamerBotEventPayload MapTwitchChatMessage(string json)
     {
         using var document = JsonDocument.Parse(json);
@@ -901,6 +1414,356 @@ internal static class SelfTests
             "A request left behind by a dropped socket was not removed.");
     }
 
+    /// <summary>
+    /// §B2, opt-in: only the events the wearer explicitly enabled fold into
+    /// the Subscribe request alongside the two this app always wants - a
+    /// broader "subscribe to everything GetEvents reports" design was tried
+    /// live and rejected, since Streamer.bot exposes no way to ask which
+    /// events currently have an enabled trigger (confirmed live: disabling
+    /// every event in its own Settings > Events panel did not stop delivery)
+    /// and a wide-open subscription pulled in non-alert plumbing (OBS scene
+    /// changes and the like). An enabled event becomes a notification
+    /// through the generic template; an event Streamer.bot reports but the
+    /// wearer never enabled (YouTube.Message here) is neither subscribed to
+    /// nor turned into a notification even if it somehow arrives anyway.
+    /// </summary>
+    private static async Task TestStreamerBotEventStreamSubscribesToEnabledEventsAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        var notificationEvents = new NotificationEventSettings(
+            // Kick.Subscription is enabled but deliberately absent from the
+            // catalog below - see the assertion on it further down.
+            ["Twitch.Follow", "twitch.follow", "Kick.Subscription"],
+            new Dictionary<string, string>(),
+            NotificationEventSettings.GenericDefaultTemplate,
+            true);
+
+        await using var stream = new StreamerBotEventStream(
+            new StreamerBotConfig { WebSocketUrl = $"ws://127.0.0.1:{port}/", DryRun = false },
+            notificationEvents: notificationEvents);
+        stream.Start();
+
+        var catalog = new { Twitch = new[] { "Follow", "Raid" }, YouTube = new[] { "Message" } };
+        var (socket, subscribedEvents) = await AcceptSubscriberCapturingEventsAsync(listener, catalog, timeout.Token);
+        using var disposableSocket = socket;
+
+        var general = subscribedEvents.GetProperty("General")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        Assert(
+            general.Length == 1 && general[0] == "Custom",
+            "General.Custom was not subscribed unconditionally alongside the enabled notification events.");
+
+        var twitch = subscribedEvents.GetProperty("Twitch")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        Assert(
+            twitch.Contains("ChatMessage") && twitch.Contains("Follow"),
+            "The enabled notification event was not folded into the Twitch subscription alongside ChatMessage.");
+        Assert(
+            !twitch.Contains("Raid"),
+            "An event GetEvents reported but the wearer never enabled (Twitch.Raid) was subscribed to anyway.");
+        Assert(
+            twitch.Count(type => string.Equals(type, "Follow", StringComparison.OrdinalIgnoreCase)) == 1,
+            "A duplicate/differently-cased enabled event produced more than one Subscribe entry.");
+        Assert(
+            !subscribedEvents.TryGetProperty("YouTube", out _),
+            "A source with nothing enabled (YouTube) still appeared in the Subscribe request.");
+
+        // The wearer enabled Kick.Subscription and this instance's GetEvents
+        // did not mention it. Dropping it would look like tidiness and behave
+        // like a silent failure: a fetch that failed, or came back while an
+        // integration was reloading, would turn their alerts off with nothing
+        // on screen to explain why. An event name Streamer.bot does not know
+        // simply never fires, which is the far cheaper wrong answer.
+        Assert(
+            subscribedEvents.TryGetProperty("Kick", out var kick)
+            && kick.EnumerateArray().Any(entry => entry.GetString() == "Subscription"),
+            "An enabled event this GetEvents response did not report was silently dropped from Subscribe.");
+
+        await SendEventAsync(
+            socket,
+            "Twitch",
+            "Follow",
+            new { targetUser = new { name = "Ashling" }, isTest = false },
+            timeout.Token);
+        var received = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            received.Payload.Target == StreamerBotEventTarget.Notification,
+            "A directly-subscribed enabled event did not produce a notification payload.");
+
+        // The headline is the Title; Text carries whatever the viewer
+        // themselves typed, and a follow carries nothing, so it stays empty
+        // rather than repeating the headline.
+        Assert(
+            received.Payload.Title.Contains("Ashling"),
+            $"The generic template did not name the actor from the payload - got \"{received.Payload.Title}\".");
+        Assert(
+            received.Payload.Title.Contains("Follow"),
+            $"The generic template did not name the event - got \"{received.Payload.Title}\".");
+        Assert(
+            !received.Payload.Title.Contains("Someone"),
+            "The generic template fell back to its literal even though the payload named an actor.");
+        Assert(
+            received.Payload.Text.Length == 0,
+            $"An event carrying no message of its own still filled the message line - got \"{received.Payload.Text}\".");
+        Assert(
+            received.Payload.Source == "Twitch",
+            "The event's source did not reach the payload, so the notification could not show its icon.");
+
+        // A cheer's note and a donation's message are the part worth reading,
+        // and they get their own line under the headline rather than being
+        // folded into it. Twitch.Cheer documents the field as "text".
+        await SendEventAsync(
+            socket,
+            "Twitch",
+            "Follow",
+            new { targetUser = new { name = "Ashling" }, text = "have some bits!", bits = 500, isTest = false },
+            timeout.Token);
+        var withMessage = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            withMessage.Payload.Text == "have some bits!",
+            $"The viewer's own message did not reach its own line - got \"{withMessage.Payload.Text}\".");
+        Assert(
+            withMessage.Payload.Title.Contains("Ashling"),
+            "The headline was lost once the payload also carried a message.");
+
+        // Twitch documents systemMessage on Sub/ReSub/GiftSub: a whole
+        // sentence it wrote itself. It must win over anything assembled here,
+        // and must arrive verbatim - a brace in it is somebody's text, not a
+        // token to resolve.
+        await SendEventAsync(
+            socket,
+            "Twitch",
+            "Follow",
+            new
+            {
+                systemMessage = "Viper subscribed at Tier 1. They've subscribed for 3 months!",
+                targetUser = new { name = "Ashling" },
+                isTest = false
+            },
+            timeout.Token);
+        var withSystemMessage = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            withSystemMessage.Payload.Title
+            == "Viper subscribed at Tier 1. They've subscribed for 3 months!",
+            "The platform's own written-out sentence did not win over this app's assembled wording - "
+            + $"got \"{withSystemMessage.Payload.Title}\".");
+
+        await SendEventAsync(
+            socket,
+            "Twitch",
+            "Follow",
+            new { systemMessage = "   ", targetUser = new { name = "Ashling" }, isTest = false },
+            timeout.Token);
+        var blankSystemMessage = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            blankSystemMessage.Payload.Title.Contains("Ashling"),
+            "A present-but-blank systemMessage produced an empty notification instead of falling "
+            + "through to the generic wording.");
+
+        // Even if Streamer.bot sent one anyway, an event never enabled must
+        // not become a notification - the dispatch-side check is what
+        // actually enforces this, not just the Subscribe request.
+        await SendEventAsync(socket, "Twitch", "Raid", new { viewers = 5 }, timeout.Token);
+        await SendCustomEventAsync(
+            socket,
+            new { target = "chat", user = "Viewer", text = "still alive after an unenabled event" },
+            timeout.Token);
+        var next = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            next.Payload.Target == StreamerBotEventTarget.Chat,
+            "An unenabled event (Twitch.Raid) was turned into a notification instead of being ignored.");
+    }
+
+    /// <summary>
+    /// §B2: "a GetEvents failure must not take down the feed" - now most
+    /// relevant at connect time, since that is when this stream asks it to
+    /// build its Subscribe list. A GetEvents failure there falls back to
+    /// exactly General.Custom and Twitch.ChatMessage, and the connection
+    /// still succeeds and keeps delivering events.
+    /// </summary>
+    private static async Task TestStreamerBotEventStreamFallsBackWhenGetEventsFailsAtConnectAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        await using var stream = new StreamerBotEventStream(
+            new StreamerBotConfig { WebSocketUrl = $"ws://127.0.0.1:{port}/", DryRun = false });
+        stream.Start();
+
+        // null catalog tells the mock to answer GetEvents with an error
+        // status rather than a catalog, simulating a real GetEvents failure.
+        var (socket, subscribedEvents) = await AcceptSubscriberCapturingEventsAsync(listener, null, timeout.Token);
+        using var disposableSocket = socket;
+
+        var general = subscribedEvents.GetProperty("General")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        var twitch = subscribedEvents.GetProperty("Twitch")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        Assert(
+            general.Length == 1 && general[0] == "Custom" && twitch.Length == 1 && twitch[0] == "ChatMessage",
+            "A GetEvents failure at connect did not fall back to exactly General.Custom and Twitch.ChatMessage.");
+
+        await SendCustomEventAsync(
+            socket,
+            new { target = "chat", user = "Viewer", text = "still alive" },
+            timeout.Token);
+        var received = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            received.Payload.Target == StreamerBotEventTarget.Chat && received.Payload.Text == "still alive",
+            "The connection did not succeed and keep delivering events after a GetEvents failure at connect.");
+    }
+
+    /// <summary>
+    /// Separately, an on-demand <see cref="StreamerBotEventStream.GetEventsAsync"/>
+    /// call (e.g. the desktop app's "Refresh events" button) that goes
+    /// unanswered must not leak a pending-table entry or otherwise disturb
+    /// the feed - the same pending-table discipline
+    /// <see cref="TestStreamerBotEventStreamPendingRequestsAsync"/> already
+    /// covers for other requests.
+    /// </summary>
+    private static async Task TestStreamerBotEventStreamGetEventsFailureDoesNotStopTheFeedAsync()
+    {
+        var portProbe = new TcpListener(IPAddress.Loopback, 0);
+        portProbe.Start();
+        var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+        portProbe.Stop();
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        await using var stream = new StreamerBotEventStream(
+            new StreamerBotConfig { WebSocketUrl = $"ws://127.0.0.1:{port}/", DryRun = false });
+        stream.Start();
+
+        using var socket = await AcceptEventSubscriberAsync(listener, requireAuthentication: false, timeout.Token);
+
+        using (var giveUp = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token))
+        {
+            giveUp.CancelAfter(TimeSpan.FromMilliseconds(300));
+            try
+            {
+                await stream.GetEventsAsync(giveUp.Token);
+                throw new InvalidOperationException(
+                    "SELF-TEST FAIL: GetEvents completed even though the mock never answered it.");
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected: the mock deliberately never answers this one.
+            }
+        }
+
+        Assert(
+            stream.PendingRequestCount == 0,
+            "An abandoned GetEvents request was left in the pending table.");
+
+        await SendCustomEventAsync(
+            socket,
+            new { target = "chat", user = "Viewer", text = "still alive" },
+            timeout.Token);
+        var received = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            received.Payload.Target == StreamerBotEventTarget.Chat && received.Payload.Text == "still alive",
+            "The event feed stopped delivering events after a GetEvents request went unanswered.");
+    }
+
+    /// <summary>
+    /// Same Hello/GetEvents/Subscribe handshake as
+    /// <see cref="AcceptEventSubscriberAsync"/>, but answers GetEvents with
+    /// <paramref name="eventsCatalogResponse"/> (or an error status when
+    /// null, to simulate a GetEvents failure) and hands the raw Subscribe
+    /// <c>events</c> argument back for the caller's own assertions instead of
+    /// asserting a fixed shape - needed once that argument became dynamic per
+    /// §B2.
+    /// </summary>
+    private static async Task<(WebSocket Socket, JsonElement Events)> AcceptSubscriberCapturingEventsAsync(
+        HttpListener listener,
+        object? eventsCatalogResponse,
+        CancellationToken cancellationToken)
+    {
+        var context = await listener.GetContextAsync().WaitAsync(cancellationToken);
+        var webSocketContext = await context.AcceptWebSocketAsync(subProtocol: null);
+        var socket = webSocketContext.WebSocket;
+
+        await SendJsonAsync(
+            socket,
+            new { request = "Hello", info = new { instanceId = "self-test", name = "Mock Streamer.bot" } },
+            cancellationToken);
+
+        using var getEvents = await ReceiveJsonAsync(socket, cancellationToken);
+        Assert(
+            getEvents.RootElement.GetProperty("request").GetString() == "GetEvents",
+            "The event stream did not ask GetEvents before subscribing.");
+        var getEventsId = getEvents.RootElement.GetProperty("id").GetString();
+        if (eventsCatalogResponse is null)
+        {
+            await SendJsonAsync(
+                socket,
+                new { status = "error", id = getEventsId, error = "self-test: GetEvents deliberately failed" },
+                cancellationToken);
+        }
+        else
+        {
+            await SendJsonAsync(
+                socket,
+                new { status = "ok", id = getEventsId, events = eventsCatalogResponse },
+                cancellationToken);
+        }
+
+        using var subscribe = await ReceiveJsonAsync(socket, cancellationToken);
+        Assert(
+            subscribe.RootElement.GetProperty("request").GetString() == "Subscribe",
+            "The event stream did not subscribe.");
+        var events = subscribe.RootElement.GetProperty("events").Clone();
+        await SendJsonAsync(
+            socket,
+            new { status = "ok", id = subscribe.RootElement.GetProperty("id").GetString() },
+            cancellationToken);
+
+        return (socket, events);
+    }
+
+    private static Task SendEventAsync(
+        WebSocket socket,
+        string source,
+        string type,
+        object data,
+        CancellationToken cancellationToken) =>
+        SendJsonAsync(
+            socket,
+            new
+            {
+                timeStamp = DateTimeOffset.Now.ToString("O"),
+                @event = new { source, type },
+                data
+            },
+            cancellationToken);
+
     private static StreamerBotEventPayload ParsePayload(string json)
     {
         Assert(
@@ -965,6 +1828,24 @@ internal static class SelfTests
                 },
                 cancellationToken);
         }
+
+        // Per §B2's revised design, the stream asks GetEvents before it ever
+        // subscribes - answered with an empty catalog here, so every test
+        // using this helper keeps asserting the exact same fallback shape
+        // (General.Custom + Twitch.ChatMessage only) it always has.
+        using var getEvents = await ReceiveJsonAsync(socket, cancellationToken);
+        Assert(
+            getEvents.RootElement.GetProperty("request").GetString() == "GetEvents",
+            "The event stream did not ask GetEvents before subscribing.");
+        await SendJsonAsync(
+            socket,
+            new
+            {
+                status = "ok",
+                id = getEvents.RootElement.GetProperty("id").GetString(),
+                events = new { }
+            },
+            cancellationToken);
 
         using var subscribe = await ReceiveJsonAsync(socket, cancellationToken);
         Assert(

@@ -29,10 +29,34 @@ namespace SvrBridge.Tray;
 /// command can move it to the right controller or the headset instead - see
 /// §B2 and §B3 of the Phase 4 plan.
 /// </para>
+/// <para>
+/// From Phase 5 the offset within that anchor is the wearer's to choose: grab
+/// the move handle with the laser and the panel follows the pointing
+/// controller until the trigger is released. Two things make that nearly free.
+/// The offset is already a transform relative to the anchor device, so a drag
+/// is a continuous recompute of a value that already exists and release is
+/// simply "stop recomputing" - there is no world-to-local conversion step and
+/// no <c>SetOverlayTransformAbsolute</c>, which true world-lock would need and
+/// which stays deferred. And the interaction is gated on the gaze signal this
+/// class already computes for the scale animation, so an accidental grab needs
+/// the wearer to be both looking at the window and pointing at it. The grab is
+/// rigid: the panel keeps whatever relationship it had to the grabbing
+/// controller, so turning the wrist turns the panel - see
+/// <see cref="OverlayDrag"/>.
+/// </para>
 /// </summary>
 internal sealed class ChatOverlay : IDisposable
 {
     private const string OverlayKey = "ie.lonelyviper.svrbridge.chat";
+
+    private const uint HmdDeviceIndex = 0;
+
+    /// <summary>
+    /// Stands in for the head-to-panel distance while a pose is missing. Near
+    /// enough that no distance rule fires on it, which is the point: a
+    /// tracking dropout is not evidence about where the window is.
+    /// </summary>
+    private const float DefaultReadingDistanceMeters = 0.5f;
 
     private const float SmallWidthMeters = 0.12f;
     private const float LargeWidthMeters = 0.32f;
@@ -53,6 +77,77 @@ internal sealed class ChatOverlay : IDisposable
     private readonly ChatImageCache _chatImages;
     private readonly OverlayAnchorTracker _anchorTracker;
     private readonly Action<string> _log;
+
+    /// <summary>
+    /// Reported when a hand drag ends, so the worker can persist the new
+    /// placement and clear any Streamer.bot anchor override the wearer has
+    /// just overruled by hand. Never called during a drag: the panel moving
+    /// live is what the wearer sees, and writing a settings file per poll
+    /// would be absurd.
+    /// </summary>
+    private readonly Action<OverlayPlacement> _placementChanged;
+
+    private readonly ChatOverlayInput _input = new(ChatOverlayLayout.Buttons);
+    private readonly List<OverlayMouseEvent> _laserEvents = [];
+
+    private OverlayPlacement _placement;
+
+    /// <summary>
+    /// The grab in progress, or null. Held here rather than in
+    /// <see cref="ChatOverlayInput"/> because it is made of tracked-device
+    /// poses, which that class deliberately knows nothing about.
+    /// </summary>
+    private OverlayDrag? _drag;
+
+    private uint? _dragPointerDeviceIndex;
+    private bool _inputEnabled;
+    private bool _isGazing;
+
+    /// <summary>
+    /// Hides the window when it is turned away from the wearer or has been
+    /// left too far off to read - the behaviour established VR overlay apps
+    /// have, and which this window needed once its placement stopped being a
+    /// fixed constant. Independent of the <c>hide</c> control command, which
+    /// is the wearer's own explicit choice and is tracked separately.
+    /// </summary>
+    private readonly PanelVisibilityGate _visibility = new();
+
+    private bool _autoVisible = true;
+
+    /// <summary>
+    /// Whether the window grows and brightens on gaze at all. Off leaves it at
+    /// its configured size and opacity permanently.
+    /// <para>
+    /// Only the animation is switched off, never the gaze measurement itself:
+    /// gaze still gates whether the window accepts the laser, and that gate is
+    /// a safety property rather than a visual one - it is what stops a
+    /// permanently-present panel putting SteamVR into system-wide laser mouse
+    /// mode for an entire play session.
+    /// </para>
+    /// </summary>
+    private bool _gazeScaleEnabled = true;
+
+    /// <summary>
+    /// False when this SteamVR version refused to set a mouse scale on a
+    /// regular overlay - see <see cref="TryCreate"/>. The window then behaves
+    /// exactly as it did before this phase: readable, gaze-scaled, and not
+    /// movable by hand. The developer probe still works, since its question is
+    /// about the input method rather than about hit-testing.
+    /// </summary>
+    private bool _laserInputAvailable = true;
+
+    /// <summary>
+    /// Reset every time input is switched on, so the log records the first
+    /// laser event of each gaze rather than one line per pointer move.
+    /// <para>
+    /// This exists because "the handle does not respond" is not a diagnosis.
+    /// It has two very different causes - SteamVR sending this overlay nothing
+    /// at all, or sending pointer moves but no button events - and they need
+    /// opposite fixes. One log line at the top of each interaction tells them
+    /// apart without another headset session spent guessing.
+    /// </para>
+    /// </summary>
+    private bool _loggedFirstLaserEvent;
 
     private ChatGazeHysteresis _gaze;
 
@@ -93,6 +188,8 @@ internal sealed class ChatOverlay : IDisposable
         ChatImageCache chatImages,
         OverlayAnchorTracker anchorTracker,
         ChatGazeHysteresis gaze,
+        OverlayPlacement placement,
+        Action<OverlayPlacement> placementChanged,
         Action<string> log)
     {
         _surface = surface;
@@ -114,6 +211,8 @@ internal sealed class ChatOverlay : IDisposable
         _chatImages = chatImages;
         _anchorTracker = anchorTracker;
         _gaze = gaze;
+        _placement = placement;
+        _placementChanged = placementChanged;
         _log = log;
     }
 
@@ -127,9 +226,12 @@ internal sealed class ChatOverlay : IDisposable
         OpenVrInput openVr,
         IOverlayTextureSource textureSource,
         OverlayAnchor defaultAnchor,
+        OverlayPlacement placement,
         double opacity,
         double sizeScale,
         GazeSensitivity gazeSensitivity,
+        bool gazeScaleEnabled,
+        Action<OverlayPlacement> placementChanged,
         Action<string> log)
     {
         if (!openVr.SupportsOverlaySurfaces)
@@ -147,8 +249,33 @@ internal sealed class ChatOverlay : IDisposable
             surface.SetCurvature(0.05f);
             surface.SetAlpha(SmallAlpha * (float)(opacity / LargeAlpha));
             surface.SetSortOrder(0);
+            // Set once, at creation, and in the panel's own pixels: it is what
+            // makes a laser event's x/y directly comparable to the rectangles
+            // ChatOverlayLayout hands both the renderer and the hit test.
+            // Input itself stays off until the wearer looks at the window -
+            // see UpdateLaserInput.
+            //
+            // Non-fatal on purpose. SetOverlayMouseScale has only ever been
+            // called on the dashboard overlay in this app, and every previous
+            // first use of an overlay call against a regular overlay has been
+            // worth being careful about - the SetOverlayTexture finding is the
+            // standing example. A window that reads chat but cannot be
+            // dragged is a far better failure than no window at all.
+            var laserInput = true;
+            try
+            {
+                surface.SetMouseScale(ChatOverlayLayout.PanelWidth, ChatOverlayLayout.PanelHeight);
+            }
+            catch (Exception exception)
+            {
+                laserInput = false;
+                log(
+                    "The chat window cannot be moved by hand on this SteamVR version: "
+                    + $"{exception.Message} Everything else about it works.");
+            }
+
             renderer = new WpfChatRenderer(chatImages);
-            var anchorTracker = new OverlayAnchorTracker("The chat window", defaultAnchor, log);
+            var anchorTracker = new OverlayAnchorTracker("The chat window", defaultAnchor, log, placement);
             anchorTracker.Tick(openVr, surface);
             var overlay = new ChatOverlay(
                 surface,
@@ -157,10 +284,14 @@ internal sealed class ChatOverlay : IDisposable
                 chatImages,
                 anchorTracker,
                 ChatGazeHysteresis.Create(gazeSensitivity),
+                placement,
+                placementChanged,
                 log)
             {
                 _opacity = opacity,
-                _sizeScale = sizeScale
+                _sizeScale = sizeScale,
+                _gazeScaleEnabled = gazeScaleEnabled,
+                _laserInputAvailable = laserInput
             };
             surface.Show();
             log($"The chat window is on. {DescribePlacement(defaultAnchor)}");
@@ -211,7 +342,44 @@ internal sealed class ChatOverlay : IDisposable
     /// Streamer.bot <c>anchor</c> control command, or a <c>reset</c> handing
     /// back the saved default. A no-op if it is already there.
     /// </summary>
-    public void SetAnchorOverride(OverlayAnchor anchor) => _anchorTracker.SetAnchor(anchor);
+    public void SetAnchorOverride(OverlayAnchor anchor)
+    {
+        if (_anchorTracker.Anchor.Mode != anchor.Mode)
+        {
+            // A drag is only meaningful against the anchor mode it started on
+            // - its start pointer is measured relative to that device, and its
+            // offset is saved under that mode's key. Something moving the
+            // window out from under a drag in progress abandons it rather than
+            // writing a delta into the wrong mode's offset.
+            _drag = null;
+            _input.CancelDrag();
+        }
+
+        _anchorTracker.SetAnchor(anchor);
+    }
+
+    /// <summary>
+    /// Replaces the saved offsets - a reset from the VR settings page, or a
+    /// settings change arriving from the desktop. Takes effect on the next
+    /// tick, and abandons any drag in progress: the wearer asked for a
+    /// specific placement, so a half-finished drag must not overwrite it.
+    /// </summary>
+    public void SetPlacement(OverlayPlacement placement)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _drag = null;
+        _input.CancelDrag();
+        _placement = placement;
+        _anchorTracker.SetPlacement(placement);
+        // The whole point of a reset is to get a lost window back, so it must
+        // not stay auto-hidden on the strength of where it used to be. The
+        // gate re-evaluates from the new placement on the next tick.
+        _visibility.ForceVisible();
+    }
 
     /// <summary>
     /// Forces this surface hidden regardless of gaze, or clears that
@@ -242,6 +410,13 @@ internal sealed class ChatOverlay : IDisposable
     public void SetGazeSensitivity(GazeSensitivity sensitivity) => _gaze = ChatGazeHysteresis.Create(sensitivity);
 
     /// <summary>
+    /// Turns the grow-and-brighten-on-gaze animation on or off - a VR or
+    /// desktop settings change. See <see cref="_gazeScaleEnabled"/> for why
+    /// this does not also turn off the gaze measurement.
+    /// </summary>
+    public void SetGazeScaleEnabled(bool enabled) => _gazeScaleEnabled = enabled;
+
+    /// <summary>
     /// Developer-only: switches this surface between the default
     /// <c>SetOverlayRaw</c> path and the persistent-texture path - see
     /// <see cref="OverlayTextureUploader.TexturePathEnabled"/>. Off by
@@ -270,12 +445,48 @@ internal sealed class ChatOverlay : IDisposable
         // doing, including being hidden by a control command.
         ExpireInputProbe(nowMs);
 
-        if (_hidden)
+        // One pose pair, three answers - see PanelView. Measured after the
+        // anchor tick, so a drag applied last tick is reflected in where the
+        // panel actually is now rather than where it was.
+        var view = MeasurePanel(openVr);
+
+        // A drag overrules both gates. The wearer has hold of the window, so
+        // it must not shrink, must not hide, and must keep accepting the input
+        // that will eventually release it - see AnimateGaze and the reconcile
+        // in UpdateLaserInput for what happens when it does not.
+        var dragging = _drag is not null;
+        if (dragging)
+        {
+            _visibility.ForceVisible();
+        }
+
+        var autoVisible = dragging || _visibility.Update(view.FacingDot, view.DistanceMeters);
+        LogVisibilityChange(autoVisible, view);
+
+        if (_hidden || !autoVisible)
         {
             if (_shown)
             {
                 _surface.Hide();
                 _shown = false;
+            }
+
+            // A window nobody can see accepts nothing. Said here rather than
+            // left to the gaze update below, which this branch returns before
+            // reaching - a "hide" control command arriving mid-drag would
+            // otherwise leave an invisible panel still following the wearer's
+            // hand, and this branch also returns before the reconcile in
+            // UpdateLaserInput that would otherwise catch it.
+            _isGazing = false;
+            _input.SetGazing(false);
+            if (_drag is not null)
+            {
+                CancelDrag("the window was hidden");
+            }
+
+            if (_inputProbeExpiresAtMs is null)
+            {
+                SetInputEnabled(false);
             }
 
             return;
@@ -287,21 +498,94 @@ internal sealed class ChatOverlay : IDisposable
             _shown = true;
         }
 
-        AnimateGaze(openVr, nowMs);
+        AnimateGaze(view, nowMs);
+        // After the gaze update and before the repaint: the gaze state gates
+        // whether input is accepted at all, and a hover change this produces
+        // has to reach the screen on this same tick to feel responsive.
+        UpdateLaserInput(openVr);
         RepaintIfOwed(nowMs);
     }
 
-    private void AnimateGaze(OpenVrInput openVr, long nowMs)
+    /// <summary>
+    /// Where the panel stands relative to the wearer's head, from live poses.
+    /// <para>
+    /// Falls back to "directly in front, facing me, arm's length" when a pose
+    /// is missing rather than to zeros. A tracking dropout is not evidence
+    /// that the window should be hidden or shrunk, and the neutral answer
+    /// leaves whatever state the gates were already in undisturbed.
+    /// </para>
+    /// </summary>
+    private PanelView MeasurePanel(OpenVrInput openVr)
+    {
+        if (_anchorTracker.BoundDeviceIndex is not { } anchorIndex
+            || !openVr.TryGetDevicePose(HmdDeviceIndex, out var headPose)
+            || !openVr.TryGetDevicePose(anchorIndex, out var anchorPose))
+        {
+            return new PanelView(1f, 1f, DefaultReadingDistanceMeters);
+        }
+
+        var panelPose = anchorPose * _placement.ToTransform(_anchorTracker.Anchor.Mode);
+        return PanelView.From(headPose, panelPose);
+    }
+
+    /// <summary>
+    /// Says why the window disappeared, once per transition. A panel that
+    /// hides itself is indistinguishable from a broken one without this, and
+    /// the distance case in particular is unrecoverable by pointing at it -
+    /// the wearer needs to know the reset control is what they want.
+    /// </summary>
+    private void LogVisibilityChange(bool visible, PanelView view)
+    {
+        if (_autoVisible == visible)
+        {
+            return;
+        }
+
+        _autoVisible = visible;
+        if (visible)
+        {
+            _log("The chat window is back in view.");
+            return;
+        }
+
+        _log(
+            view.DistanceMeters > 2f
+                ? $"The chat window hid itself: it is {view.DistanceMeters:0.0} m away. "
+                  + "Reset its position from the VR settings tab to bring it back."
+                : "The chat window hid itself: it is turned away from you.");
+    }
+
+    private void AnimateGaze(PanelView view, long nowMs)
     {
         var deltaMs = _lastAnimateMs is { } last ? Math.Max(0L, nowMs - last) : 0L;
         _lastAnimateMs = nowMs;
 
-        var isGazing = _gaze.Update(GazeDot(openVr.LatestMotion));
+        // Updated every tick regardless, so the hysteresis state stays current
+        // and the window resolves to the right size the moment a drag ends.
+        var isGazing = _gaze.Update(view.GazeDot);
+
+        // A drag holds the window open whatever gaze says.
+        //
+        // Gaze is measured to the anchor *device*, not to the panel - see
+        // GazeDot - so dragging the window away from the wrist and following
+        // it with your head walks the anchor hand out of the gaze cone. The
+        // window then shrinks mid-drag, which drops input, which means the
+        // release that would end the drag can never arrive. Holding it open
+        // for the duration is also simply what the interaction means: the
+        // wearer has hold of the thing, so they are unambiguously interacting
+        // with it, whichever way they happen to be looking.
+        isGazing |= _drag is not null;
+        _isGazing = isGazing;
+
+        // With the animation switched off the window sits at its full size and
+        // opacity and stays there. Deliberately the large state rather than
+        // some average: a window that never grows has to be readable as it is.
+        var grown = isGazing || !_gazeScaleEnabled;
         var largeAlpha = (float)_opacity;
         var smallAlpha = largeAlpha * (SmallAlpha / LargeAlpha);
         var sizeScale = (float)_sizeScale;
-        var targetWidth = (isGazing ? LargeWidthMeters : SmallWidthMeters) * sizeScale;
-        var targetAlpha = isGazing ? largeAlpha : smallAlpha;
+        var targetWidth = (grown ? LargeWidthMeters : SmallWidthMeters) * sizeScale;
+        var targetAlpha = grown ? largeAlpha : smallAlpha;
 
         // Exponential ease towards the target rather than an instant jump,
         // so the transition reads as smooth motion - required by the manual
@@ -320,50 +604,299 @@ internal sealed class ChatOverlay : IDisposable
     }
 
     /// <summary>
-    /// Cosine of the angle between the head's forward vector and the
-    /// head-to-window direction, both already expressed in
-    /// <see cref="MotionSample"/>'s head-relative <see cref="BodyFrame"/>.
+    /// Reconciles whether this overlay accepts the laser, drains whatever it
+    /// received, and advances a drag in progress.
     /// <para>
-    /// A head-anchored window (see <see cref="OverlayAnchor.HeadOffset"/>)
-    /// sits directly ahead of the wearer by construction, so there is no
-    /// separate "not looking at it" state worth detecting there - this
-    /// always reads as fully gazed at, which is the degenerate case of the
-    /// same formula rather than a special one. A controller-anchored window
-    /// is treated as co-located with whichever hand it currently follows,
-    /// close enough at wrist distance to matter.
+    /// Input is on only while the window is gazed at, per §B2 - the stricter
+    /// of the two options that section offers, chosen even though the laser
+    /// probe showed a running game keeps its trigger either way. Ignoring
+    /// events while not gazed at would have been enough; not asking for them
+    /// costs nothing extra and leaves nothing to be wrong about later.
     /// </para>
     /// <para>
-    /// Because that frame's own forward axis is, by construction, its local
-    /// +Z, the dot product collapses to the Z component of the normalised
-    /// direction to the controller - no explicit forward vector is needed.
-    /// <see cref="BodyFrame"/> is yaw-only (see its own remarks), so this
-    /// reads as "roughly facing the anchor's direction" rather than a true
-    /// eye-line check that accounts for head pitch; that is the same
-    /// simplification the rest of this codebase's gesture recognition
-    /// already makes with the same data.
+    /// The developer probe overrides the gate while it runs, which is the
+    /// whole point of it: it exists to answer what an always-on input method
+    /// does to a running game.
+    /// </para>
+    /// <para>
+    /// Note what the gate means in head-anchor mode. <see cref="GazeDot"/>
+    /// reports a head-anchored window as always gazed at - it sits directly
+    /// ahead of the wearer by construction, so there is no "not looking at it"
+    /// state to detect - which leaves input permanently on there. That is the
+    /// existing, hardware-tuned gaze model rather than a decision taken here,
+    /// and the probe result says a running game keeps its trigger regardless;
+    /// the handle is still a small target in one corner, so a grab needs
+    /// deliberate aim either way.
     /// </para>
     /// </summary>
-    private float GazeDot(MotionSample motion)
+    private void UpdateLaserInput(OpenVrInput openVr)
+    {
+        var wantInput = (_isGazing && _laserInputAvailable) || _inputProbeExpiresAtMs is not null;
+        SetInputEnabled(wantInput);
+        _input.SetGazing(_isGazing && _laserInputAvailable);
+
+        // Drained even when input is off, so a queue that filled just before
+        // gaze was lost cannot be replayed against the panel later. The router
+        // discards them; this just stops them accumulating.
+        _surface.PollMouseEvents(_laserEvents);
+        if (_laserEvents.Count > 0)
+        {
+            HandleLaserEvents(openVr);
+        }
+
+        // Reconciled rather than enumerated, deliberately. A drag can only end
+        // properly through a release event, and a release event can only
+        // arrive while input is on - so anything that turns input off while
+        // the wearer is still holding on strands the drag, and the panel
+        // follows their hand for ever with no way to let go. That is not a
+        // hypothetical: it is what the first build of this did. Rather than
+        // trying to remember every path that can withdraw the hold, this
+        // checks the one invariant that matters - a live drag requires a live
+        // hold - on every tick.
+        if (_drag is not null && !_input.IsHolding)
+        {
+            CancelDrag("the window stopped accepting input");
+        }
+
+        AdvanceDrag(openVr);
+    }
+
+    private void HandleLaserEvents(OpenVrInput openVr)
     {
         var anchor = _anchorTracker.Anchor;
-        if (anchor.Mode == OverlayAnchorMode.Head)
+
+        foreach (var laserEvent in _laserEvents)
         {
-            return 1f;
+            // SteamVR reports overlay mouse coordinates with the origin at the
+            // bottom-left; every rectangle in ChatOverlayLayout is top-left,
+            // like the texture. The dashboard applies the same flip - see
+            // OpenVrInput.TryGetDashboardInteraction.
+            var flipped = laserEvent with { Y = ChatOverlayLayout.PanelHeight - laserEvent.Y };
+            LogLaserEvent(flipped, laserEvent.DeviceIndex);
+
+            switch (_input.Handle(flipped))
+            {
+                case ChatInputOutcome.DragBegan:
+                    BeginDrag(openVr, anchor, laserEvent.DeviceIndex);
+                    break;
+                case ChatInputOutcome.DragEnded:
+                    if (_drag is not null)
+                    {
+                        _drag = null;
+                        _placementChanged(_placement);
+                        _log("The chat window's new position was saved.");
+                    }
+
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Records enough to tell "SteamVR sent this overlay nothing" apart from
+    /// "SteamVR sent moves but no button" without a second headset session -
+    /// the two causes of "the handle does not respond", which need opposite
+    /// fixes and which the first Phase 5 headset run could not distinguish.
+    /// <para>
+    /// Button events are logged every time - a trigger pull is a rare,
+    /// deliberate act and each one is worth a line. Pointer moves are logged
+    /// once per interaction, because they arrive faster than the panel
+    /// repaints and would drown the log otherwise.
+    /// </para>
+    /// </summary>
+    private void LogLaserEvent(in OverlayMouseEvent laserEvent, uint deviceIndex)
+    {
+        var isButton = laserEvent.Kind is OverlayMouseEventKind.ButtonDown
+            or OverlayMouseEventKind.ButtonUp;
+        if (!isButton && _loggedFirstLaserEvent)
+        {
+            return;
         }
 
-        var trackingFlag = anchor.Hand == OverlayAnchorHand.Left
-            ? MotionTracking.Left
-            : MotionTracking.Right;
-        if ((motion.Tracking & trackingFlag) == 0)
+        _loggedFirstLaserEvent = true;
+        var hit = ChatOverlayLayout.IndexAt(ChatOverlayLayout.Buttons, laserEvent.X, laserEvent.Y)
+                  == ChatOverlayLayout.MoveHandleIndex
+            ? "the move handle"
+            : "no control";
+        _log(
+            $"The chat window received a laser {laserEvent.Kind} at "
+            + $"{laserEvent.X:0}, {laserEvent.Y:0} over {hit} (device {deviceIndex}).");
+    }
+
+    /// <summary>
+    /// Takes hold of the panel: records where it currently sits relative to
+    /// the grabbing controller, and nothing else. Every later tick restores
+    /// that one relationship against wherever the two devices have moved to,
+    /// which is what makes the grab carry orientation as well as position.
+    /// </summary>
+    private void BeginDrag(OpenVrInput openVr, OverlayAnchor anchor, uint eventDeviceIndex)
+    {
+        _dragPointerDeviceIndex = ResolvePointerDeviceIndex(openVr, anchor, eventDeviceIndex);
+        if (!TryGetGrabPoses(openVr, out var anchorPose, out var pointerPose))
         {
-            return -1f;
+            // Nothing is tracking well enough to define a grab. Refusing is
+            // the only safe answer: a grab built on a bad pose would snap the
+            // panel somewhere arbitrary the instant tracking recovered.
+            _input.CancelDrag();
+            _log("The chat window could not be grabbed: a controller is not tracking.");
+            return;
         }
 
-        var direction = anchor.Hand == OverlayAnchorHand.Left
-            ? motion.LeftPosition
-            : motion.RightPosition;
-        var lengthSquared = direction.LengthSquared();
-        return lengthSquared < 1e-6f ? -1f : direction.Z / MathF.Sqrt(lengthSquared);
+        _drag = OverlayDrag.Begin(anchor.Mode, _placement.For(anchor.Mode), anchorPose, pointerPose);
+        _log("The chat window is being moved.");
+    }
+
+    /// <summary>
+    /// Recomputes and applies the panel's offset from both devices' current
+    /// poses. Runs per tick rather than per mouse-move because overlay mouse
+    /// events carry 2D panel coordinates, not a world-space ray - they can say
+    /// the wearer is holding on, but not where they have moved to.
+    /// </summary>
+    private void AdvanceDrag(OpenVrInput openVr)
+    {
+        if (_drag is not { } drag)
+        {
+            return;
+        }
+
+        var anchor = _anchorTracker.Anchor;
+        if (anchor.Mode != drag.Mode)
+        {
+            // Something moved the window to a different anchor mid-drag. Its
+            // grab was measured against the old anchor and its result belongs
+            // under the old mode's key, so it cannot be carried across.
+            CancelDrag("the window changed anchor");
+            return;
+        }
+
+        if (!TryGetGrabPoses(openVr, out var anchorPose, out var pointerPose))
+        {
+            // Tracking dropped out mid-drag. Abandoning leaves the panel where
+            // it had already been dragged to, which is what the wearer can
+            // see; continuing from a stale pose would jump it somewhere they
+            // did not choose the moment tracking returned.
+            CancelDrag("a controller lost tracking");
+            return;
+        }
+
+        var offset = drag.OffsetAt(anchorPose, pointerPose);
+        if (!offset.IsUsable())
+        {
+            CancelDrag("the controller pose was unusable");
+            return;
+        }
+
+        _placement = _placement.With(
+            anchor.Mode,
+            offset.WithTranslationClamped(OverlayPlacement.LimitMeters));
+        _anchorTracker.SetPlacement(_placement);
+        // Immediately rather than next tick: at a 10 ms poll this is the
+        // difference between a panel that tracks the hand and one that lags
+        // behind it by a visible frame.
+        _anchorTracker.Tick(openVr, _surface);
+    }
+
+    private void CancelDrag(string reason)
+    {
+        _drag = null;
+        _input.CancelDrag();
+        _log($"The chat window stopped moving: {reason}.");
+    }
+
+    /// <summary>
+    /// Both poses a grab needs: the device the panel hangs off, and the device
+    /// doing the pointing. Either being untracked makes the grab undefined,
+    /// so this is all-or-nothing.
+    /// </summary>
+    private bool TryGetGrabPoses(
+        OpenVrInput openVr,
+        out VrOverlayTransform anchorPose,
+        out VrOverlayTransform pointerPose)
+    {
+        anchorPose = VrOverlayTransform.Identity;
+        pointerPose = VrOverlayTransform.Identity;
+        return _anchorTracker.BoundDeviceIndex is { } anchorIndex
+               && _dragPointerDeviceIndex is { } pointerIndex
+               && openVr.TryGetDevicePose(anchorIndex, out anchorPose)
+               && openVr.TryGetDevicePose(pointerIndex, out pointerPose);
+    }
+
+    /// <summary>
+    /// Which tracked device is doing the pointing. SteamVR names it on the
+    /// event itself; the fallback for an invalid index is the hand opposite
+    /// the anchor, since a wrist panel is reached with the other hand.
+    /// </summary>
+    private static uint? ResolvePointerDeviceIndex(
+        OpenVrInput openVr,
+        OverlayAnchor anchor,
+        uint eventDeviceIndex)
+    {
+        var left = openVr.TryGetControllerDeviceIndex(ControllerHand.Left);
+        var right = openVr.TryGetControllerDeviceIndex(ControllerHand.Right);
+        if (eventDeviceIndex == left || eventDeviceIndex == right)
+        {
+            return eventDeviceIndex;
+        }
+
+        return anchor.Mode == OverlayAnchorMode.Controller && anchor.Hand == OverlayAnchorHand.Right
+            ? left
+            : right;
+    }
+
+    /// <summary>
+    /// The single writer of both halves of "this overlay is interactive", so
+    /// the gaze gate and the developer probe cannot fight over either.
+    /// Idempotent, because this is called on every poll.
+    /// <para>
+    /// Both halves, because one alone does nothing.
+    /// <c>SetOverlayInputMethod</c> declares that this overlay would accept
+    /// mouse events; <c>VROverlayFlags_MakeOverlaysInteractiveIfVisible</c> is
+    /// what makes SteamVR generate any outside the dashboard. Phase 5's first
+    /// headset run set only the first and the move handle never received a
+    /// click - see
+    /// <see cref="VrOverlaySurface.SetMakesOverlaysInteractive"/>.
+    /// </para>
+    /// <para>
+    /// Order matters on the way down. The flag is what puts SteamVR into
+    /// system-wide laser mouse mode, so it comes off first and goes on last -
+    /// the app is never in a state where the laser is live but this overlay
+    /// has stopped accepting what it delivers.
+    /// </para>
+    /// </summary>
+    private void SetInputEnabled(bool enabled)
+    {
+        if (_inputEnabled == enabled)
+        {
+            return;
+        }
+
+        _inputEnabled = enabled;
+        try
+        {
+            if (enabled)
+            {
+                _surface.SetAcceptsLaserInput(true);
+                _surface.SetMakesOverlaysInteractive(true);
+                _loggedFirstLaserEvent = false;
+            }
+            else
+            {
+                _surface.SetMakesOverlaysInteractive(false);
+                _surface.SetAcceptsLaserInput(false);
+            }
+        }
+        catch (Exception exception)
+        {
+            // Same reasoning as the mouse-scale guard in TryCreate: the flag
+            // is a first use against a regular overlay, and this runs inside a
+            // Tick whose caller answers an exception by turning chat off
+            // entirely. A window that cannot be dragged beats no window.
+            _laserInputAvailable = false;
+            _inputEnabled = false;
+            _log(
+                "The chat window cannot be made interactive on this SteamVR version: "
+                + $"{exception.Message} Everything else about it works.");
+        }
     }
 
     /// <summary>
@@ -384,8 +917,8 @@ internal sealed class ChatOverlay : IDisposable
             return;
         }
 
-        _surface.SetAcceptsLaserInput(true);
         _inputProbeExpiresAtMs = nowMs + InputProbeDurationMs;
+        SetInputEnabled(true);
         _log(
             $"Laser input probe ON for the chat window for {InputProbeDurationMs / 1000} seconds. "
             + "Point a controller at it in a running game and pull the trigger: does the game "
@@ -404,7 +937,10 @@ internal sealed class ChatOverlay : IDisposable
         }
 
         _inputProbeExpiresAtMs = null;
-        _surface.SetAcceptsLaserInput(false);
+        // Not an unconditional off: since Phase 5 gaze also asks for input,
+        // and ending the probe must not take a grab away from a wearer who is
+        // looking straight at the window.
+        SetInputEnabled(_isGazing);
         _log(expired
             ? "Laser input probe OFF for the chat window - the timer ran out, as designed."
             : "Laser input probe OFF for the chat window.");
@@ -429,12 +965,21 @@ internal sealed class ChatOverlay : IDisposable
         // separation that the two counters cannot cancel each other out at
         // any version either is realistically going to reach.
         var combinedVersion = (messagesVersion << 20) ^ _chatImages.Version;
-        if (!_repaintThrottle.ShouldRepaint(combinedVersion, nowMs))
+
+        // A hover change is its own reason to repaint, deliberately not folded
+        // into the message-version throttle above. Sweeping the laser across
+        // the panel must light the handle up promptly or the control feels
+        // dead; waiting out the 10 Hz message throttle would put up to 100 ms
+        // between pointing at it and seeing it respond. It is affordable
+        // precisely because it fires on transitions between rectangles, not on
+        // pointer movement - see ChatOverlayInput.
+        var hoverChanged = _input.TakeRepaintOwed();
+        if (!hoverChanged && !_repaintThrottle.ShouldRepaint(combinedVersion, nowMs))
         {
             return;
         }
 
-        var rendered = _renderer.Render(new ChatContent(snapshot));
+        var rendered = _renderer.Render(new ChatContent(snapshot, _input.HoveredIndex));
         _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
         _repaintThrottle.MarkPainted(combinedVersion, nowMs);
     }
@@ -454,10 +999,12 @@ internal sealed class ChatOverlay : IDisposable
         // Before _disposed is set, so it actually runs: leaving the laser
         // pointer enabled on a surface that is about to be destroyed is
         // harmless, but leaving it on across a worker restart that reuses the
-        // key would not be, and this costs nothing.
+        // key would not be, and this costs nothing. Unconditional here, unlike
+        // StopInputProbe, because nothing is going to tick this again.
         try
         {
-            StopInputProbe();
+            _inputProbeExpiresAtMs = null;
+            SetInputEnabled(false);
         }
         catch (Exception)
         {

@@ -27,13 +27,32 @@ public enum GazeSensitivity
 /// the VR page and the desktop page can never disagree about what a setting
 /// means or what its default is.
 /// </summary>
+/// <param name="ChatPlacement">
+/// The chat window's hand-placed offsets, one per anchor mode. Unlike every
+/// other field here it is usually changed by dragging the window in the
+/// headset rather than by a control on the settings page - the page's only
+/// control for it is the reset back to
+/// <see cref="OverlayPlacement.Default"/>, which exists because a window
+/// dragged somewhere unreachable cannot be dragged back.
+/// </param>
+/// <param name="NotificationPlacement">
+/// The notification panel's hand-placed offsets, one per anchor mode - the
+/// same mechanism <paramref name="ChatPlacement"/> already is, added for the
+/// positioning frame in §B1 of the Phase 7 plan. Its own page control is also
+/// only a reset back to <see cref="OverlayPlacement.Default"/>.
+/// </param>
+/// <param name="NotificationAppearance">Everything §B3/§B4/§B5 of the Phase 7 plan added - see <see cref="Core.NotificationAppearanceSettings"/>.</param>
 public sealed record VrSettingsSnapshot(
     bool ChatEnabled,
     OverlayAnchor ChatAnchor,
+    OverlayPlacement ChatPlacement,
     double ChatOpacity,
     double ChatSizeScale,
     GazeSensitivity GazeSensitivity,
+    bool ChatGazeScaleEnabled,
     bool NotificationsEnabled,
     OverlayAnchor NotificationAnchor,
     double NotificationOpacity,
-    double NotificationSizeScale);
+    double NotificationSizeScale,
+    OverlayPlacement NotificationPlacement,
+    NotificationAppearanceSettings NotificationAppearance);

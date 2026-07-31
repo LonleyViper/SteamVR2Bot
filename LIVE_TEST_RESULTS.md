@@ -2230,3 +2230,702 @@ without widening visibility purely for a probe. The expiry is a single
 comparison against `Environment.TickCount64`, and the one real hazard - using a
 different clock in the worker's start command than `Tick` compares against -
 was caught by inspection before this shipped.
+
+## Phase 5 — grab the chat window and place it where you want
+
+### What this phase built
+
+`SetOverlayInputMethod` is now on for the chat window whenever the wearer is
+looking at it, and off otherwise. A four-way-arrow move handle sits in the
+panel's top-right corner. Grab it with the laser, and the panel follows the
+pointing controller until the trigger is released; wherever it ends up is
+saved, per anchor mode, and survives a restart. **Reset chat window position**
+on the VR settings tab puts it back to the placement Phases 1/3 proved on
+hardware.
+
+Two structural rules from §4 of the plan are kept intact:
+`ChatOverlayLayout.Buttons` is one rectangle table read by the renderer, the
+hover highlight and the hit test alike, so what lights up is what activates;
+and the drag needs no new vtable index, because a controller- or head-anchored
+overlay's offset is already a transform relative to its device.
+
+### The first thing to check, before the drag itself
+
+The laser-input probe above proved a running VR game keeps its trigger while an
+overlay accepts laser input. It deliberately did **not** prove the overlay also
+receives it. Row 1 below is that question, and everything after it depends on
+the answer. If a click never lands, stop and report — the reason is worth
+knowing before more is built on this.
+
+### The pointer dot — a question this phase could not answer alone
+
+§B1b asks whether SteamVR already draws a cursor on a regular overlay with
+mouse input enabled. It certainly does on the dashboard; on a regular overlay it
+is untested, and it can only be answered in the headset. Row 2 records it.
+
+**`SetOverlayCursor` was deliberately not added.** It needs a new vtable index,
+and this codebase's own rule is that an index is derived and cross-checked
+against hardware, never guessed — see `OpenVrInput.TryGetOverlayTable`. Adding
+one that cannot be tested in the same session would be exactly the mistake that
+comment exists to prevent. The hover highlight is the primary feedback either
+way: it says what you would hit, not merely where you are aimed.
+
+### Preparation
+
+Publish and launch `artifacts\publish\SteamVR2Bot.exe` (close any running
+instance first — the publish fails on a locked exe). Chat on, at least one chat
+message sent so the window exists.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Look at the chat window so it grows, point at the move handle, pull the trigger | **The question row.** The handle highlights under the pointer, and the click registers — the log says "The chat window is being moved" | **FAIL** on the first run; **PASS** after the interactive-flag fix below. User-confirmed: "it moves now" |
+| 2 | While pointing at the panel, note whether SteamVR draws a pointer dot on it | Answers §B1b. Either answer is fine; record which | **PASS — SteamVR draws the pointer itself.** No `SetOverlayCursor`, and therefore no new vtable index, is needed |
+| 3 | The handle is visible and grabbable when looking at the panel | Visible at rest, obviously highlighted on hover | **PASS** — always visible; grabbable only while the panel is enlarged, which is the gaze gate working as designed |
+| 4 | Drag the window around | Smooth; the panel does not detach, jump, or lag behind the hand | **PARTIAL** — moved smoothly with no detaching, but translation only: no rotation or tilt. Reworked to a rigid 6-DOF grab; re-run required |
+| 5 | Release, close the app, reopen it | The window comes back exactly where it was left | **PASS** — position survived a close and reopen |
+| 6 | VR settings tab → **Reset chat window position** | The window returns to exactly its original placement, live, without leaving the page | **FAIL** — the control did nothing. Fixed below; re-run required |
+| 7 | Point at the panel without looking at it (turn your head away, keep aiming) | Nothing highlights and nothing grabs — input is off outside the gazed state | **PASS** |
+| 8 | **In an actual VR game: play normally without deliberately interacting with the window** | **The row that matters most.** Normal play is unaffected | **PASS** — and this one now means something: it was run with `MakeOverlaysInteractiveIfVisible` live, so system-wide laser mouse mode does **not** cost the game its input |
+| 9 | Put the anchor controller to sleep and wake it | The window reattaches, at the saved offset rather than the default | **PASS** |
+| 10 | Fire an existing shortcut | It fires exactly once, unchanged | **PASS** |
+
+### Notes for whoever runs this
+
+- Row 4's feel is worth reporting in detail. The movement is driven by
+  `MotionSample`'s body frame, which is yaw-only and carries no controller
+  rotation, so the axis mapping is exact only while the anchor device is level
+  and facing forward. The drag is relative and continuously visible, so a
+  rotated wrist should cost a slightly skewed direction of travel rather than a
+  wrong destination — but "slightly skewed" is a claim about how it feels, and
+  only the headset can settle it.
+- Row 7 is the accidental-grab guard. In **head** anchor mode it will not hold,
+  by design: `GazeDot` reports a head-anchored window as always gazed at, since
+  it sits directly ahead of the wearer by construction. Run row 7 on the
+  controller anchor.
+- If row 1 fails, rows 3–7 and 9 are moot. Row 8 is still worth running: it
+  says whether turning input on costs the wearer anything even when nothing
+  lands.
+
+### Row 1 failed — `SetOverlayInputMethod` alone does not turn the laser on
+
+**The finding: an input method is a declaration, not a switch.** Setting
+`SetOverlayInputMethod(Mouse)` on a regular overlay says only that the overlay
+*would* accept mouse events. It does not cause any to be produced. Outside the
+dashboard, SteamVR is not pointing anything at overlays at all, so there was
+nothing to accept and the move handle never saw a click.
+
+The missing half is an overlay flag. From `openvr.h`:
+
+```
+// If this is set and the overlay's input method is not none, the system-wide laser mouse
+// mode will be activated whenever this overlay is visible.
+VROverlayFlags_MakeOverlaysInteractiveIfVisible = 1 << 16,
+```
+
+**How the value was derived, not guessed.** Read out of a real `openvr.h` on
+this machine (`IVROverlay_027`, against the `IVROverlay_028` this app
+requests), and cross-checked against a value from the same enum that this app
+already runs successfully on hardware: `SendVRDiscreteScrollEvents = 1 << 6`,
+which is exactly what `EnsureDashboardCreated` passes and which the dashboard's
+working scroll proves live. Same enum, same bit-constant style, one member
+already validated in the headset. No new vtable index was needed —
+`SetOverlayFlag` has been anchor 11 since Phase 1.
+
+**What was changed.** `ChatOverlay.SetInputEnabled` now drives both halves
+together, under the same gaze gate: input method and flag on when gazed at,
+off otherwise. The flag comes off first and goes on last, so the app is never
+in a state where the laser is live but the overlay has stopped accepting what
+it delivers.
+
+### This voids the earlier probe result, in the direction that matters
+
+The laser-input probe above concluded that a running VR game keeps its trigger
+while an overlay accepts laser input. **That measurement was taken with the
+mechanism switched off.** The probe set the input method and nothing else, so
+system-wide laser mouse mode was never activated — which is also precisely why
+the probe's own scope note could not claim the overlay had received anything.
+It had not. Nothing was being routed.
+
+So the reassuring half of that result does not carry over. The question it was
+meant to answer is open again, and now for real:
+
+> With `MakeOverlaysInteractiveIfVisible` set, does a running VR game still get
+> the trigger while the wearer is looking at the chat window?
+
+The word to weigh in the header comment is **system-wide**. This flag does not
+make one overlay interactive; it puts SteamVR into laser mouse mode for as long
+as the overlay is visible. The chat window is permanently visible, which is why
+the flag is toggled on gaze rather than set once at creation — but while the
+wearer is looking at their wrist, the whole system is in laser mode.
+
+**Row 8 is therefore no longer a formality — it is the risk row.** Run it
+deliberately: in a real game, look at the chat window, then look away and keep
+playing. If laser mode costs the game its trigger, gaze-gating is not enough
+and the interaction needs an explicit summon instead. The probe (tray → Chat
+test harness) now exercises the real mechanism and is still self-limiting, so
+it remains the safe way to ask.
+
+### The build now says which failure it hit
+
+"The handle does not respond" has two causes needing opposite fixes — nothing
+arriving at all, versus moves arriving but no button events — and the first run
+could not tell them apart. The chat window now logs the first laser event of
+each interaction and every button event, with coordinates and what they hit:
+
+```
+The chat window received a laser Move at 448, 50 over the move handle (right controller).
+The chat window received a laser ButtonDown at 448, 50 over the move handle (right controller).
+```
+
+If row 1 fails again, that log line is the answer. **No line at all** means
+SteamVR still is not routing to the overlay. **Move but no ButtonDown** means
+the pointer works and the trigger is being consumed elsewhere — at which point
+the action-set priority note is the next place to look, though note this app
+sits at priority 0 deliberately and should not be taking it.
+
+### Second run, 2026-07-30 — eight of ten pass, and row 8 now means something
+
+The interactive-flag fix landed: **row 1 passes, and clicks land.** Rows 2, 3,
+5, 7, 9 and 10 pass unchanged.
+
+**Row 2 answers §B1b: SteamVR draws the pointer itself** on a regular overlay
+once laser mouse mode is active. `SetOverlayCursor` is not needed, and neither
+is the new vtable index it would have cost. The deliberate decision not to
+guess that index cost nothing.
+
+**Row 8 is the important one.** It was re-run with
+`MakeOverlaysInteractiveIfVisible` genuinely live, which is what the earlier
+probe never tested — and normal play in a real VR game is unaffected. That is
+now a real result rather than a measurement taken with the mechanism off. The
+gaze gate is sufficient; an explicit summon gesture is not needed, and the
+fallback design that would have required is off the table.
+
+Two rows failed, both fixed below and both needing a re-run.
+
+### Row 4 — the drag was translation-only, and that is not enough
+
+The panel moved in X and Y but could not be tilted or turned. Reported as
+needing "full spectrum based on controller orientation", which is right: a
+wrist panel that can only be slid around is awkward to read at any angle the
+fixed watch-face tilt did not anticipate.
+
+**Cause, and it was a design choice rather than a bug.** The drag was driven
+from `MotionSample`, whose body frame is *yaw-only and carries no device
+rotation at all* — deliberately, because the gesture recognizers need it that
+way, so that glancing down mid-gesture does not make a level sweep read as a
+diagonal one. A frame with no rotation in it can only ever produce translation.
+Persisting three numbers per anchor mode followed from the same assumption.
+
+**What changed.** The grab is now rigid and six degrees of freedom. On
+mouse-down it records one constant — where the panel sits relative to the
+grabbing controller — and every tick restores that relationship against both
+devices' current poses:
+
+```
+PanelInPointer = inverse(pointerPose) * (anchorPose * offset)     // once, on grab
+offset         = inverse(anchorPose) * (pointerPose * PanelInPointer)   // every tick
+```
+
+Turning the wrist turns the panel; pushing it away moves it away. Moving the
+*anchor* hand still leaves the panel alone, because it is attached to that hand
+already.
+
+Three consequences worth recording:
+
+- **`OverlayPlacement` now stores a full transform per anchor mode**, not a
+  translation. Saved settings, the worker's command-line argument and the
+  worker message channel all carry twelve floats per mode instead of three.
+- **`MotionSampling` was not touched.** A new, additive
+  `OpenVrInput.TryGetDevicePose` reads the same pose array `SampleMotion`
+  builds from and converts nothing — `HmdMatrix34` and `VrOverlayTransform` are
+  the same layout by construction. Bending the gesture frame to also serve a UI
+  feature would have put a hardware-validated recognition path at risk.
+- **The yaw-only approximation is gone entirely**, along with the caveat about
+  the drag being exact only while the anchor device was level. There is no
+  frame conversion left to be approximately right.
+
+### Row 6 — reset did nothing, because it decided it had nothing to do
+
+`HandleResetPlacementClick` returned early when the placement it held already
+looked like the default, and `DrawResetPlacement` greyed the button out on the
+same test. Both read the VR settings page's *own copy* of the settings, which
+can fall behind a drag made in the headset — the page is long-lived and is only
+refreshed on paths that were not guaranteed to have run.
+
+That is a bad shape for a recovery control specifically. The wearer pressing it
+has no way to tell "already at the default" from "broken", and the moment they
+most need it is exactly the moment the page is most likely to be stale.
+
+**Fixed by deleting the cleverness.** The reset is unconditional and the button
+is always drawn live. Resetting to the default when already at the default is
+idempotent and costs one repaint, so there was nothing to buy by guessing. The
+click and the resulting move are both logged.
+
+### Re-run needed — rows 4 and 6 only
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 4b | Grab the handle and **turn and tilt** the controller, not just move it | The panel turns and tilts with the hand, rigidly, as if held | **not run** |
+| 4c | While dragging, move the *anchor* hand | The panel stays where it was put, rather than being dragged twice over | **not run** |
+| 6b | Drag the window somewhere obvious, then VR settings tab → **Reset chat window position** | The window snaps back to the default placement immediately, without leaving the page. The log records both the click and the move | **not run** |
+| 6c | Press reset again with the window already at the default | Nothing moves, nothing breaks — it is idempotent, not disabled | **not run** |
+| 5b | Re-run row 5 against the new saved shape | A placement including rotation survives a close and reopen | **not run** |
+
+### Regression, same day — no chat window at all after the 6-DOF rework
+
+Reported immediately after the previous change: the chat window was gone.
+
+**Not a crash.** The log is clean and shows the overlay being created and
+attached normally — "The chat window is on", "following the left controller
+(device 6)". It was attached with an **all-zero transform**, which collapses
+the overlay quad to nothing. No exception, no error log line, no misplaced
+panel; the window simply ceases to exist.
+
+**Cause — a persisted field changed shape without a version marker.**
+`ChatPlacement` went from three numbers per anchor mode to a full twelve-element
+transform in the same change that made the grab rigid. A settings file written
+minutes earlier, in the old shape, has no property the new shape recognises, so
+`System.Text.Json` left the struct at its default: all zeros. That is not
+"absent", so no default kicked in; it is not a deserialisation error, so nothing
+threw; and it is not non-finite, so the validity check that existed at the time
+let it straight through. The tray then saved those zeros back, making it
+persistent.
+
+Confirmed by reading the file:
+
+```json
+"ChatPlacement": { "ControllerOffset": { "M00": 0, "M01": 0, ... } }
+```
+
+**Fix, at the level the mistake was made.** `VrOverlayTransform.IsUsable` now
+requires the rotation block to actually *be* a rotation — three unit-length,
+mutually perpendicular basis vectors — not merely to be finite. A zero matrix
+fails that immediately, and so does any other structurally-present garbage. The
+tolerance is loose (0.01) because legitimate values here are tracked poses
+composed with inverses of tracked poses and carry real float error; it only has
+to reject nonsense, and zero is not a close call.
+
+Two layers, doing different jobs:
+
+- `OverlayPlacement.ToTransform` already refused to apply an unusable value, so
+  with `IsUsable` corrected the window comes back on the next launch on its own.
+- `OverlayPlacement.Sanitised`, applied on settings load and on parsing the
+  worker's argument, replaces a bad half with the proven default so the value is
+  not carried around and written back to disk looking like a placement the
+  wearer chose. One bad half does not discard a good one.
+
+**The lesson worth keeping.** A deserialiser cannot tell "this field was written
+by an older shape" from "this field is legitimately zero". When a persisted
+field changes shape, the type has to be able to recognise its own invalid
+values — and "finite" is not the same as "meaningful". The failure mode here was
+the worst kind: silent, persistent, and invisible to every log.
+
+Covered by self-tests at three layers: the zero transform is rejected, the
+placement falls back rather than reaching SteamVR, and a settings file
+containing exactly the JSON above loads as the proven default.
+
+### Regression — the panel stuck to the hand and could not be released
+
+Reported on the 6-DOF build: dragging worked, but as soon as the window shrank
+mid-drag the button disengaged and the panel stayed glued to the pointing hand
+with no way to let go.
+
+**Two faults, one behind the other.**
+
+*Why it shrank mid-drag.* Gaze is measured to the anchor **device**, not to the
+panel — see `ChatOverlay.GazeDot`. Drag the window away from the wrist, follow
+it with your head, and the anchor hand walks out of the gaze cone even though
+you are staring straight at the panel. The window shrinks, and the gaze gate
+turns input off.
+
+*Why that stranded it.* A drag can only end through a release event, and a
+release event can only arrive **while input is on**. Turning input off
+mid-drag therefore made the ending unreachable. `ChatOverlayInput` dropped its
+hold correctly, but `ChatOverlay._drag` was a separate field cleared only by a
+release that could no longer come — so `AdvanceDrag` kept re-placing the panel
+against the pointing controller for ever.
+
+**Fixed at both levels.**
+
+- **A drag holds the gaze gate open for its whole duration.** The wearer has
+  hold of the thing; they are unambiguously interacting with it, whichever way
+  they happen to be looking. The hysteresis still updates every tick, so the
+  window resolves to the right size the moment the drag ends.
+- **The drag/hold invariant is reconciled every tick, not enumerated.** A live
+  drag requires a live hold; anything else is cancelled. Rather than trying to
+  remember every path that can withdraw input — gaze loss, focus leave, a
+  `hide` control command, the interactive flag failing — the one condition that
+  matters is checked on every poll. The `hide` branch cancels explicitly too,
+  since it returns before the reconcile runs.
+
+A self-test now pins the contract the reconcile rests on: for each of the three
+ways input can be withdrawn while the handle is held, the hold is dropped — so
+"live drag, no live hold" is always a detectable state.
+
+### Still open, and likely the next thing to feel wrong
+
+**Gaze is measured to the anchor device, not to the panel.** With the placement
+now user-owned, those can be far apart: drag the window 40 cm off the wrist and
+the wearer has to look at their *wrist*, not at the window, to make it grow and
+become interactive again. Dragging is no longer affected — the gate is held open
+throughout — but re-engaging afterwards may well be.
+
+Not changed here, deliberately. The 20°/35° cone was tuned in the headset
+against a yaw-only direction to the controller, and making the test track the
+panel would also mean making it a true eye-line test including pitch, which
+changes the feel of a hardware-validated interaction. Worth doing as its own
+change, with its own headset pass, rather than folded into a bug fix. The
+machinery is already in place: `OpenVrInput.TryGetDevicePose` plus the saved
+placement gives the panel's world position directly.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 11 | Grab the handle and drag the window well away from the wrist, turning your head to follow it | The window stays large and engaged throughout, however you look | **not run** |
+| 12 | Release it there | It lets go cleanly. It may shrink immediately - see the open item above | **not run** |
+| 13 | After a long drag, check the panel is not still following the hand | No stuck panel, ever | **not run** |
+| 14 | Re-engage the window where you left it | Records whether the gaze-to-anchor issue above is a real annoyance in practice | **not run** |
+
+## Phase 5b — gaze follows the window, a toggle for the scaling, and auto-hide
+
+Three changes, from headset feedback on the 6-DOF build.
+
+### Gaze now measures the window, not the device it hangs off
+
+Reported as the scale trigger not adjusting with the positioning, which made
+the window hard to configure. That is exactly what was happening: the gaze test
+measured the direction to the anchor **controller**, in the gesture
+recognizers' yaw-only body frame. That was indistinguishable from measuring the
+window while the window was welded 12 cm off the wrist, and wrong the moment
+the placement became the wearer's to choose. Drag the window somewhere and the
+thing being measured stayed where it was.
+
+`PanelView` now measures in world space, from the panel's actual pose
+(`anchorPose * placement`) against the head pose, and it is a true eye-line
+test with **pitch included** — unlike the yaw-only frame, which ignored it by
+design so that glancing down mid-gesture could not turn a level sweep into a
+diagonal one. That frame is right for gestures and wrong for this.
+
+Expect the cone to feel more selective than before, because it now is: looking
+in the general direction of the window no longer counts if you are not looking
+*at* it. The Relaxed/Normal/Tight control is the tuning knob if Normal is now
+too tight.
+
+`MotionSampling` was not touched, again. `PanelView` is pure arithmetic on two
+transforms, fed by the additive `OpenVrInput.TryGetDevicePose`.
+
+### Grow on gaze is now a toggle
+
+On the VR settings tab beside the placement reset, and on the desktop chat
+section. Off leaves the window at its configured size and opacity permanently.
+
+**Only the animation is switched off, never the gaze measurement.** Gaze still
+decides whether the window accepts the laser, and that gate is a safety
+property rather than a cosmetic one — it is what stops a permanently-present
+panel putting SteamVR into system-wide laser mouse mode for a whole session.
+Turning the animation off therefore does not make the window permanently
+grabbable, and the hover highlight remains the signal for what is live.
+
+Defaults to on, so nothing changes for an existing install or an older settings
+file.
+
+### The window hides itself when turned away or left too far off
+
+Standard behaviour for overlay apps of this kind, and something this window
+needed once its placement stopped being a fixed constant.
+
+`PanelVisibilityGate` hides on either of two rules, both with hysteresis:
+
+- **Turned away.** A flat quad seen edge-on is a line, and seen from behind it
+  is a mirror-image nuisance parked in the wearer's view. Hides at roughly 81°
+  off-axis, comes back at 69° — deliberately late, since a flat panel stays
+  legible a long way off-axis and the aim is to remove one that has been turned
+  away, not to punish reading at an angle.
+- **Too far.** Hides beyond 2.0 m, returns within 1.8 m. Generous on purpose: a
+  panel anchored to a controller or the headset travels with the wearer, so it
+  can only get far away by being dragged there, and a placement deliberately
+  pushed out and scaled up is a legitimate way to use a big panel. This catches
+  a window that has been lost, not a choice that has been made.
+
+Hiding needs one rule to fail; coming back needs both to pass, so a panel that
+is both turned away and distant does not flicker back when either alone
+recovers.
+
+Three overrides, all deliberate. **A drag forces it visible** — nothing being
+handled may be hidden out from under the person handling it. **A placement
+reset forces it visible**, since the entire point of that control is to recover
+a lost window. And the transition is **logged with its reason**, because a
+window that hides itself is otherwise indistinguishable from a broken one; the
+distance case names the reset control, being the one case that cannot be
+recovered by pointing at it.
+
+### Verification
+
+Self-tests cover the geometry and the rules directly, with no headset: a panel
+ahead, beside, behind and below the eye line; that pitch is no longer ignored;
+that facing and gaze are independent (an edge-on panel being stared at is the
+case worth hiding); that the proven wrist placement still reads as facing the
+wearer, since a sign error in the panel normal would hide the window at its own
+default; both hysteresis dead zones; the asymmetry between hiding and
+returning; and the forced-visible override. The new setting is asserted with a
+non-default value through the settings file and the worker message channel, so
+a dropped field cannot pass by matching the default.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 15 | Drag the window well away from the wrist, release, then look at it and away | It grows and shrinks according to whether you are looking **at the window**, wherever you put it | **PASS** |
+| 16 | With the window at its default wrist placement, glance at it and away | Still feels right. Records whether pitch now counting makes Normal too tight - Relaxed is the fallback | **PASS** - Normal is still right with pitch counted; no retune needed |
+| 17 | VR settings tab → **Grow on gaze** Off | The window stays at full size and opacity and stops changing size | **PASS** - and the wearer asked for this to be the **default**, which it now is. See below |
+| 18 | With grow-on-gaze off, point at the handle while looking away, then while looking at it | Only the second grabs. The animation is off; the input gate is not | **not run** - not reported, and now the *default* path. Worth running |
+| 19 | Rotate the anchor controller so the window turns edge-on and then away | It disappears, and comes back when turned back. The log says why | **PASS** |
+| 20 | Grab the handle and turn the window right around while holding it | It stays visible for the whole drag - the hide rule never fires on a window being held | **PASS** |
+| 21 | Drag the window beyond about two metres and release | It disappears; the log names the reset control. Reset brings it back | **PASS** |
+| 22 | Confirm the desktop **Grow and brighten** checkbox matches the VR toggle both ways | The two pages never disagree | **PASS** |
+
+### Result, 2026-07-30 — seven of eight pass, and grow-on-gaze becomes off by default
+
+Rows 15, 16, 17, 19, 20, 21 and 22 all pass. Row 18 was not reported and stays
+"not run"; it is now the *default* path, so it is worth running.
+
+**Row 16 settles the pitch question.** Making the gaze test a true eye-line
+measurement, with pitch counted, did not need a sensitivity retune - Normal
+still feels right at the default wrist placement. So the change bought
+correct behaviour at an arbitrary placement without costing anything at the
+proven one.
+
+**Row 17 changed the default.** The animation works, and the wearer's verdict
+after a full phase of living with it was to have it off. `ChatGazeScaleEnabled`
+now defaults to **false**.
+
+That deliberately breaks this project's usual migration rule. Every other
+setting defaults to whatever the app did before the setting existed, so an
+upgrade changes nothing - and that rule is written into half the doc comments
+in `UserSettings`. This one is the exception, recorded as one: shipping a
+default that has to be turned off before the window is comfortable is the wrong
+way round, and the evidence for that is a phase of headset use rather than a
+guess. An install that has actually saved a preference keeps it; only a
+settings file predating the toggle takes the new default.
+
+The self-test that asserted the old default now asserts the new one, and says
+in a comment why it is the odd one out - so a later reader does not "fix" it
+back into line with its neighbours.
+
+## Phase 6 — three dashboard tabs and a repaint throttle - not yet run
+
+### Scope
+
+Per `PHASE6_VR_TABS_PROMPT.md`: the dashboard's two tabs (Shortcuts, Settings)
+became three (Shortcuts, Chat, Notifications), with the former combined
+Settings page's controls split by owning surface - Chat keeps its on/off,
+anchor mode/hand, opacity, size, gaze sensitivity and the Phase 5
+placement-reset/grow-on-gaze row; Notifications keeps its on/off, anchor mode,
+opacity and size. No settings migration: `UserSettings`' shape is unchanged,
+only its presentation across two pages instead of one. The shortcut wizard's
+six pages (`List`, `GestureType`, `Tolerance`, `ActionPicker`, `RecordInput`,
+`Review`) were not touched.
+
+Separately, the dashboard gained a leading-edge coalescing repaint throttle
+(`DashboardRepaintCoordinator`, `SvrBridge.Core`, ~16 Hz) - the dashboard was
+the one surface with no repaint throttle at all, and the new tabs are
+slider-heavy. The first update in a burst still paints immediately; only
+repeats within the ~60 ms window coalesce into one further paint, and the
+final state is always what lands - never a stale intermediate one. It is
+deliberately scoped to the ordinary already-visible repaint path only:
+dashboard *reactivation* (the recording flow returning from the SteamVR system
+menu, and the very first page shown at startup) still paints immediately and
+unthrottled, since showing the overlay before its texture is ready would flash
+an empty panel - the exact hazard the existing `ShowPage` ordering comment
+already guarded against. This reduces blink frequency; it does not eliminate
+it, per the known limitation already recorded above under "Known limitations"
+in `README.md`.
+
+### What is already covered without a headset
+
+Both self-test suites pass and both projects build with zero warnings.
+`TestSettingsPageLayoutRectangles` was extended: the three-tab strip's
+rectangles still hit-test to themselves and stay evenly spaced; the Chat
+page's placement-reset row sits below its gaze-sensitivity row with no
+overlap (replacing the old assertion that it sat below the Notifications
+sliders, which no longer applies now that Chat and Notifications are
+different pages); and a new assertion pins down that the Chat and
+Notifications pages' first two rows deliberately share the same Y, each
+starting fresh below its own tab strip, so a future reader does not "fix"
+that back into disagreement mistaking it for leftover overlap from the old
+combined page.
+
+`TestDashboardRepaintCoordinatorCoalescesBurst` (`SvrBridge.Core`, no OpenVR
+needed) asserts the throttle's exact contract with fabricated timestamps: the
+first request in a burst renders immediately (asserting the render count,
+not just that a render happened); three further requests inside the window
+produce no additional render; the coalesced render fires exactly once the
+window elapses and shows the *last* requested value, not an intermediate one;
+a flush with nothing pending never renders; and a request arriving long after
+the previous burst is treated as its own fresh leading edge rather than being
+held back. None of this proves the panel is visible, correctly tabbed, or
+that the blink is actually reduced in the headset - only the manual steps
+below can show that.
+
+### Preparation
+
+SteamVR running, both Vive controllers on and tracked, the freshly published
+`artifacts\publish\SteamVR2Bot.exe` running (not `dotnet run` from source -
+SteamVR is registered against the published exe), with at least one saved
+shortcut bound to a Streamer.bot action.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Open the SteamVR dashboard → SteamVR2Bot | Three tabs read **Shortcuts**, **Chat**, **Notifications**; Shortcuts is active by default and shows the saved shortcut list exactly as before | **PASS** |
+| 2 | Select the **Chat** tab | Renders on/off, anchor mode/hand, opacity, size, gaze-sensitivity and the placement-reset/grow-on-gaze row - the same controls the old combined Settings page showed for Chat | **PASS** |
+| 3 | Select the **Notifications** tab | Renders on/off, anchor mode, opacity and size only - no gaze-sensitivity row and no placement reset, since neither applies to notifications | **PASS** |
+| 4 | Switch rapidly between all three tabs several times | Switching feels immediate, not delayed by the repaint throttle | **PASS** |
+| 5 | On the Chat tab, change anchor mode, hand, opacity and size in turn | Each applies live to the running chat window immediately, exactly as the old combined page did | **PASS** |
+| 6 | On the Notifications tab, change anchor mode, opacity and size, then trigger a test notification | Each applies live; the notification appears using the new settings | **PASS** |
+| 7 | Toggle Chat off then on, and Notifications off then on, from their new tabs | Each surface disappears and reappears as expected | **PASS** |
+| 8 | On the Chat tab, drag the chat window with the laser, then press **Reset chat window position** | Behaves exactly as it did on the old combined Settings page | **PASS** |
+| 9 | On the Chat tab, toggle **Grow on gaze** | Behaves exactly as it did on the old combined Settings page | **PASS** |
+| 10 | Create a new shortcut end to end: gesture type → tolerance (if applicable) → record input → choose action → save | Every wizard page renders and behaves exactly as before; the tab strip never appears on any wizard sub-page | **PASS** |
+| 11 | Edit an existing shortcut, then delete a different one | Both complete exactly as before, from the Shortcuts tab | **PASS** |
+| 12 | On the Tolerance page (double-press or long-hold), click rapidly along the slider many times in a row | Visibly blinks **less** than before the throttle - not necessarily zero - and the slider still tracks each click with no felt input delay and lands on the last value clicked, not an earlier one | **PASS** |
+| 13 | Do the same rapid-click test on the Chat and Notification opacity/size sliders | Same result as row 12: less blinking, no felt delay, final value always correct | **PASS** |
+| 14 | Close SteamVR2Bot, relaunch it, and reopen the dashboard | All settings from rows 5-9 persisted across the restart | **PASS** |
+| 15 | Close the dashboard and fire an existing shortcut | Streamer.bot action fires exactly once, no duplicates | **PASS** |
+
+### Result, 2026-07-30 — 15/15 pass
+
+All fifteen rows passed as reported by the user. The three-tab split (rows
+1-3), live-apply for every moved setting on its new tab (rows 5-9), and the
+unmodified shortcut wizard end to end - create, edit, delete (rows 10-11) -
+all hold. Rows 12-13 confirm the repaint throttle does what §B3 of the Phase
+6 plan asked for and nothing more: less blinking under rapid slider
+clicking, with no felt input delay and no dropped/stale final value - this
+reduces blink frequency, it does not eliminate it, consistent with the known
+CPU-upload-path limitation already recorded in `README.md`. Row 14 confirms
+persistence, and row 15 confirms shortcut delivery is unaffected.
+
+No wizard page's behaviour changed - rows 10 and 11 are the direct evidence
+for that, matching the code-level analysis that `GestureType`, `Tolerance`,
+`ActionPicker`, `RecordInput` and `Review` were not touched.
+
+## Phase 7 — notification customisation
+
+### Scope
+
+Per `PHASE7_NOTIFICATION_CUSTOMISATION_PROMPT.md`: notifications became
+configurable - position (a grabbable positioning frame, §B1), which kinds
+appear (direct `GetEvents`-driven subscription, §B2), entry/exit animation
+(fade/slide/scale-pop, §B3), colours, duration, background opacity and corner
+radius (§B4), and an optional PNG template (§B5).
+
+### Round 1 - 2026-07-31, headset test
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Open the Notifications tab and turn on **Position notifications** | A persistent dummy frame appears showing representative sample text, sized/coloured per current settings | **PASS** |
+| 2 | Grab the frame with the laser and drag/rotate it | Follows the controller rigidly in all six degrees of freedom, the same feel as the chat window's grab-to-place | **PASS** |
+| 3 | Release, turn **Position notifications** off, then back on | The frame reappears at the placement just dragged to, not the default | **PASS** - once, the frame reappeared visibly displaced to the left instead. Not reproduced on retry; no root cause identified. Watch for a recurrence. |
+| 4 | Close SteamVR2Bot, relaunch it, reopen the dashboard, turn positioning back on | The dragged placement survived the restart | First attempt **FAIL** (placement reverted to default), root-caused and fixed - `SaveVrSettingsChange` never copied `NotificationPlacement`/`NotificationAppearance` into saved settings, so every VR-side change applied live but never reached disk. Retest after fix: **PASS**. |
+| 5 | Drag the frame somewhere awkward (e.g. behind you), then press **Reset notification position** | The frame - or the next real notification - returns to the default placement; the reset control works even though the frame is currently unreachable | **PASS** |
+| 6 | Navigate away from the Notifications tab while positioning is on, then back | Positioning turned itself off when you left the tab (frame lost its laser); the toggle reads Off and can be turned back on | **PASS** |
+| 7 | Trigger a real Streamer.bot event with no relay action authored for it | Produces a notification with no Streamer.bot-side setup beyond an enabled local trigger | not run - the events UI was confusing (opt-in per-event list) and has since been redesigned: every event Streamer.bot reports now subscribes and notifies automatically, with no per-event enabling anywhere in this app. Re-test against the new design. |
+| 8 | Toggle **Show test-fired events** off, fire a Streamer.bot test button, confirm no notification; back on, confirm it appears | Off suppresses test-fired events; on restores them | not run |
+| 9 | (superseded - see row 7) | | n/a |
+| 10 | (superseded - see row 7) | | n/a |
+| 11 | Set the transition to **Fade**, then **Slide** (try a couple of edges), then **Scale pop**; trigger a notification each time | Each transition looks distinct and visually correct, and the panel visibly comes to rest (no lingering jitter/drift) rather than animating forever | **PASS** |
+| 12 | Set background, text and accent colours away from their defaults; trigger a notification | Colours match exactly what was picked on every surface - background, title, body - with no channel swap (red picked shows as red, not blue) | **PASS** |
+| 13 | Set a default duration away from 5 seconds; trigger a notification with no payload-level duration | Stays on screen for the configured duration | not checked this round |
+| 14 | Trigger a notification whose payload sets its own `duration`/`accent` | The payload's values win over the settings-level defaults | **PASS** for accent (confirmed the payload's own `"accent":"#60C8FF"` correctly overrides the settings default - this is the documented precedence rule working as designed, not a bug) |
+| 15 | Set a valid PNG as the background template; trigger a notification | The image renders letterboxed (not stretched/distorted) behind legible title/body text | **PASS** |
+| 16 | Point the template path at a missing file, then a corrupted/non-PNG file | Notifications still render (flat colour background), nothing crashes | **PASS** |
+| 17 | Send a notification whose payload sets its own `image` field to a different PNG | That payload's image overrides the configured template for that one notification | not run - needs a Streamer.bot action with an `"image"` field authored; UI/documentation for this was unclear, addressed below |
+| 18 | Open the chat window and the SteamVR dashboard's other tabs/wizard | Both work exactly as before this phase - no regression from anything above | **PASS** |
+| 19 | Fire an existing shortcut | The Streamer.bot action fires exactly once, no misses or duplicates | **PASS** |
+
+Also caught this round, both fixed same-day: the PNG template's text scrim
+and the accent stripe were still rendering (a dark box, and the coloured
+bottom border) when a template was active, regardless of background opacity.
+Per direct feedback, both are now hidden entirely whenever a template is
+loaded - a template gets exactly the wearer's own background opacity and
+text colour, nothing this renderer adds uninvited. A "Clear" button was also
+added next to the template path field (there was no way to unset a template
+once chosen).
+
+### Round 2 - events model, redesigned twice, not yet re-tested in headset
+
+Following Round 1's feedback ("I don't like this interface... all events
+should push to the notification display except those filtered in the
+streamerbot"), §B2 was first redesigned to subscribe to every event
+`GetEvents` reports automatically, on the theory that Streamer.bot only
+forwards an event with an enabled local trigger. **Live-tested and
+disproven**: toggling every event off in Streamer.bot's own Settings >
+Events panel did not stop this app receiving them (confirmed via a
+screenshot of that exact panel and a direct test), and non-alert plumbing
+(OBS scene-change events, not shown in that panel's categories at all)
+reached the headset indistinguishable from a real alert. Streamer.bot's own
+API and documentation expose **no** request that reveals which events
+currently have an enabled trigger, so there is no server-side signal this
+app can rely on.
+
+Reverted to opt-in (§B2's original design), defaulting to nothing enabled -
+the same migration-safe default this app has used throughout. The interface
+itself was rebuilt to match Streamer.bot's own Events panel per direct
+feedback: a search box, grouped by source, a "Toggle group" convenience
+action per group, individual switches underneath. A separate "Customise
+wording for:" picker (searchable, independent of the enable switches) is
+what "Edit template…" now uses to pick an event, since selecting one no
+longer means the same thing as enabling it.
+
+All Core/Tray self-tests updated and passing for this final design:
+`Subscribe` includes only General.Custom/Twitch.ChatMessage plus whichever
+events are enabled; an event GetEvents reports but the wearer never enabled
+is neither subscribed to nor turned into a notification even if it arrives
+anyway; a GetEvents failure at connect still falls back gracefully; an
+on-demand refresh that goes unanswered doesn't disturb the feed. Rows 7-10
+above need re-testing against this final grouped/searchable opt-in UI.
+
+### Round 3 - 2026-07-31, picker rebuilt inverted; desktop-verified, headset rounds 7-10 still not run
+
+Round 2's grouped/searchable opt-in list was rejected live as unusable ("no
+grouping to indicate which platform", froze on search, froze on Toggle group,
+could scroll to blank space). It has been replaced wholesale rather than
+iterated on again, so the `SuspendLayout` fix that Round 2 left unverified is
+now moot - that code is gone.
+
+**The number that settles the design.** One complete `GetEvents` response was
+captured from the live instance for the first time (Streamer.bot 1.0.4): **467
+events across 44 sources**, 137 of them under Twitch alone. Both rejected
+designs listed the *available* events and built one control per entry; at that
+size the freeze was structural, not an oversight. The rebuilt picker inverts
+it - the short enabled list first, search only to add - and caps rendered
+results at 20, so the control count has no relationship to the catalog size.
+
+The capture also settled two things that had been guessed at: the response
+carries **no icon, image or display-name field** at any level (so platform
+glyphs must be embedded resources this app ships, never API data), and event
+names arrive run-together (`GiftSub`, `HypeTrainLevelUp`), not in the spaced
+form Streamer.bot's own UI shows. The picker applies a generic camelCase word
+break rather than a mapping table, which would have been a hardcoded event
+list in disguise.
+
+**Desktop check - PASS.** Driven against the real 467-event response, not a
+fixture: filling the picker took ~300ms, six successive searches (typing
+"follow" one letter at a time) ~700ms total, 20 result rows rendered for an
+unfiltered list, 8 for "follow", 16 for "gift sub", 30 for "sub". No freeze,
+and the scroll extent matches the rendered rows rather than leaving blank
+space below them. A fabricated source with no icon and no catalog entry
+("Zorblatt") rendered its coloured chip and grouped correctly, which is the
+check that proves no hardcoded platform list crept in.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 7 | Enable one event in the picker, trigger it in Streamer.bot | Produces a notification in the headset | **not run** - needs a headset session |
+| 8 | Toggle **Show test-fired events** off, fire a Streamer.bot test button, confirm no notification; back on, confirm it appears | Off suppresses test-fired events; on restores them | **not run** |
+| 9 | Confirm a *disabled* event produces no notification | Nothing appears for an event that was never added | **not run** |
+| 10 | Remove one alert, restart SteamVR2Bot, reopen the settings window | The enabled list is exactly what was left behind - the removal and the remaining alerts both survived | **not run** |
+
+Automated coverage standing behind those four: the enabled list round-trips
+through `UserSettings.EnabledEvents`; adding and removing rebuild the
+`Subscribe` request; an enabled event a `GetEvents` response no longer
+mentions is **not** dropped from either the list or the request (it keeps its
+row, marked "not reported"); an unknown source resolves to a chip rather than
+throwing; search filters correctly and caps its result set. Passing those is
+not evidence the headset rows pass - this phase alone had two bugs every
+automated test went straight through.

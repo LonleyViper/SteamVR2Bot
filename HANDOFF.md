@@ -1,191 +1,161 @@
-# Handoff — 2026-07-30, overlay texture conversion
+# Handoff — 2026-07-30, overlay laser input and grab-to-place (Phase 5)
 
-Supersedes the Phase 3 hand-off note (2026-07-29), which is now committed
-history — see `LIVE_TEST_RESULTS.md` for that record. This file is the
-current-state snapshot; read it before touching anything that draws in VR.
+Supersedes the overlay-texture-conversion hand-off from earlier the same day,
+which is now committed history — see `LIVE_TEST_RESULTS.md` for that record.
+This file is the current-state snapshot; read it before touching anything that
+draws in VR or accepts input there.
 
-## State: live-confirmed fix, shipping off by default
+## State: shipped and live-confirmed
 
-The overlay blink is fixable on every surface except the SteamVR dashboard,
-and the dashboard exception is understood, reproducible on demand, and
-documented rather than open. The fix itself ships **off by default**: it is
-this app's first native GPU dependency, live-confirmed working but not yet
-exercised across the range of GPUs and drivers real users run, so it lands
-behind a developer toggle rather than changing default behaviour outright.
+The chat window can be grabbed by a move handle in its top-right corner and
+placed anywhere relative to its anchor, in full six degrees of freedom. The
+placement persists per anchor mode and survives a restart. The VR **Settings**
+tab gained a placement reset and a **Grow on gaze** toggle; the window now hides
+itself when turned away or left too far off.
 
-| Surface | Upload path (default) | Upload path (developer opt-in) | Blink |
-|---|---|---|---|
-| Chat | `SetOverlayRaw` | `SetOverlayTexture` (D3D11) | **Fixable, off by default** |
-| Notifications | `SetOverlayRaw` | `SetOverlayTexture` (D3D11) | **Fixable, off by default** |
-| Test overlay | `SetOverlayRaw` | `SetOverlayTexture` (D3D11) | N/A, static |
-| **SteamVR dashboard** | **`SetOverlayRaw`** | *(no working alternative)* | **Still blinks** |
+Fifteen of seventeen headset rows pass. Everything in this hand-off is committed
+on `phase5-overlay-grab-to-place`. Build is clean with zero warnings,
+`dotnet format --verify-no-changes` passes on both projects, and both self-test
+suites pass including on the packaged single-file build.
 
-Turn the fix on from Tray → **Chat test harness (developer)** → **Chat &
-notification overlays via SetOverlayTexture (developer)**. Never persisted -
-unchecked, and back to `SetOverlayRaw`, at every launch. See
-`OverlayTextureUploader.TexturePathEnabled` and each overlay's own
-`SetTexturePathEnabled`.
+## The three things to read before touching overlays
 
-Everything in this hand-off is committed. Build is clean in Debug and Release
-with zero warnings, both self-test suites pass including on the packaged
-single-file build, and `dotnet format --verify-no-changes` passes.
+### 1. `SetOverlayInputMethod` alone delivers nothing
 
-## The one thing to read before touching overlays
+It declares that an overlay *would* accept mouse events. It does not cause any
+to be produced. Outside the dashboard, SteamVR is not pointing anything at
+overlays at all, so the move handle received no clicks whatsoever on the first
+headset run.
 
-**A `CreateDashboardOverlay` handle accepts `SetOverlayTexture`, returns
-success, and never displays the result.** The panel freezes on whatever it last
-showed. Regular overlays are all fine.
+The other half is `VROverlayFlags_MakeOverlaysInteractiveIfVisible` — `1 << 16`,
+set through `SetOverlayFlag`, vtable anchor 11. From `openvr.h`:
 
-This cost two headset sessions to find because the symptom does not look like a
-texture problem — it looks like the UI has stopped responding. Navigation keeps
-working perfectly behind a picture that never changes, so clicks land on pages
-the wearer cannot see, and it reads as "the wizard is broken".
+> If this is set and the overlay's input method is not none, the system-wide
+> laser mouse mode will be activated whenever this overlay is visible.
 
-**Two wrong diagnoses were reached and disproved before the right one.** Both
-are written up in `LIVE_TEST_RESULTS.md` with the evidence that killed them, so
-nobody re-derives them:
+**"System-wide" is the load-bearing word.** This does not make one overlay
+interactive; it puts SteamVR into laser mouse mode for as long as that overlay
+is *visible*. A permanently-present panel must therefore toggle the flag, not
+set it at creation. `ChatOverlay.SetInputEnabled` is the single writer of both
+halves and drives them under the gaze gate — flag off first, on last, so the
+laser is never live while the overlay has stopped accepting what it delivers.
 
-1. *A GPU synchronisation race* — that `Flush` submits the copy without waiting,
-   letting SteamVR read the previous frame. Disproved: an Event query that waits
-   for completion changed nothing. The wait was **kept** anyway (handing over a
-   pointer before the copy lands is genuinely wrong) but it is not the fix.
-2. *Upload frequency* — that a surface must keep calling `SetOverlayTexture` to
-   stay live. Disproved: notifications repaint exactly as rarely as the
-   dashboard and work fine, and forcing a 10 Hz reissue on the dashboard changed
-   nothing. That machinery was removed rather than left in.
+Live-confirmed with the flag active: normal play in a real VR game is
+unaffected. That also retires the Phase 4 laser-input probe's caveat, which had
+measured "the game keeps its trigger" with the mechanism switched off.
 
-**Also correct one record if you read the older rows:** "dashboard blink gone"
-was recorded as a PASS when the dashboard was simply not updating at all. A
-frozen image cannot blink. That row measured nothing; it is marked invalid.
+### 2. A zero overlay transform is silently fatal
 
-### How to reproduce it on demand
+SteamVR accepts an all-zero 3x4 transform without an error and collapses the
+overlay quad to nothing. No exception, no log line, no misplaced panel — the
+window simply does not exist. The log reads perfectly: "The chat window is on",
+"following the left controller (device 6)".
 
-Tray → **Chat test harness (developer)** → **Dashboard via SetOverlayTexture**.
-Tick it and the dashboard freezes; untick and it recovers. Never persisted,
-unchecked at every launch. This exists so the finding can be re-checked after a
-SteamVR update without a rebuild.
+It arrived because `ChatPlacement` changed persisted shape (three floats per
+anchor mode → a full transform) and the older JSON had no property the new shape
+recognised, so `System.Text.Json` left the struct at all zeros. Not absent, not
+an error, and finite — so every check that existed passed it through, and the
+tray then saved the zeros back.
 
-## What changed this session
+`VrOverlayTransform.IsUsable` now requires the rotation block to *be* a rotation
+(orthonormal, tolerance 0.01), and `OverlayPlacement.Sanitised()` is applied on
+settings load and argument parse so a bad value is never carried forward.
 
-1. **`SetOverlayTexture` bound** at vtable index 60 (`OpenVrInput`). The header
-   was re-fetched and its SHA-256 matched the recorded revision byte for byte;
-   all twenty-one existing indices reproduced exactly. Derivation is in the
-   `TryGetOverlayTable` doc comment.
-2. **`Vortice.Windows` 3.8.3** added to `SvrBridge.Tray` — the project's first
-   NuGet dependency, an accepted change per the revised §3 Risk 2 of
-   `CHAT_AND_NOTIFICATIONS_PLAN.md`. Not SharpDX. The single-file publish still
-   works.
-3. **New upload layer** (`OverlayTextureUpload.cs`, `D3D11OverlayDevice.cs`,
-   `D3D11OverlayTexture.cs`): one shared D3D11 device for the whole worker,
-   per-overlay persistent textures never reallocated per frame, and one routing
-   seam every surface goes through.
-4. **Recoverable device loss.** A failed write drops that surface to
-   `SetOverlayRaw` immediately; the device is retried on the same backoff
-   `StreamerBotEventStream` uses (1s, 2s, 5s, 10s, 30s forever). Confirmed live
-   with a `Ctrl`+`Shift`+`Win`+`B` driver reset.
-5. **The dashboard's PNG-to-disk path is gone**, and stays gone even though the
-   dashboard is back on `SetOverlayRaw`. `VrDashboardRenderer`'s eleven page
-   renderers return pixels instead of a file path; `NextDashboardImagePath`,
-   `_imageSequence` and `_oldImagesCleaned` are removed, as is the dead
-   `imagePath` that travelled tray → worker and was never read. A page change is
-   now a memory copy rather than an encode-write-decode round trip.
-6. **The dashboard thumbnail deliberately stays on `SetOverlayFromFile`** — a
-   one-time load of the app icon. Its old "fall back to the current page image"
-   branch was removed; that branch was the bug someone had already fixed once.
-   Live-confirmed the taskbar still shows the icon.
-7. **Two named pixel conversions** on `OverlayPixelFormat`:
-   `ConvertGdiBgra32ToRgba` (swap only) and `ConvertWpfPbgra32ToRgba`
-   (un-premultiply then swap). Applying the WPF one to GDI+ output washes the
-   colours out — invisible at full opacity, visible on exactly the
-   semi-transparent panel backgrounds both renderers use.
-8. **The gaze-animation fix from the previous session** (`GazeScaleAnimation.cs`)
-   was still uncommitted and is included here — the committed tree did not build
-   without it.
+**The general rule:** when a persisted field changes shape without a version
+marker, the type must recognise its own invalid values. A deserialiser cannot
+tell "written by an older shape" from "legitimately zero".
 
-## Open: the dashboard blink
+### 3. Do not bend `MotionSample` to serve overlay UI
 
-**Yes, this is worth coming back to.** It is the last surface still affected and
-the only thing between this app and "no blink anywhere".
+Its body frame is yaw-only *by design*, so glancing down mid-gesture cannot turn
+a level sweep into a diagonal one. That is right for gesture recognition and
+useless for anything needing device rotation or a true eye line — the first
+grab-to-place built on it could only translate, which the headset rejected
+immediately.
 
-It should be **its own narrow experiment, not bundled into other work.** Three
-untried leads, cheapest first:
+`OpenVrInput.TryGetDevicePose` is the seam: additive, reads the same `_poses`
+array `SampleMotion` builds from, and converts nothing (`HmdMatrix34` and
+`VrOverlayTransform` are the same layout by construction). `MotionSampling.cs`
+was not modified in this phase.
 
-1. **`SetOverlayRenderingPid`.** `openvr.h` says `SetOverlayTexture` "can only be
-   called by the overlay's creator or renderer process". The worker does create
-   the overlay so this ought to hold already, but it is the only documented
-   precondition on the call and it was never tested explicitly. Cheapest thing
-   to rule out.
-2. **A regular overlay standing in for the dashboard** rather than a
-   `CreateDashboardOverlay` one. Regular overlays demonstrably work. Costs the
-   SteamVR taskbar integration and the dashboard's own input handling — a large
-   trade for a blink, and probably only worth it if the panel is being reworked
-   anyway.
-3. **A keyed-mutex shared texture** (`SHARED_KEYEDMUTEX` rather than `SHARED`).
-   The correct cross-device sharing primitive; unknown whether SteamVR's overlay
-   path acquires it. If it does not, this deadlocks or fails rather than
-   degrading, so try it last.
+## How the pieces fit
 
-Before starting: **budget a headset session for evidence, not for a fix.** The
-two wrong diagnoses above both came from reasoning at the desk and both survived
-a plausibility check. The activity log records every dashboard click coordinate
-and page transition, which is what finally distinguished "clicks not landing"
-from "page changing behind a stale picture" — use it early.
+| Concern | Where |
+|---|---|
+| Saved offsets, one full transform per anchor mode | `OverlayPlacement` (Core) |
+| The rigid grab's arithmetic | `OverlayDrag` (Core), same file |
+| Gaze / facing / distance from one pose pair | `PanelView` (Core) |
+| Hide when turned away or far, with hysteresis | `PanelVisibilityGate` (Core) |
+| Hover, gaze gate, grab/release signalling | `ChatOverlayInput` (Tray) |
+| The one rectangle table, read by renderer and hit test | `ChatOverlayLayout` (Tray) |
+| Wiring, poses, visibility, persistence | `ChatOverlay` (Tray) |
 
-## Also still open, carried forward from Phase 3
+The grab records one constant at mouse-down and restores it every tick:
 
-- **Row 10** — more than 40 chat messages in one session (ring-buffer cap and
-  eviction). The in-app tray harness (**Fill the ring buffer**) now covers this;
-  it no longer depends on the Streamer.bot `!svrtest` action that never fired.
-- **Row 17b** — an emote arriving in the first second or two of connecting, to
-  prove the styled-text → real-image upgrade path rather than the steady state.
-- **Notification burst behaviour** was never conclusively observed ("it only
-  showed one"). `NotificationPlayer` shows one at a time by design, so this is
-  probably correct rather than a bug, but it has not been isolated.
-- The **`!svrtest` Streamer.bot action** was never root-caused. Largely
-  superseded by the tray-menu harness, which needs no Streamer.bot action at
-  all.
+```
+PanelInPointer = inverse(pointerPose) * (anchorPose * offset)          // once, on grab
+offset         = inverse(anchorPose) * (pointerPose * PanelInPointer)  // every tick
+```
 
-## Next phase
+Overlay mouse events are only the grab and release signal — they carry 2D panel
+coordinates, not a world ray, so they cannot drive the movement.
 
-Buttons, `SetOverlayInputMethod` on chat, and the reposition handle were
-deliberately excluded from this work so they would land on a converted, stable
-substrate. That substrate now exists for the regular overlays.
+Other confirmed OpenVR facts from this phase:
 
-**The design question is answered: an overlay that accepts laser input does not
-swallow the trigger from a running VR game.** Live-confirmed 2026-07-30 —
-"trigger still functions" with the probe active.
+- SteamVR draws the laser pointer dot itself on a regular overlay. No
+  `SetOverlayCursor`, and no need to derive its vtable index.
+- `SetOverlayMouseScale` works on a regular overlay. Set it to the panel's pixel
+  size so events hit-test directly against the drawn rectangles.
+- Overlay mouse coordinates have their origin at the **bottom-left**. Flip Y,
+  the same as `TryGetDashboardInteraction` already does.
+- Button-event coordinates are unreliable — use the last hovered index.
+- An overlay's texture faces its own **+Z**, which is why a tracked-device-
+  relative panel placed in front of its device already faces back at it.
 
-That confound (this app's global-priority action set already takes
-grip/trigger/trackpad/menu from running games) can only manufacture a false
-*negative*; it removes trigger input, it cannot add it. So the positive result
-stands on its own.
+## Two behaviour decisions worth not reverting
 
-**Buttons on the chat window are therefore viable**, without gating them behind
-a summon gesture or a dashboard-only mode — which was the fallback design if
-this had gone the other way.
+**Grow on gaze defaults to off.** This deliberately breaks the rule every other
+setting in `UserSettings` follows — default to whatever the app did before the
+setting existed, so an upgrade changes nothing. A full phase of headset use said
+the animation was distracting to read against, and shipping a default that has
+to be turned off first is the wrong way round. An install that saved a
+preference keeps it; only a file predating the toggle takes the new default. The
+self-test says in a comment why it is the odd one out, so nobody aligns it back
+with its neighbours.
 
-Two things the result deliberately does **not** cover:
+**A drag overrules both gates.** It holds the gaze gate open and forces
+visibility for its whole duration. Without that, dragging the window away from
+the wrist walks the anchor out of the gaze cone, input turns off, and the
+release that would end the drag can never arrive — the panel sticks to the hand
+with no way to let go. The drag/hold invariant is now *reconciled* every tick
+rather than enumerated, because enumerating the paths that can withdraw input is
+how that bug happened.
 
-- Whether the overlay *also* receives the click. The probe shows the game keeps
-  the trigger; whether a laser click lands on the panel is a separate question,
-  cheap to answer as soon as there is a button to click.
-- Grip, trackpad and menu. Only the trigger was exercised.
+## Open
 
-The probe stays in the build for re-running after a SteamVR update: tray →
-**Chat test harness (developer)** → **Probe chat laser input for 60s**. It is a
-one-shot action, not a checkbox — `ChatOverlay` turns it off again after 60
-seconds. That was deliberate for the case where the answer had been "yes": the
-wearer would be inside a game with broken input and the tray menu on a monitor
-they cannot see. The expiry runs before the hidden/shown branches in `Tick` so a
-`hide` control command cannot strand it on, and `Dispose` turns it off too.
+- **Row 18 is not run.** With grow-on-gaze off, point at the handle while
+  looking away, then while looking at it — only the second should grab. The
+  animation is off; the input gate is not. This is now the *default* path, so it
+  is worth running.
+- **Rows 4b, 4c, 5b, 6b, 6c and 11–14 were superseded** by later fixes rather
+  than individually re-run. The behaviour they cover is exercised by rows 15–22,
+  which pass, but they are recorded honestly as not run.
+- **Notifications deliberately have no laser input.** Phase 5's hard constraint;
+  they are transient and must never capture the pointer. `PanelVisibilityGate`
+  is likewise chat-only.
+- **World-lock is still deferred.** It needs `SetOverlayTransformAbsolute`,
+  which the tracked-device-relative path cannot express.
+- The dashboard blink remains a characterised platform limitation with three
+  untried leads — unchanged by this phase.
+- Buttons that trigger Streamer.bot actions are the next increment on this
+  plumbing. Adding one means adding a rectangle to `ChatOverlayLayout.Buttons`
+  and an arm to the `ButtonDown` switch — not restructuring anything.
 
 ## Untracked, deliberately
 
 `PHASE0_PROMPT.md`–`PHASE5_PROMPT.md`, `PHASE5_WRIST_PLACEMENT_PROMPT.md`,
 `SPIKE_D3D11_TEXTURE_PROMPT.md`, `FIX_DASHBOARD_BLINK_PROMPT.md`, and
-`VR UI Screenshots/` stay out of the repo, matching the pattern from every
-previous phase. `CHAT_AND_NOTIFICATIONS_PLAN.md` **is** tracked and its §3
-Risk 2 revision is committed here.
+`VR UI Screenshots/` stay out of the repo, matching every previous phase.
 
 ## Environment notes
 
@@ -193,6 +163,8 @@ Risk 2 revision is committed here.
   `%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe`;
   `C:\Program Files\dotnet\dotnet.exe` is a runtime-only muxer with no SDK and
   will fail with "No .NET SDKs were found".
+- There is no solution file. Build the two projects by path:
+  `src\SvrBridge.Tray\SvrBridge.Tray.csproj` and `src\SvrBridge\SvrBridge.csproj`.
 - Published build: `artifacts\publish\SteamVR2Bot.exe` — the one SteamVR
   auto-launches and the only one live tests should use. Always publish before a
   headset test; never `dotnet run` from source.
@@ -200,7 +172,25 @@ Risk 2 revision is committed here.
   first — `Get-Process -Name "SteamVR2Bot*" | Stop-Process -Force` — which kills
   both the tray app and its OpenVR worker. The user has asked that this be done
   without stopping to ask.
-- Logs: `%LOCALAPPDATA%\SteamVR2Bot\Logs\svr-bridge-YYYYMMDD.jsonl`.
-- Self-tests: `SteamVR2Bot.exe --self-test` (WinExe — run it via
-  `Start-Process -Wait -PassThru` or the exit code comes back empty) and
+- Logs: `%LOCALAPPDATA%\SteamVR2Bot\Logs\svr-bridge-YYYYMMDD.jsonl`. The chat
+  window now logs the first laser event of each interaction and every button
+  event, with coordinates and what they hit — that line is the fastest way to
+  tell "SteamVR sent nothing" from "moves arrived, button did not".
+- Self-tests: `SteamVR2Bot.exe --self-test` and
   `diagnostics\SteamVR2Bot.Diagnostics.exe --self-test`.
+- A real `openvr.h` (`IVROverlay_027`) is on this machine under
+  `Documents\GitHub\OBS_Reshade_Plugin\...\deps\openvr\headers\` — the source
+  used to derive the overlay flag, and the right place to check the next
+  constant rather than guessing it.
+
+## A note on method, earned twice this phase
+
+**A clean log is not evidence a VR feature works.** Two of the three real
+defects here produced no error of any kind: the zero transform, and the stranded
+drag. Both were found by reading state directly — the settings file, the actual
+transform — not by trusting that nothing threw.
+
+**Instrument the discriminator before the headset trip, not after.** "The handle
+does not respond" has two causes needing opposite fixes: nothing arriving at
+all, versus moves arriving but no button events. Not being able to tell them
+apart cost a whole session.

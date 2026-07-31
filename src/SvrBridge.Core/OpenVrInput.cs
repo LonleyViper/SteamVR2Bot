@@ -184,6 +184,51 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
     /// </summary>
     public MotionSample LatestMotion { get; private set; }
 
+    /// <summary>
+    /// One tracked device's world pose from the most recent
+    /// <see cref="Poll"/>, in OpenVR's own 3x4 layout.
+    /// <para>
+    /// Deliberately separate from <see cref="LatestMotion"/> rather than added
+    /// to it. <see cref="MotionSample"/> is the gesture recognizers' input: a
+    /// yaw-only body frame carrying positions and velocities and no device
+    /// rotation at all, shaped that way on purpose so a level sweep does not
+    /// read as a diagonal one when the wearer glances down. Grabbing a panel
+    /// needs the opposite - the raw pose, rotation included - and bending the
+    /// gesture frame to also serve that would put a hardware-validated
+    /// recognition path at risk for a UI feature. This reads the same pose
+    /// array the sample is built from and converts nothing.
+    /// </para>
+    /// <para>
+    /// Only meaningful while <see cref="MotionSamplingEnabled"/> is on, which
+    /// is exactly when a panel that can be grabbed exists. Stale otherwise.
+    /// </para>
+    /// </summary>
+    public bool TryGetDevicePose(uint deviceIndex, out VrOverlayTransform pose)
+    {
+        pose = VrOverlayTransform.Identity;
+        if (deviceIndex >= (uint)_poses.Length)
+        {
+            return false;
+        }
+
+        var device = _poses[deviceIndex];
+        if (!device.IsUsable)
+        {
+            return false;
+        }
+
+        // A field-for-field copy, not a conversion: HmdMatrix34 and
+        // VrOverlayTransform are the same layout by construction - see
+        // VrOverlayTransform's own remarks on why it mirrors OpenVR rather
+        // than reusing Matrix4x4.
+        var matrix = device.DeviceToAbsoluteTracking;
+        pose = new VrOverlayTransform(
+            matrix.M00, matrix.M01, matrix.M02, matrix.M03,
+            matrix.M10, matrix.M11, matrix.M12, matrix.M13,
+            matrix.M20, matrix.M21, matrix.M22, matrix.M23);
+        return true;
+    }
+
     public InputSnapshot Poll()
     {
         ThrowIfDisposed();
@@ -779,6 +824,76 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
         EnsureOverlaySuccess(
             _overlay!.Value.SetOverlayInputMethod(handle, inputMethod),
             "SetOverlayInputMethod");
+
+    void IVrOverlayApi.SetOverlayFlag(ulong handle, int flag, bool enabled) =>
+        EnsureOverlaySuccess(
+            _overlay!.Value.SetOverlayFlag(handle, flag, enabled),
+            $"SetOverlayFlag({flag})");
+
+    void IVrOverlayApi.SetOverlayMouseScale(ulong handle, float width, float height)
+    {
+        var mouseScale = new HmdVector2 { X = width, Y = height };
+        EnsureOverlaySuccess(
+            _overlay!.Value.SetOverlayMouseScale(handle, ref mouseScale),
+            "SetOverlayMouseScale");
+    }
+
+    /// <summary>
+    /// Reads this overlay's queue with the same 64-byte <c>VREvent_t</c>
+    /// layout the dashboard path already uses: a 16-byte header
+    /// (eventType, trackedDeviceIndex, eventAgeSeconds, pad) followed by the
+    /// data union, which puts <c>VREvent_Mouse_t.x</c> at offset 16 and
+    /// <c>.y</c> at offset 20.
+    /// <para>
+    /// Non-pointer events are dropped rather than surfaced. The queue also
+    /// carries overlay lifecycle events, and a caller that had to filter them
+    /// itself would need this struct layout too.
+    /// </para>
+    /// </summary>
+    void IVrOverlayApi.PollOverlayMouseEvents(ulong handle, List<OverlayMouseEvent> into)
+    {
+        if (_overlay is null)
+        {
+            return;
+        }
+
+        const int eventBufferSize = 64;
+        var eventBuffer = Marshal.AllocCoTaskMem(eventBufferSize);
+        try
+        {
+            while (_overlay.Value.PollNextOverlayEvent(handle, eventBuffer, eventBufferSize))
+            {
+                var kind = Marshal.ReadInt32(eventBuffer) switch
+                {
+                    300 => OverlayMouseEventKind.Move,
+                    301 => OverlayMouseEventKind.ButtonDown,
+                    302 => OverlayMouseEventKind.ButtonUp,
+                    304 => OverlayMouseEventKind.FocusLeave,
+                    _ => (OverlayMouseEventKind?)null
+                };
+                if (kind is not { } eventKind)
+                {
+                    continue;
+                }
+
+                // FocusLeave carries VREvent_Overlay_t, not VREvent_Mouse_t -
+                // an overlay handle sits where x/y do - so its coordinates are
+                // reported as zero rather than as reinterpreted bytes that
+                // would hit-test to a real rectangle.
+                var isMouse = eventKind != OverlayMouseEventKind.FocusLeave;
+                into.Add(
+                    new OverlayMouseEvent(
+                        eventKind,
+                        isMouse ? BitConverter.Int32BitsToSingle(Marshal.ReadInt32(eventBuffer, 16)) : 0f,
+                        isMouse ? BitConverter.Int32BitsToSingle(Marshal.ReadInt32(eventBuffer, 20)) : 0f,
+                        (uint)Marshal.ReadInt32(eventBuffer, 4)));
+            }
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(eventBuffer);
+        }
+    }
 
     void IVrOverlayApi.ShowOverlay(ulong handle) =>
         EnsureOverlaySuccess(_overlay!.Value.ShowOverlay(handle), "ShowOverlay");

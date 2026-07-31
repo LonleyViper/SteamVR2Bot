@@ -1,14 +1,22 @@
 # SteamVR2Bot
 
-SteamVR2Bot runs Streamer.bot actions from safe SteamVR controller shortcuts.
-It uses SteamVR actions directly—there is no keyboard emulation, browser overlay,
-or OpenVR2Key layer.
+SteamVR2Bot runs Streamer.bot actions from safe SteamVR controller shortcuts,
+and brings your chat and alerts into the headset. It uses SteamVR actions
+directly—there is no keyboard emulation, browser overlay, or OpenVR2Key layer.
 
 The validated Vive shortcut is:
 
 > Hold **Left Grip**, then press **Right Trigger**
 
 The left grip is a safety button, so pulling the trigger by itself does nothing.
+
+Alongside shortcuts, SteamVR2Bot can show:
+
+- **Your Twitch chat** in a window on your wrist, with real emotes and badges,
+  grabbable with the laser and placed wherever you want it.
+- **Alerts** — follows, subs, cheers, raids, donations — as a panel you
+  position by hand, with the platform's icon, its own colours, size and
+  animation.
 
 ## The desktop window
 
@@ -39,7 +47,9 @@ In the SteamVR2Bot window:
 
 1. Enter the Streamer.bot WebSocket address.
 2. Enter the connection password only if Streamer.bot requires one.
-3. On **Connection & setup**, choose **Refresh Streamer.bot actions**.
+3. On **Connection & setup**, choose **Refresh Streamer.bot actions**. That
+   page is grouped into Streamer.bot connection, Notifications, Notification
+   appearance, Alerts, Chat window, and Controller and SteamVR.
 4. On **Shortcuts**, choose **Add shortcut**.
 5. Give it a clear name, choose its Streamer.bot action, then choose
    **Record controller inputs**.
@@ -106,6 +116,113 @@ list and becomes active without restarting the SteamVR dashboard.
 
 Each saved row has a pencil button to change its action, input, or gesture, and
 an X button to delete it. Both changes save and activate automatically.
+
+## Chat and alerts in the headset
+
+Both surfaces need the Streamer.bot event feed turned on, on **Connection &
+setup**. Everything below applies live — no restart, and no Save button.
+
+### Chat on your wrist
+
+Turn on **Show chat messages on your wrist**. Your Twitch chat appears in a
+window anchored to a controller or to your head, with real emote and badge
+images. Point the laser at its handle and drag to place it anywhere in full six
+degrees of freedom; the placement is saved per anchor mode, and the VR
+dashboard's **Chat** tab has a reset if you put it somewhere unreachable.
+
+**Grow on gaze** is off by default. Turned on, the window grows and brightens
+when you look at it.
+
+> Chat needs at least one enabled trigger in Streamer.bot bound to
+> `Twitch > Chat Message`, even though SteamVR2Bot subscribes to the event
+> directly. See [Known limitations](#known-limitations).
+
+### Alerts
+
+**Nothing is enabled until you add it.** Streamer.bot has no way to tell this
+app which events you have already enabled on its side, so this list is its own
+switch rather than a mirror of Streamer.bot's Events panel — and upgrading
+never starts sending you alerts you did not choose.
+
+A connected Streamer.bot instance reports around 470 events across 44 sources,
+so the picker shows what you have enabled first and treats adding one as a
+search rather than a browse:
+
+![The Alerts section of the Connection & setup tab: an enabled list of seven alerts each with its platform icon, and a search for "sub" showing ranked results with Add buttons](docs/images/desktop-alerts.png)
+
+- Search by platform or by what happens — `follow`, `sub`, `bits`, `raid`.
+  Plurals work, and so do the words you would actually say: `bits` finds
+  Twitch's `Cheer`, `member` finds YouTube's `Sponsor`.
+- Results are ranked, so the obvious answer is first rather than buried among
+  incidental matches.
+- Every source gets an icon where one ships, and a coloured chip with its
+  initials where one does not — including a platform added to Streamer.bot
+  after this app was built.
+
+### What an alert says
+
+By default an alert uses the platform's own wording when it sends any. Twitch
+writes a whole sentence for subs and gift subs, and that is used verbatim.
+Otherwise the alert names whoever it is about and what happened, and a cheer's
+or donation's message appears underneath on its own line.
+
+![A notification panel: the Twitch icon beside "Viper cheered 500 bits!" with the accompanying message below it](docs/images/notification-cheer.png)
+
+Text is centred and scales to fill the panel, so a short alert is not lost in a
+large box and a long message shrinks to fit rather than being cut off:
+
+![A notification panel reading "New follower!" scaled up to fill the whole panel beside the Twitch icon](docs/images/notification-short.png)
+
+To word one yourself, use **Customise wording for:** → **Edit template…**:
+
+```text
+{user.name} subscribed for {duration_months} months at tier {sub_tier}!
+```
+
+`{dotted.path}` reads a field from the event's own data. List alternatives with
+`|` and the first present one wins, ending in a `"quoted"` literal as a last
+resort — which is how one template covers events that name their subject
+differently:
+
+```text
+{user.name|targetUser.name|"Someone"} — {eventName}
+```
+
+`{eventName}` is the event's readable name ("Gift Sub"), `{eventSource}` its
+source, `{event}` both.
+
+To find an event's real field names, either read them from
+[docs.streamer.bot](https://docs.streamer.bot/api/websocket/events), or turn
+the event on and let it happen once — every event that arrives records its whole
+payload in the activity log as `streamerbot.event_payload`.
+
+To test without waiting for a real viewer, use the tray menu's **Notification
+test harness (developer)**, which fires whatever you have enabled through the
+same path a real event takes.
+
+### Appearance
+
+![The notification appearance settings: text and accent colour pickers, background opacity, panel size in pixels, corner radius, default duration, transition, and an optional background image](docs/images/desktop-notification-appearance.png)
+
+Background, text and accent colours, background opacity, panel size in pixels,
+corner radius, default duration, and a Fade, Slide or Scale pop transition. An
+optional PNG is drawn behind the text, letterboxed rather than stretched or
+cropped; when one is set, nothing is added over it uninvited.
+
+A payload's own `accent`, `duration` and `image` still win over these defaults
+for that one alert.
+
+Panel size is the texture's resolution and aspect ratio — how much text fits
+and what shape the panel is. Its physical size in the headset is the **Size**
+slider under Notifications.
+
+### Positioning
+
+The VR dashboard has a tab per surface — **Shortcuts**, **Chat**,
+**Notifications**. On **Notifications**, turn on **Position notifications** to
+pin a permanent dummy frame you can grab with the laser and place exactly where
+you want alerts to appear. Turning it off, leaving the tab, or restarting all
+keep the placement, and a reset button puts it back.
 
 ## Controller inputs
 

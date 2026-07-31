@@ -62,6 +62,16 @@ internal sealed record UserSettings
     /// <summary>Which hand <see cref="NotificationAnchorMode"/> follows in Controller mode.</summary>
     public OverlayAnchorHand NotificationAnchorHand { get; init; } = OverlayAnchorHand.Left;
 
+    /// <summary>
+    /// Where the chat window sits within its anchor, as last dragged by hand
+    /// in the headset - one offset per anchor mode. Defaults to
+    /// <see cref="OverlayPlacement.Default"/>, which is bit-for-bit the pair
+    /// of transforms Phases 1/2/3 proved on hardware, so a settings file
+    /// written before this field existed - and an install that has never
+    /// dragged anything - looks exactly as it always did.
+    /// </summary>
+    public OverlayPlacement ChatPlacement { get; init; } = OverlayPlacement.Default;
+
     public OverlayAnchor ChatAnchor => new(ChatAnchorMode, ChatAnchorHand);
 
     public OverlayAnchor NotificationAnchor => new(NotificationAnchorMode, NotificationAnchorHand);
@@ -85,6 +95,23 @@ internal sealed record UserSettings
     public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
 
     /// <summary>
+    /// Whether the chat window grows and brightens when looked at. Off leaves
+    /// it at its configured size and opacity permanently; gaze is still
+    /// measured either way, since it is what gates the laser.
+    /// <para>
+    /// <b>Defaults to off, which deliberately breaks this file's usual
+    /// migration rule.</b> Every other setting here defaults to whatever the
+    /// app did before it existed, so an upgrade changes nothing. This one
+    /// does not: the animation was tried in the headset across a full phase
+    /// and found distracting to read against, and shipping a default that has
+    /// to be turned off before the window is comfortable is the wrong way
+    /// round. An install that has actually saved a preference keeps it - only
+    /// a file that predates the setting takes the new default.
+    /// </para>
+    /// </summary>
+    public bool ChatGazeScaleEnabled { get; init; }
+
+    /// <summary>
     /// The notification panel's peak alpha while holding, 0.2-1.0. Defaults
     /// to 1.0 - the value <see cref="NotificationOverlay"/> hardcoded before
     /// Phase 4b.
@@ -93,6 +120,123 @@ internal sealed record UserSettings
 
     /// <summary>Multiplies the notification panel's width, 0.5-2.0. Defaults to 1.0 - today's hardcoded width, unscaled.</summary>
     public double NotificationSizeScale { get; init; } = 1.0;
+
+    /// <summary>
+    /// Where the notification panel sits within its anchor, as last dragged
+    /// by hand in the headset via the §B1 positioning frame - one offset per
+    /// anchor mode, exactly the same mechanism <see cref="ChatPlacement"/>
+    /// already is. Defaults to <see cref="OverlayPlacement.Default"/>, so a
+    /// settings file written before Phase 7 - and an install that has never
+    /// positioned notifications - looks exactly as it always did.
+    /// </summary>
+    public OverlayPlacement NotificationPlacement { get; init; } = OverlayPlacement.Default;
+
+    /// <summary>The notification panel's background colour. "" falls back to the renderer's own hardcoded default - see §B4.</summary>
+    public string NotificationBackgroundColour { get; init; } = "";
+
+    /// <summary>The notification panel's title/body text colour. "" falls back to the renderer's own hardcoded default - see §B4.</summary>
+    public string NotificationTextColour { get; init; } = "";
+
+    /// <summary>
+    /// The notification panel's settings-level default accent colour. A
+    /// payload's own <c>accent</c> still wins when present - see §B4's
+    /// precedence rule, resolved in <see cref="NotificationOverlay.Enqueue"/>.
+    /// "" falls back to the renderer's own hardcoded default.
+    /// </summary>
+    public string NotificationAccentColour { get; init; } = "";
+
+    /// <summary>
+    /// How long a notification stays on screen when its own payload does not
+    /// say - a payload's own <c>duration</c> still wins when present, per
+    /// §B4. Defaults to <see cref="StreamerBotEventPayload.DefaultDurationMs"/>,
+    /// exactly this app's pre-Phase-7 hardcoded default.
+    /// </summary>
+    public int NotificationDefaultDurationMs { get; init; } = StreamerBotEventPayload.DefaultDurationMs;
+
+    /// <summary>The notification panel's entry/exit transition. Defaults to <see cref="NotificationTransition.Fade"/> - today's only behaviour. See §B3.</summary>
+    public NotificationTransition NotificationTransitionKind { get; init; } = NotificationTransition.Fade;
+
+    /// <summary>Which edge <see cref="NotificationTransitionKind"/> slides from, when it is <see cref="NotificationTransition.Slide"/>.</summary>
+    public NotificationSlideEdge NotificationSlideEdge { get; init; } = NotificationSlideEdge.Bottom;
+
+    /// <summary>
+    /// A user-supplied PNG drawn as the notification panel's background,
+    /// composited under the title/text - see §B5. "" means no template. A
+    /// payload's own <c>image</c> field still wins when present.
+    /// </summary>
+    public string NotificationTemplatePath { get; init; } = "";
+
+    /// <summary>
+    /// The notification panel's background fill opacity, 0 (fully
+    /// transparent - the real world/game shows through) to 1 (fully
+    /// opaque). Independent of the panel's own gaze/fade alpha. Defaults to
+    /// <see cref="NotificationAppearanceSettings.DefaultBackgroundOpacity"/>,
+    /// exactly the 235/255 this app hardcoded before this setting existed.
+    /// </summary>
+    public double NotificationBackgroundOpacity { get; init; } =
+        NotificationAppearanceSettings.DefaultBackgroundOpacity;
+
+    /// <summary>Rounds the notification panel's corners, in pixels of the configured panel size. 0 (the default) is the original square-cornered panel.</summary>
+    public double NotificationCornerRadiusPixels { get; init; }
+
+    /// <summary>
+    /// The notification panel's texture size in pixels. Defaults to the
+    /// 900x260 every live headset test to date was run at, so an upgrade
+    /// changes nothing. The overlay's physical size in the headset is still
+    /// <see cref="NotificationSizeScale"/>'s job - this is resolution and
+    /// aspect ratio, which is what decides how much text fits and what shape
+    /// the panel is.
+    /// </summary>
+    public int NotificationPanelWidth { get; init; } =
+        NotificationAppearanceSettings.DefaultPanelWidth;
+
+    /// <inheritdoc cref="NotificationPanelWidth"/>
+    public int NotificationPanelHeight { get; init; } =
+        NotificationAppearanceSettings.DefaultPanelHeight;
+
+    /// <summary>
+    /// "Source.Type" keys (e.g. <c>"Twitch.Follow"</c>) the wearer has
+    /// explicitly switched on for direct notification subscription - see
+    /// §B2. Empty by default: Streamer.bot exposes no way to ask which
+    /// events currently have an enabled trigger (confirmed live - disabling
+    /// every event in Streamer.bot's own Settings > Events panel did not
+    /// stop this app receiving them), so a broader default would mean
+    /// non-alert plumbing (OBS scene changes and the like) reaching the
+    /// headset indistinguishable from a real alert. Nothing beyond today's
+    /// <c>General.Custom</c> behaviour is enabled for a settings file
+    /// predating this feature.
+    /// </summary>
+    public IReadOnlyList<string> EnabledEvents { get; init; } = [];
+
+    /// <summary>Per-event template override, keyed the same way as <see cref="EnabledEvents"/>. An event with no entry uses the generic default template.</summary>
+    public IReadOnlyDictionary<string, string> EventTemplates { get; init; } =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether a directly-subscribed event whose payload says <c>isTest</c> still produces a notification. Defaults to showing them - see §B2.</summary>
+    public bool ShowTestEvents { get; init; } = true;
+
+    /// <summary>Bundles §B3/§B4/§B5's appearance fields into the one value <see cref="NotificationOverlay"/> and <see cref="VrSettingsSnapshot"/> both take.</summary>
+    public NotificationAppearanceSettings NotificationAppearance =>
+        new(
+            NotificationBackgroundColour,
+            NotificationTextColour,
+            NotificationAccentColour,
+            NotificationDefaultDurationMs,
+            NotificationTransitionKind,
+            NotificationSlideEdge,
+            NotificationTemplatePath,
+            NotificationBackgroundOpacity,
+            NotificationCornerRadiusPixels,
+            NotificationPanelWidth,
+            NotificationPanelHeight);
+
+    /// <summary>Bundles the "Source.Type" keys and per-event overrides §B2's toggles maintain into the one value the event stream takes.</summary>
+    public NotificationEventSettings NotificationEvents =>
+        new(
+            EnabledEvents,
+            EventTemplates,
+            NotificationEventSettings.GenericDefaultTemplate,
+            ShowTestEvents);
 
     public IReadOnlyList<ShortcutConfig> GetShortcuts()
     {
@@ -156,14 +300,18 @@ internal sealed record UserSettings
                 CooldownMs = 250
             },
             ChatAnchor = ChatAnchor,
+            ChatPlacement = ChatPlacement,
             NotificationAnchor = NotificationAnchor,
             ChatEnabled = ChatEnabled,
             NotificationsEnabled = NotificationsEnabled,
             ChatOpacity = ChatOpacity,
             ChatSizeScale = ChatSizeScale,
             GazeSensitivity = GazeSensitivity,
+            ChatGazeScaleEnabled = ChatGazeScaleEnabled,
             NotificationOpacity = NotificationOpacity,
-            NotificationSizeScale = NotificationSizeScale
+            NotificationSizeScale = NotificationSizeScale,
+            NotificationPlacement = NotificationPlacement,
+            NotificationAppearance = NotificationAppearance
         };
 }
 
@@ -227,13 +375,30 @@ internal sealed class UserSettingsStore
             ChatEnabled = settings.ChatEnabled,
             ChatAnchorMode = settings.ChatAnchorMode,
             ChatAnchorHand = settings.ChatAnchorHand,
+            ChatPlacement = settings.ChatPlacement,
             NotificationAnchorMode = settings.NotificationAnchorMode,
             NotificationAnchorHand = settings.NotificationAnchorHand,
             ChatOpacity = settings.ChatOpacity,
             ChatSizeScale = settings.ChatSizeScale,
             GazeSensitivity = settings.GazeSensitivity,
+            ChatGazeScaleEnabled = settings.ChatGazeScaleEnabled,
             NotificationOpacity = settings.NotificationOpacity,
-            NotificationSizeScale = settings.NotificationSizeScale
+            NotificationSizeScale = settings.NotificationSizeScale,
+            NotificationPlacement = settings.NotificationPlacement,
+            NotificationBackgroundColour = settings.NotificationBackgroundColour,
+            NotificationTextColour = settings.NotificationTextColour,
+            NotificationAccentColour = settings.NotificationAccentColour,
+            NotificationDefaultDurationMs = settings.NotificationDefaultDurationMs,
+            NotificationTransitionKind = settings.NotificationTransitionKind,
+            NotificationSlideEdge = settings.NotificationSlideEdge,
+            NotificationTemplatePath = settings.NotificationTemplatePath,
+            NotificationBackgroundOpacity = settings.NotificationBackgroundOpacity,
+            NotificationCornerRadiusPixels = settings.NotificationCornerRadiusPixels,
+            NotificationPanelWidth = settings.NotificationPanelWidth,
+            NotificationPanelHeight = settings.NotificationPanelHeight,
+            EnabledEvents = settings.EnabledEvents,
+            EventTemplates = settings.EventTemplates,
+            ShowTestEvents = settings.ShowTestEvents
         };
 
         var json = JsonSerializer.Serialize(
@@ -299,6 +464,18 @@ internal sealed class UserSettingsStore
                 // already had - see the defaults on SavedSettings below.
                 ChatAnchorMode = saved.ChatAnchorMode,
                 ChatAnchorHand = saved.ChatAnchorHand,
+                // Absent from every settings file written before Phase 5,
+                // which is exactly the hardware-proven placement the chat
+                // window always had - see OverlayPlacement.Default.
+                //
+                // Sanitised rather than trusted, because "absent" is not the
+                // only way this arrives wrong. This field's shape changed once
+                // already, from three numbers per anchor mode to a full
+                // transform, and a file written before that reads back as an
+                // all-zero matrix - which is not absent, is not a
+                // deserialisation error, and collapses the chat window to
+                // nothing. See OverlayPlacement.Sanitised.
+                ChatPlacement = saved.ChatPlacement.Sanitised(),
                 NotificationAnchorMode = saved.NotificationAnchorMode,
                 NotificationAnchorHand = saved.NotificationAnchorHand,
                 // Absent from every settings file written before Phase 4b,
@@ -308,8 +485,42 @@ internal sealed class UserSettingsStore
                 ChatOpacity = saved.ChatOpacity,
                 ChatSizeScale = saved.ChatSizeScale,
                 GazeSensitivity = saved.GazeSensitivity,
+                ChatGazeScaleEnabled = saved.ChatGazeScaleEnabled,
                 NotificationOpacity = saved.NotificationOpacity,
-                NotificationSizeScale = saved.NotificationSizeScale
+                NotificationSizeScale = saved.NotificationSizeScale,
+                // Absent from every settings file written before Phase 7,
+                // which is exactly the hardware-proven default placement
+                // notifications always had - sanitised for the same reason
+                // ChatPlacement is: a bad or absent value must not be carried
+                // around and written back looking deliberate.
+                NotificationPlacement = saved.NotificationPlacement.Sanitised(),
+                NotificationBackgroundColour = saved.NotificationBackgroundColour,
+                NotificationTextColour = saved.NotificationTextColour,
+                NotificationAccentColour = saved.NotificationAccentColour,
+                NotificationDefaultDurationMs = saved.NotificationDefaultDurationMs,
+                NotificationTransitionKind = saved.NotificationTransitionKind,
+                NotificationSlideEdge = saved.NotificationSlideEdge,
+                NotificationTemplatePath = saved.NotificationTemplatePath,
+                // Absent from every settings file written before this pair of
+                // settings existed, which is exactly the record's own default
+                // - the exact 235/255 background alpha and square corners
+                // this app already had.
+                NotificationBackgroundOpacity = saved.NotificationBackgroundOpacity,
+                NotificationCornerRadiusPixels = saved.NotificationCornerRadiusPixels,
+                // Zero in a settings file written before the panel size was
+                // configurable, which NotificationAppearanceSettings.Safe*
+                // reads back as the proven default rather than as a panel
+                // with no area - System.Text.Json cannot tell an older shape
+                // from a legitimate zero, so the reader has to.
+                NotificationPanelWidth = saved.NotificationPanelWidth,
+                NotificationPanelHeight = saved.NotificationPanelHeight,
+                // Absent from every settings file written before Phase 7,
+                // which is exactly today's behaviour per §B2's migration
+                // rule: nothing beyond General.Custom is enabled.
+                EnabledEvents = saved.EnabledEvents ?? [],
+                EventTemplates = saved.EventTemplates
+                                 ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                ShowTestEvents = saved.ShowTestEvents
             };
         }
         catch (JsonException exception)
@@ -394,12 +605,30 @@ internal sealed class UserSettingsStore
         public bool ChatEnabled { get; init; }
         public OverlayAnchorMode ChatAnchorMode { get; init; } = OverlayAnchorMode.Controller;
         public OverlayAnchorHand ChatAnchorHand { get; init; } = OverlayAnchorHand.Left;
+        public OverlayPlacement ChatPlacement { get; init; } = OverlayPlacement.Default;
         public OverlayAnchorMode NotificationAnchorMode { get; init; } = OverlayAnchorMode.Head;
         public OverlayAnchorHand NotificationAnchorHand { get; init; } = OverlayAnchorHand.Left;
         public double ChatOpacity { get; init; } = 0.95;
         public double ChatSizeScale { get; init; } = 1.0;
         public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
+        public bool ChatGazeScaleEnabled { get; init; }
         public double NotificationOpacity { get; init; } = 1.0;
         public double NotificationSizeScale { get; init; } = 1.0;
+        public OverlayPlacement NotificationPlacement { get; init; } = OverlayPlacement.Default;
+        public string NotificationBackgroundColour { get; init; } = "";
+        public string NotificationTextColour { get; init; } = "";
+        public string NotificationAccentColour { get; init; } = "";
+        public int NotificationDefaultDurationMs { get; init; } = StreamerBotEventPayload.DefaultDurationMs;
+        public NotificationTransition NotificationTransitionKind { get; init; } = NotificationTransition.Fade;
+        public NotificationSlideEdge NotificationSlideEdge { get; init; } = NotificationSlideEdge.Bottom;
+        public string NotificationTemplatePath { get; init; } = "";
+        public double NotificationBackgroundOpacity { get; init; } =
+            NotificationAppearanceSettings.DefaultBackgroundOpacity;
+        public double NotificationCornerRadiusPixels { get; init; }
+        public int NotificationPanelWidth { get; init; }
+        public int NotificationPanelHeight { get; init; }
+        public IReadOnlyList<string>? EnabledEvents { get; init; }
+        public IReadOnlyDictionary<string, string>? EventTemplates { get; init; }
+        public bool ShowTestEvents { get; init; } = true;
     }
 }

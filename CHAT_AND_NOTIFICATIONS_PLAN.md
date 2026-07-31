@@ -504,6 +504,30 @@ Route B costs one action in Streamer.bot, paid only by users who want what it
 offers. An importable action set can still ship later as a convenience for
 common alert patterns, but it is no longer on the critical path to seeing chat.
 
+### Revised 2026-07-31 — direct subscription now covers notifications too
+
+Phase 7 (`PHASE7_NOTIFICATION_CUSTOMISATION_PROMPT.md`) extended Route A from
+chat to notifications: the Notifications tab's toggle list is populated from a
+live `GetEvents` response and the app subscribes to exactly the events the
+wearer switched on, alongside `General.Custom` and `Twitch.ChatMessage`, which
+stay subscribed unconditionally. Turning an event on requires no Streamer.bot
+action of any kind — the same zero-setup property Route A already gave chat.
+
+The mapper-per-event-type approach Route A used for chat (`TwitchChatMessageMapper`)
+was deliberately **not** repeated for notifications. Instead, a generic dotted-path
+template (`StreamerBotEventTemplate`) resolves against whatever `data` object an
+event carries, so one ~50-line resolver covers every event Streamer.bot can emit,
+including ones that do not exist yet — a mapper per event type would have meant a
+mapper per platform update, forever.
+
+`General.Custom` remains the escape hatch for anything the raw feed cannot
+express: custom alerts, SB-side filtering or formatting, or a payload assembled
+from several events. Nothing about it changed — a hand-authored payload still
+carries an optional `image` field (§B5) that behaves exactly as it did before
+when absent, and both routes still converge on the same
+`StreamerBotEventPayload`, so the renderer and the notification queue remain
+unaware of which route a given notification came from.
+
 ---
 
 ## 5b. A limitation to document, not debug

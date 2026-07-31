@@ -28,6 +28,16 @@ public sealed class AppConfig
     public OverlayAnchor NotificationAnchor { get; init; } = OverlayAnchor.Head;
 
     /// <summary>
+    /// Where the chat window sits within whichever anchor it follows, as
+    /// last placed by hand in the headset. Baked in at spawn like
+    /// <see cref="ChatAnchor"/>; unlike it, this is the one setting the wearer
+    /// normally changes from inside VR rather than on the desktop, so the
+    /// worker also reports changes back the other way - see
+    /// <c>OpenVrWorker</c>'s <c>"vrSettingsChanged"</c> message.
+    /// </summary>
+    public OverlayPlacement ChatPlacement { get; init; } = OverlayPlacement.Default;
+
+    /// <summary>
     /// Whether the chat window starts on. Baked in at spawn like the anchor
     /// fields above, so the OpenVR worker knows the initial state without
     /// waiting for a "chat" command - needed so the VR settings page's on/off
@@ -48,11 +58,24 @@ public sealed class AppConfig
     /// <summary>The chat window's saved default gaze sensitivity. See <see cref="ChatOpacity"/>.</summary>
     public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
 
+    /// <summary>
+    /// Whether the chat window grows and brightens on gaze. Off by default -
+    /// see <see cref="UserSettings.ChatGazeScaleEnabled"/> in the tray for
+    /// why, and <see cref="ChatOpacity"/> for why this is baked in at spawn.
+    /// </summary>
+    public bool ChatGazeScaleEnabled { get; init; }
+
     /// <summary>The notification panel's saved default peak alpha. See <see cref="ChatOpacity"/>.</summary>
     public double NotificationOpacity { get; init; } = 1.0;
 
     /// <summary>Multiplies the notification panel's saved default width. See <see cref="ChatOpacity"/>.</summary>
     public double NotificationSizeScale { get; init; } = 1.0;
+
+    /// <summary>The notification panel's saved default placement - see <see cref="ChatPlacement"/>, added for §B1 of the Phase 7 plan.</summary>
+    public OverlayPlacement NotificationPlacement { get; init; } = OverlayPlacement.Default;
+
+    /// <summary>Everything §B3/§B4/§B5 of the Phase 7 plan added - baked in at spawn like every other appearance field above.</summary>
+    public NotificationAppearanceSettings NotificationAppearance { get; init; } = NotificationAppearanceSettings.Default;
 
     public static AppConfig Load(string path)
     {
