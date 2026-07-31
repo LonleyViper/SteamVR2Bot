@@ -1571,11 +1571,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>
-    /// Sends one synthetic event through the live stream's own dispatch. The
-    /// payload carries a few generically-named fields so a wearer testing a
-    /// custom template has something to substitute; a template naming a field
-    /// that is absent resolves it to empty text, exactly as a real payload
-    /// missing that field would.
+    /// Sends one synthetic event through the live stream's own dispatch.
+    /// <para>
+    /// <b>These fields are invented, not observed.</b> No real Streamer.bot
+    /// event payload has been captured, so this stands in with the field
+    /// names the generic default template looks for - enough to prove the
+    /// wiring and to exercise a template, but not evidence of what any real
+    /// event carries. The payload is marked <c>synthetic</c> so it is
+    /// unmistakable in the activity log beside a real one, and every event
+    /// that arrives now logs its whole payload
+    /// (<c>streamerbot.event_payload</c>), which is how the real field names
+    /// get established - fire the event from Streamer.bot's own Test button
+    /// and read them off.
+    /// </para>
     /// </summary>
     private bool TryFireSyntheticEvent(string key, bool isTest)
     {
@@ -1596,10 +1604,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 new
                 {
                     isTest,
-                    user = new { name = "TestViewer" },
-                    targetUser = new { name = "TestViewer" },
+                    synthetic = true,
+                    user = new { name = "TestViewer", display = "TestViewer" },
                     message = "This is a test alert from SteamVR2Bot.",
-                    amount = 1
+                    amount = 1,
+                    months = 3
                 }));
         stream.InjectSyntheticEvent(key[..separator], key[(separator + 1)..], data.RootElement);
         return true;

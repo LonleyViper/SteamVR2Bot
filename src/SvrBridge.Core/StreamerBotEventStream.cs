@@ -60,7 +60,28 @@ public sealed record NotificationEventSettings(
     string DefaultTemplate,
     bool ShowTestEvents)
 {
-    public const string GenericDefaultTemplate = "New event: {event}";
+    /// <summary>
+    /// What an enabled event says when the wearer has not written wording of
+    /// their own. Names an actor if the payload carries one under any of the
+    /// usual field names, and always names the event readably.
+    /// <para>
+    /// The alternatives are why this can be one string rather than a table of
+    /// which event uses which field: a follow, a raid and a gift sub name
+    /// their actor differently, and the first field that is actually present
+    /// wins. The field names here are ordinary payload field names, not
+    /// platform or event names - an event carrying none of them still renders
+    /// through the <c>"Someone"</c> literal rather than leaving a gap.
+    /// </para>
+    /// <para>
+    /// These names are the ones Streamer.bot's own payloads were observed to
+    /// use; <c>streamerbot.event_payload</c> in the activity log records the
+    /// full payload of every event that arrives, so this list can be corrected
+    /// from evidence rather than guessed at again.
+    /// </para>
+    /// </summary>
+    public const string GenericDefaultTemplate =
+        "{user.name|user.display|userName|displayName|targetUser.name|targetUser.display"
+        + "|from|fromName|sender|\"Someone\"} — {eventName}";
 
     /// <summary>No extra events enabled - exactly today's behaviour, for a caller that has not opted into any.</summary>
     public static readonly NotificationEventSettings None = new(
@@ -858,10 +879,23 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
             ? custom
             : _notificationEvents.DefaultTemplate;
 
+        // The whole payload, verbatim, at Debug. Which fields an event
+        // actually carries is the one thing needed to write good wording for
+        // it, and it is not documented anywhere - the same gap GetEvents had
+        // until one response was captured. Recording it here means a wearer
+        // can fire Streamer.bot's own Test button for an event and read the
+        // exact field names out of the log, rather than this app shipping a
+        // guessed table of them.
+        _log(
+            new BridgeActivity(
+                "streamerbot.event_payload",
+                $"{eventLabel} payload: {data.GetRawText()}",
+                BridgeLogLevel.Debug));
+
         payload = new StreamerBotEventPayload
         {
             Target = StreamerBotEventTarget.Notification,
-            Text = StreamerBotEventTemplate.Resolve(template, data, eventLabel)
+            Text = StreamerBotEventTemplate.Resolve(template, data, source, type)
         };
         rejection = "";
         return true;

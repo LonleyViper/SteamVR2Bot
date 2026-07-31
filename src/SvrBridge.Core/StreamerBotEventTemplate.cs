@@ -21,26 +21,37 @@ namespace SvrBridge.Core;
 /// blank substitution, not a dropped feed.
 /// </para>
 /// <para>
-/// One token is not a path into <c>data</c>: <c>{event}</c> substitutes the
-/// event's own "Source.Type" label, since that is metadata this type is
-/// handed separately rather than something living inside the payload itself -
-/// it is what the generic default template falls back to for an event with
-/// no more specific per-event override.
+/// Three tokens are not paths into <c>data</c>, because they are metadata
+/// this type is handed separately rather than anything living inside the
+/// payload: <c>{event}</c> substitutes the "Source.Type" label,
+/// <c>{eventName}</c> the event's own name in readable form ("Gift Sub"), and
+/// <c>{eventSource}</c> the source alone ("Twitch").
+/// </para>
+/// <para>
+/// A token may list <b>alternatives separated by <c>|</c></b>, and the first
+/// one that resolves to something non-empty wins:
+/// <c>{user.name|targetUser.name|"Someone"}</c>. A segment in double quotes
+/// is a literal rather than a path, which is what gives a template a last
+/// resort instead of a blank gap. This exists because payload shapes differ
+/// per event - a follow names its actor in one field, a raid in another - and
+/// alternatives let one template cover all of them without this app carrying
+/// a table of which event uses which field.
 /// </para>
 /// </summary>
 public static class StreamerBotEventTemplate
 {
     private const string EventToken = "event";
+    private const string EventNameToken = "eventName";
+    private const string EventSourceToken = "eventSource";
 
     /// <summary>
-    /// Substitutes every <c>{dotted.path}</c> token in <paramref name="template"/>
-    /// against <paramref name="data"/>, plus the special <c>{event}</c> token
-    /// against <paramref name="eventLabel"/>. An unterminated <c>{</c> (no
-    /// closing brace) is copied through literally rather than treated as a
-    /// token, so a template that is not perfectly balanced still renders
-    /// something instead of losing its tail.
+    /// Substitutes every <c>{…}</c> token in <paramref name="template"/>
+    /// against <paramref name="data"/>. An unterminated <c>{</c> (no closing
+    /// brace) is copied through literally rather than treated as a token, so
+    /// a template that is not perfectly balanced still renders something
+    /// instead of losing its tail.
     /// </summary>
-    public static string Resolve(string template, JsonElement data, string eventLabel)
+    public static string Resolve(string template, JsonElement data, string source, string type)
     {
         if (string.IsNullOrEmpty(template))
         {
@@ -67,15 +78,62 @@ public static class StreamerBotEventTemplate
                 break;
             }
 
-            var path = template.Substring(open + 1, close - open - 1).Trim();
             result.Append(
-                path.Equals(EventToken, StringComparison.OrdinalIgnoreCase)
-                    ? eventLabel
-                    : ResolvePath(data, path));
+                ResolveToken(
+                    template.Substring(open + 1, close - open - 1),
+                    data,
+                    source,
+                    type));
             index = close + 1;
         }
 
         return result.ToString();
+    }
+
+    /// <summary>Kept so a caller with only the "Source.Type" label - the self-tests, mostly - does not have to split it itself.</summary>
+    public static string Resolve(string template, JsonElement data, string eventLabel)
+    {
+        var separator = (eventLabel ?? "").IndexOf('.');
+        return separator > 0
+            ? Resolve(template, data, eventLabel![..separator], eventLabel[(separator + 1)..])
+            : Resolve(template, data, "", eventLabel ?? "");
+    }
+
+    /// <summary>One token's alternatives, left to right, stopping at the first that yields something.</summary>
+    private static string ResolveToken(string token, JsonElement data, string source, string type)
+    {
+        foreach (var alternative in token.Split('|'))
+        {
+            var trimmed = alternative.Trim();
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            // A quoted segment is a literal, so a chain of paths can end in
+            // something to say when none of them were present.
+            if (trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[^1] == '"')
+            {
+                return trimmed[1..^1];
+            }
+
+            var resolved = trimmed switch
+            {
+                _ when trimmed.Equals(EventToken, StringComparison.OrdinalIgnoreCase) =>
+                    string.IsNullOrEmpty(source) ? type : $"{source}.{type}",
+                _ when trimmed.Equals(EventNameToken, StringComparison.OrdinalIgnoreCase) =>
+                    StreamerBotEventCatalog.SpaceCamelCase(type),
+                _ when trimmed.Equals(EventSourceToken, StringComparison.OrdinalIgnoreCase) => source,
+                _ => ResolvePath(data, trimmed)
+            };
+
+            if (resolved.Length > 0)
+            {
+                return resolved;
+            }
+        }
+
+        return "";
     }
 
     /// <summary>Walks one dotted path, returning "" the moment any segment is missing, non-object, or null.</summary>

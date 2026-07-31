@@ -1518,7 +1518,7 @@ internal sealed class EventTemplateForm : Form
     {
         Text = $"Template for {eventKey}";
         StartPosition = FormStartPosition.CenterParent;
-        Size = new Size(560, 260);
+        Size = new Size(600, 520);
         MinimumSize = Size;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -1534,16 +1534,26 @@ internal sealed class EventTemplateForm : Form
         };
         panel.Controls.Add(new Label
         {
-            Text = "Use {dotted.path} to read a field from the event's own data - e.g. "
-                   + "{targetUser.name}. A missing or null field resolves to nothing rather "
-                   + "than an error. Leave blank to use the generic default template.",
+            Text = "Use {dotted.path} to read a field from the event's own data, e.g. "
+                   + "{targetUser.name} just followed! A missing or null field resolves to "
+                   + "nothing rather than an error.\n\n"
+                   + "List alternatives with | and the first one present wins; end with a "
+                   + "\"quoted\" literal as a last resort:\n"
+                   + "    {user.name|targetUser.name|\"Someone\"} just subscribed!\n\n"
+                   + "{eventName} is the event's readable name (\"Gift Sub\"), {eventSource} "
+                   + "its source, {event} both.\n\n"
+                   + "To find out which fields an event actually carries: turn on this event, "
+                   + "fire it from Streamer.bot's own Test button, and read the "
+                   + "streamerbot.event_payload line in the Activity log - it records the whole "
+                   + "payload verbatim.\n\n"
+                   + "Leave blank to use the generic default.",
             AutoSize = true,
-            MaximumSize = new Size(500, 0),
+            MaximumSize = new Size(520, 0),
             ForeColor = Color.FromArgb(92, 101, 112),
             Margin = new Padding(0, 0, 0, 10)
         });
         _template.Text = existingTemplate;
-        _template.Width = 500;
+        _template.Width = 520;
         _template.Multiline = true;
         _template.Height = 70;
         panel.Controls.Add(_template);

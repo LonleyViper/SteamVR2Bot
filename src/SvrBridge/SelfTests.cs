@@ -750,6 +750,50 @@ internal static class SelfTests
             StreamerBotEventTemplate.Resolve("trailing {unterminated", root, "Twitch.Raid")
             == "trailing {unterminated",
             "An unterminated token (no closing brace) lost its literal tail instead of being copied through.");
+
+        // Alternatives are what let one template cover events that name their
+        // actor in different fields, which is the alternative to this app
+        // carrying a table of which event uses which.
+        Assert(
+            StreamerBotEventTemplate.Resolve("{user.name|targetUser.name}", root, "Twitch.Follow")
+            == "Ashling",
+            "A token's second alternative was not tried after the first resolved to nothing.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{targetUser.name|viewerCount}", root, "Twitch.Follow")
+            == "Ashling",
+            "A later alternative overrode an earlier one that had already resolved.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{nope.here|alsoMissing|\"Someone\"}", root, "Twitch.Follow")
+            == "Someone",
+            "A quoted literal did not act as the last resort when every path was missing.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{nope|alsoNope}", root, "Twitch.Follow") == "",
+            "A token whose alternatives all failed, with no literal, did not resolve to empty.");
+
+        Assert(
+            StreamerBotEventTemplate.Resolve("{eventName}", root, "Twitch.GiftSub") == "Gift Sub",
+            "{eventName} did not resolve to the event's own name in readable form.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{eventSource}", root, "Twitch.GiftSub") == "Twitch",
+            "{eventSource} did not resolve to the source alone.");
+        Assert(
+            StreamerBotEventTemplate.Resolve("{event}", root, "Twitch.GiftSub") == "Twitch.GiftSub",
+            "{event} stopped resolving to the full Source.Type label.");
+
+        // The shipped default, against a payload naming its actor the way
+        // Twitch.Follow actually does.
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate, root, "Twitch.Follow")
+                .StartsWith("Ashling", StringComparison.Ordinal),
+            "The shipped default template did not lead with the actor it found in the payload.");
+        Assert(
+            StreamerBotEventTemplate.Resolve(
+                NotificationEventSettings.GenericDefaultTemplate,
+                JsonDocument.Parse("{}").RootElement,
+                "Twitch.Follow")
+                .StartsWith("Someone", StringComparison.Ordinal),
+            "The shipped default template left a gap instead of its literal when the payload named nobody.");
     }
 
     /// <summary>
@@ -1382,9 +1426,22 @@ internal static class SelfTests
             timeout.Token);
         var received = await stream.Events.ReadAsync(timeout.Token);
         Assert(
-            received.Payload.Target == StreamerBotEventTarget.Notification
-            && received.Payload.Text.Contains("Twitch.Follow"),
-            "A directly-subscribed enabled event did not produce a notification payload via the generic template.");
+            received.Payload.Target == StreamerBotEventTarget.Notification,
+            "A directly-subscribed enabled event did not produce a notification payload.");
+
+        // The generic default has to name whoever the event is about and the
+        // event readably, without knowing which field this particular event
+        // puts its actor in - here it is targetUser.name, and the payload
+        // carries no plain "user" at all.
+        Assert(
+            received.Payload.Text.Contains("Ashling"),
+            $"The generic template did not name the actor from the payload - got \"{received.Payload.Text}\".");
+        Assert(
+            received.Payload.Text.Contains("Follow"),
+            $"The generic template did not name the event - got \"{received.Payload.Text}\".");
+        Assert(
+            !received.Payload.Text.Contains("Someone"),
+            "The generic template fell back to its literal even though the payload named an actor.");
 
         // Even if Streamer.bot sent one anyway, an event never enabled must
         // not become a notification - the dispatch-side check is what
