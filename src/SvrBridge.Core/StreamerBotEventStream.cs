@@ -317,15 +317,12 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         var reader = ReadLoopAsync(socket, connection.Token);
         try
         {
-            // Every event Streamer.bot can emit becomes a notification, per
-            // §B2's revised design - the user-facing rationale is that
-            // Streamer.bot only ever forwards an event while at least one
-            // local trigger for it is enabled (confirmed live for
-            // Twitch.ChatMessage in Phase 3; the same gate applies to every
-            // other event), so subscribing broadly is self-limiting rather
-            // than a firehose. A GetEvents failure must not take down the
-            // feed, so a catalog fetch failure here falls back to the two
-            // events this app always wants rather than aborting the connection.
+            // The catalog is fetched for the desktop picker's search, not to
+            // decide what to subscribe to - see BuildSubscribeEvents, which
+            // works purely from what the wearer enabled. A GetEvents failure
+            // must not take down the feed, and now also must not quietly turn
+            // the wearer's alerts off, so a failure here costs an empty
+            // search list and nothing else.
             var catalog = await TryFetchEventCatalogAsync(socket, connection.Token);
 
             // The acknowledgement carries nothing worth keeping, and holding it
@@ -671,12 +668,13 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
 
     /// <summary>
     /// Asks Streamer.bot what it can emit, right after authenticating and
-    /// before subscribing - purely to populate the Notifications tab's event
-    /// list and to validate <see cref="NotificationEventSettings.EnabledEvents"/>
-    /// against what actually still exists. A fetch failure here must not
-    /// take down the feed - it falls back to an empty catalog, which means
-    /// only the two events this app always wants get subscribed until the
-    /// next successful fetch, and the connection still succeeds.
+    /// before subscribing - purely to populate the Notifications tab's
+    /// search-to-add picker. Deliberately <b>not</b> used to validate
+    /// <see cref="NotificationEventSettings.EnabledEvents"/> against what
+    /// still exists: see <see cref="BuildSubscribeEvents"/>. A fetch failure
+    /// here must not take down the feed, so it falls back to an empty catalog
+    /// and the connection still succeeds with the wearer's own selection
+    /// intact.
     /// </summary>
     private async Task<IReadOnlyList<StreamerBotEventDescriptor>> TryFetchEventCatalogAsync(
         ClientWebSocket socket,
@@ -720,6 +718,18 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
     /// either way, since this is the parsed output of its own connection,
     /// not anything raw from the platform itself.
     /// </para>
+    /// <para>
+    /// Built from the enabled keys alone, with <paramref name="catalog"/>
+    /// used only to log a mismatch. Cross-checking against the catalog and
+    /// dropping anything missing from it looks like tidiness and is actually
+    /// a silent failure mode: <c>GetEvents</c> reports what the connected
+    /// instance's integrations currently expose, so a fetch that failed or
+    /// came back while an integration was reloading would unsubscribe the
+    /// wearer's alerts with nothing on screen to explain why they stopped.
+    /// An event name Streamer.bot does not recognise costs nothing - it is a
+    /// key in a Subscribe argument that never fires - which is a far cheaper
+    /// wrong answer than the alternative.
+    /// </para>
     /// </summary>
     private Dictionary<string, string[]> BuildSubscribeEvents(IReadOnlyList<StreamerBotEventDescriptor> catalog)
     {
@@ -729,24 +739,45 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
             ["Twitch"] = ["ChatMessage"]
         };
 
-        var enabled = new HashSet<string>(_notificationEvents.EnabledEvents, StringComparer.OrdinalIgnoreCase);
-        foreach (var descriptor in catalog)
+        var unreported = new List<string>();
+        foreach (var key in _notificationEvents.EnabledEvents)
         {
-            if (!enabled.Contains(descriptor.Key))
+            var separator = (key ?? "").IndexOf('.');
+            if (separator <= 0 || separator == key!.Length - 1)
             {
                 continue;
             }
 
-            if (!bySource.TryGetValue(descriptor.Source, out var types))
+            var source = key[..separator];
+            var type = key[(separator + 1)..];
+            if (!bySource.TryGetValue(source, out var types))
             {
                 types = [];
-                bySource[descriptor.Source] = types;
+                bySource[source] = types;
             }
 
-            if (!types.Contains(descriptor.Type, StringComparer.OrdinalIgnoreCase))
+            if (!types.Contains(type, StringComparer.OrdinalIgnoreCase))
             {
-                types.Add(descriptor.Type);
+                types.Add(type);
             }
+
+            if (catalog.Count > 0
+                && !catalog.Any(descriptor =>
+                    string.Equals(descriptor.Key, key, StringComparison.OrdinalIgnoreCase)))
+            {
+                unreported.Add(key);
+            }
+        }
+
+        if (unreported.Count > 0)
+        {
+            _log(
+                new BridgeActivity(
+                    "streamerbot.events_unreported",
+                    "Still subscribing to alerts this Streamer.bot instance did not list: "
+                    + $"{string.Join(", ", unreported)}. They will simply never fire if it "
+                    + "genuinely cannot emit them.",
+                    BridgeLogLevel.Debug));
         }
 
         return bySource.ToDictionary(

@@ -39,6 +39,21 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      Platform icons for the notification event picker's source chips, looked
+      up by the source name GetEvents reports - see SourceIconResource. A
+      glob rather than a list of files on purpose: the picker must not carry a
+      hardcoded platform list, so adding a logo is dropping a PNG in here with
+      no code change, and shipping none at all (the state this ships in) is
+      simply every source drawing its coloured text chip instead. Embedded
+      rather than copied beside the exe because these are chrome, not user
+      assets, and a missing file must not be a thing that can happen at run
+      time.
+    -->
+    <EmbeddedResource Include="assets\source-icons\*.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
   </ItemGroup>
 </Project>

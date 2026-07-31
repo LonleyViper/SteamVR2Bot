@@ -61,6 +61,8 @@ internal static class TraySelfTests
         TestOverlayUploadFallsBackOnDeviceLossAndRecovers();
         TestOverlayUploadDefaultsOffUntilExplicitlyEnabled();
         TestD3D11OverlayTextureRoundTripsRgbaWithoutSwappingChannels();
+        TestNotificationEventPickerStaysBoundedAtARealCatalogSize();
+        TestNotificationEventPickerRoundTripsAndKeepsUnreportedEvents();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -1613,6 +1615,193 @@ internal static class TraySelfTests
             Target = SvrBridge.Core.StreamerBotEventTarget.Control,
             Command = command
         };
+
+    /// <summary>
+    /// The regression guard for the failure that got two earlier versions of
+    /// this picker rejected live. Both listed every available event and built
+    /// one control per entry; against the 467 events a real Streamer.bot
+    /// instance reports, that was hundreds of live WinForms controls each
+    /// triggering its own relayout, and it read as the whole app freezing on
+    /// every keystroke.
+    /// <para>
+    /// What is asserted here is the structural property, not a timing: the
+    /// number of controls built has no relationship to the catalog size. A
+    /// generous time bound comes with it only to catch a future change that
+    /// reintroduces per-entry work somewhere off to the side - it is a
+    /// tripwire, not a benchmark, and is loose enough not to fail on a busy
+    /// machine.
+    /// </para>
+    /// </summary>
+    private static void TestNotificationEventPickerStaysBoundedAtARealCatalogSize()
+    {
+        var catalog = BuildRealisticEventCatalog();
+        Assert(
+            catalog.Count >= 187,
+            "The realistic catalog fixture is smaller than the event count this design has to survive.");
+
+        using var picker = new NotificationEventPicker();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        picker.SetCatalog(catalog);
+
+        Assert(
+            picker.RenderedResultRowCount
+            == SvrBridge.Core.StreamerBotEventSearch.DefaultResultLimit,
+            "An unfiltered picker built more rows than the cap, so the control count tracks the catalog.");
+
+        // Typing "follow" one letter at a time, the way the rebuilt-per-
+        // keystroke failure was actually reached.
+        foreach (var query in new[] { "f", "fo", "fol", "foll", "follo", "follow" })
+        {
+            picker.ApplySearchNow(query);
+            Assert(
+                picker.RenderedResultRowCount
+                <= SvrBridge.Core.StreamerBotEventSearch.DefaultResultLimit,
+                $"Searching \"{query}\" built more rows than the cap.");
+        }
+
+        Assert(
+            picker.RenderedResultRowCount > 0,
+            "Searching a term the catalog definitely contains rendered nothing.");
+
+        picker.ApplySearchNow("nothingmatchesthis");
+        Assert(
+            picker.RenderedResultRowCount == 0,
+            "A query matching nothing still built result rows.");
+
+        clock.Stop();
+        Assert(
+            clock.ElapsedMilliseconds < 5000,
+            $"Filling and searching a {catalog.Count}-event picker took {clock.ElapsedMilliseconds}ms - "
+            + "something is doing per-catalog-entry work again.");
+    }
+
+    /// <summary>
+    /// The enabled list is the setting: it round-trips through
+    /// <see cref="UserSettings.EnabledEvents"/>, adding and removing changes
+    /// what a <c>Subscribe</c> request would carry, and - the part with a real
+    /// failure mode behind it - an enabled event survives a
+    /// <c>GetEvents</c> response that no longer mentions it.
+    /// <para>
+    /// That last case is not hypothetical. Streamer.bot reports what its
+    /// currently installed integrations expose, so a key can vanish because a
+    /// fetch failed or an integration was reloading. Reconciling the enabled
+    /// list against the response would turn the wearer's alerts off with
+    /// nothing on screen to explain it.
+    /// </para>
+    /// </summary>
+    private static void TestNotificationEventPickerRoundTripsAndKeepsUnreportedEvents()
+    {
+        using var picker = new NotificationEventPicker();
+        var changes = 0;
+        picker.EnabledKeysChanged += () => changes++;
+
+        picker.SetEnabledKeys(["Twitch.Follow", "Kick.Subscription"]);
+        Assert(
+            changes == 0,
+            "Applying saved settings raised a change back at the caller that was applying them.");
+        Assert(
+            picker.EnabledKeys.SequenceEqual(["Twitch.Follow", "Kick.Subscription"]),
+            "The enabled keys did not round-trip through the picker unchanged.");
+        Assert(
+            picker.RenderedEnabledRowCount == 2,
+            "An enabled key with no catalog behind it yet did not get a row.");
+
+        // A catalog that knows Twitch.Follow and has never heard of
+        // Kick.Subscription.
+        var catalog = BuildRealisticEventCatalog()
+            .Where(entry => entry.Source != "Kick")
+            .ToArray();
+        picker.SetCatalog(catalog);
+        Assert(
+            picker.EnabledKeys.Contains("Kick.Subscription"),
+            "An enabled event this catalog does not report was silently dropped.");
+        Assert(
+            picker.RenderedEnabledRowCount == 2,
+            "An enabled event this catalog does not report lost its row, so it could not be removed.");
+
+        picker.Add("Twitch.GiftSub");
+        Assert(
+            changes == 1 && picker.EnabledKeys.Contains("Twitch.GiftSub"),
+            "Adding an event did not enable it and report the change exactly once.");
+        picker.Add("Twitch.GiftSub");
+        Assert(
+            changes == 1 && picker.EnabledKeys.Count(key => key == "Twitch.GiftSub") == 1,
+            "Adding an already-enabled event duplicated it or reported a change.");
+
+        picker.Remove("twitch.follow");
+        Assert(
+            changes == 2 && !picker.EnabledKeys.Contains("Twitch.Follow"),
+            "Removing an event by a differently-cased key did not take it out of the enabled list.");
+        picker.Remove("Twitch.NeverEnabled");
+        Assert(
+            changes == 2,
+            "Removing an event that was never enabled reported a change.");
+
+        Assert(
+            picker.EnabledKeys.SequenceEqual(["Kick.Subscription", "Twitch.GiftSub"]),
+            "The final enabled set was not what adding and removing should have left behind.");
+
+        // Nothing is on by default - an upgrading user must not suddenly
+        // start receiving alerts they never chose.
+        using var fresh = new NotificationEventPicker();
+        fresh.SetCatalog(catalog);
+        Assert(
+            fresh.EnabledKeys.Count == 0,
+            "A picker built from a catalog alone enabled something by itself.");
+    }
+
+    /// <summary>
+    /// A catalog the shape and size of a real one, from a live
+    /// <c>GetEvents</c> capture (Streamer.bot 1.0.4): 467 events across its
+    /// real source names. Real platform names appear here because this is a
+    /// test fixture - production code contains none, which is what
+    /// <see cref="SvrBridge.Core.StreamerBotSourceChip"/> exists to make
+    /// possible.
+    /// </summary>
+    private static IReadOnlyList<SvrBridge.Core.StreamerBotEventDescriptor> BuildRealisticEventCatalog()
+    {
+        var sources = new (string Source, int Count, string[] Real)[]
+        {
+            ("Twitch", 137, ["Follow", "Cheer", "Sub", "ReSub", "GiftSub", "Raid", "ChatMessage"]),
+            ("Elgato", 90, ["ActionTriggered"]),
+            ("YouTube", 29, ["Message", "SuperChat", "NewSponsor"]),
+            ("Kick", 21, ["Follow", "Subscription", "ChatMessage"]),
+            ("Trovo", 16, ["Follow"]),
+            ("Misc", 13, ["TimedAction"]),
+            ("Fourthwall", 13, ["OrderPlaced"]),
+            ("MeldStudio", 12, ["SceneChanged"]),
+            ("VTubeStudio", 11, ["ModelLoaded"]),
+            ("Obs", 9, ["SceneChanged"]),
+            ("CrowdControl", 9, ["EffectRedeemed"]),
+            ("ThrowingSystem", 8, ["ObjectThrown"]),
+            ("StreamlabsDesktop", 7, ["SceneChanged"]),
+            ("Streamlabs", 6, ["Donation"]),
+            ("Application", 6, ["Started"]),
+            ("StreamElements", 5, ["Tip"]),
+            ("Kofi", 5, ["Donation"]),
+            ("Patreon", 5, ["PledgeCreated"]),
+            ("HypeRate", 4, ["HeartRatePulse"]),
+            ("StreamDeck", 4, ["ButtonPressed"]),
+            ("Zorblatt", 4, ["SomethingHappened"]),
+            ("Pallygg", 3, ["Tip"]),
+            ("DonorDrive", 3, ["Donation"]),
+            ("General", 1, ["Custom"])
+        };
+
+        var catalog = new List<SvrBridge.Core.StreamerBotEventDescriptor>();
+        foreach (var (source, count, real) in sources)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                catalog.Add(
+                    new SvrBridge.Core.StreamerBotEventDescriptor(
+                        source,
+                        index < real.Length ? real[index] : $"LongTailEvent{index:D3}"));
+            }
+        }
+
+        return catalog;
+    }
 
     /// <summary>
     /// Covers §B1's in-app chat test harness: the burst, ring-buffer-fill,

@@ -2880,3 +2880,52 @@ is neither subscribed to nor turned into a notification even if it arrives
 anyway; a GetEvents failure at connect still falls back gracefully; an
 on-demand refresh that goes unanswered doesn't disturb the feed. Rows 7-10
 above need re-testing against this final grouped/searchable opt-in UI.
+
+### Round 3 - 2026-07-31, picker rebuilt inverted; desktop-verified, headset rounds 7-10 still not run
+
+Round 2's grouped/searchable opt-in list was rejected live as unusable ("no
+grouping to indicate which platform", froze on search, froze on Toggle group,
+could scroll to blank space). It has been replaced wholesale rather than
+iterated on again, so the `SuspendLayout` fix that Round 2 left unverified is
+now moot - that code is gone.
+
+**The number that settles the design.** One complete `GetEvents` response was
+captured from the live instance for the first time (Streamer.bot 1.0.4): **467
+events across 44 sources**, 137 of them under Twitch alone. Both rejected
+designs listed the *available* events and built one control per entry; at that
+size the freeze was structural, not an oversight. The rebuilt picker inverts
+it - the short enabled list first, search only to add - and caps rendered
+results at 20, so the control count has no relationship to the catalog size.
+
+The capture also settled two things that had been guessed at: the response
+carries **no icon, image or display-name field** at any level (so platform
+glyphs must be embedded resources this app ships, never API data), and event
+names arrive run-together (`GiftSub`, `HypeTrainLevelUp`), not in the spaced
+form Streamer.bot's own UI shows. The picker applies a generic camelCase word
+break rather than a mapping table, which would have been a hardcoded event
+list in disguise.
+
+**Desktop check - PASS.** Driven against the real 467-event response, not a
+fixture: filling the picker took ~300ms, six successive searches (typing
+"follow" one letter at a time) ~700ms total, 20 result rows rendered for an
+unfiltered list, 8 for "follow", 16 for "gift sub", 30 for "sub". No freeze,
+and the scroll extent matches the rendered rows rather than leaving blank
+space below them. A fabricated source with no icon and no catalog entry
+("Zorblatt") rendered its coloured chip and grouped correctly, which is the
+check that proves no hardcoded platform list crept in.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 7 | Enable one event in the picker, trigger it in Streamer.bot | Produces a notification in the headset | **not run** - needs a headset session |
+| 8 | Toggle **Show test-fired events** off, fire a Streamer.bot test button, confirm no notification; back on, confirm it appears | Off suppresses test-fired events; on restores them | **not run** |
+| 9 | Confirm a *disabled* event produces no notification | Nothing appears for an event that was never added | **not run** |
+| 10 | Remove one alert, restart SteamVR2Bot, reopen the settings window | The enabled list is exactly what was left behind - the removal and the remaining alerts both survived | **not run** |
+
+Automated coverage standing behind those four: the enabled list round-trips
+through `UserSettings.EnabledEvents`; adding and removing rebuild the
+`Subscribe` request; an enabled event a `GetEvents` response no longer
+mentions is **not** dropped from either the list or the request (it keeps its
+row, marked "not reported"); an unknown source resolves to a chip rather than
+throwing; search filters correctly and caps its result set. Passing those is
+not evidence the headset rows pass - this phase alone had two bugs every
+automated test went straight through.

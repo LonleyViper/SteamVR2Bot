@@ -30,6 +30,9 @@ internal static class SelfTests
         TestTwitchEmoteCatalog();
         TestStreamerBotEventTemplateResolvesDottedPaths();
         TestStreamerBotEventCatalogParsesGetEventsResponse();
+        TestStreamerBotEventCatalogSpacesRunTogetherEventNames();
+        TestStreamerBotEventSearchFiltersAndCapsResults();
+        TestStreamerBotSourceChipHandlesAnySourceDeterministically();
         await TestStreamerBotRoundTripAsync();
         await TestStreamerBotReconnectAsync();
         await TestStreamerBotRestartRecoveryAsync();
@@ -804,6 +807,207 @@ internal static class SelfTests
             "A response whose events property was not an object did not degrade to an empty list.");
     }
 
+    /// <summary>
+    /// A live <c>GetEvents</c> capture (Streamer.bot 1.0.4) showed event names
+    /// arrive run-together - <c>GiftSub</c>, <c>HypeTrainLevelUp</c> - not in
+    /// the spaced form Streamer.bot's own UI displays, which an earlier
+    /// screenshot had made look like the wire format. So the picker has to put
+    /// the word breaks back, and this pins that it does so as a transform
+    /// rather than a lookup table: every case here is handled by the same
+    /// rules, and an event nobody has seen yet gets the same treatment.
+    /// </summary>
+    private static void TestStreamerBotEventCatalogSpacesRunTogetherEventNames()
+    {
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("GiftSub") == "Gift Sub",
+            "An ordinary PascalCase event name did not gain its word break.");
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("HypeTrainLevelUp") == "Hype Train Level Up",
+            "A four-word event name was not fully separated.");
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("Follow") == "Follow",
+            "A single-word event name was altered.");
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("SevenTVEmoteAdded") == "Seven TV Emote Added",
+            "An embedded acronym was split letter by letter instead of kept together.");
+        Assert(
+            StreamerBotEventCatalog.SpaceCamelCase("") == "",
+            "An empty event name did not survive the transform.");
+        Assert(
+            new StreamerBotEventDescriptor("Twitch", "RewardRedemption").DisplayName
+            == "Reward Redemption",
+            "StreamerBotEventDescriptor.DisplayName did not use the spaced form.");
+    }
+
+    /// <summary>
+    /// The picker's whole defence against the freeze that got two earlier
+    /// designs rejected: the result set is filtered as data and capped before
+    /// any control is built, so the number of rows is bounded by the cap and
+    /// not by the catalog. Proven here against a catalog the size of a real
+    /// one - the live capture reported 467 events across 44 sources.
+    /// <para>
+    /// Real platform and event names appear here because this is a test
+    /// fixture; production code contains none, which is the point of
+    /// searching them by string rather than switching on them.
+    /// </para>
+    /// </summary>
+    private static void TestStreamerBotEventSearchFiltersAndCapsResults()
+    {
+        var catalog = BuildRealisticEventCatalog();
+        Assert(
+            catalog.Count >= 187,
+            "The realistic catalog fixture is smaller than the event count this design has to survive.");
+
+        var everything = StreamerBotEventSearch.Search(catalog, "");
+        Assert(
+            everything.MatchCount == catalog.Count,
+            "An empty query did not match the whole catalog.");
+        Assert(
+            everything.Matches.Count == StreamerBotEventSearch.DefaultResultLimit,
+            "An empty query rendered more rows than the cap - the freeze this design exists to prevent.");
+        Assert(
+            everything.Truncated,
+            "A capped result set did not report itself as truncated, so the count line would understate it.");
+
+        var follows = StreamerBotEventSearch.Search(catalog, "follow");
+        Assert(
+            follows.Matches.Any(entry => entry is { Source: "Twitch", Type: "Follow" })
+            && follows.Matches.Any(entry => entry is { Source: "Kick", Type: "Follow" }),
+            "Searching one word did not find the same event across two different sources.");
+        Assert(
+            follows.Matches.All(entry =>
+                entry.Source.Contains("follow", StringComparison.OrdinalIgnoreCase)
+                || entry.Type.Contains("follow", StringComparison.OrdinalIgnoreCase)),
+            "A result matched neither the source nor the event name.");
+
+        var narrowed = StreamerBotEventSearch.Search(catalog, "kick follow");
+        Assert(
+            narrowed.MatchCount < follows.MatchCount && narrowed.MatchCount > 0,
+            "Adding a second search term did not narrow the results.");
+        Assert(
+            narrowed.Matches.All(entry => entry.Source == "Kick"),
+            "A second term matching only the source did not constrain the results to it.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "follow kick").MatchCount == narrowed.MatchCount,
+            "Search results depended on the order the terms were typed in.");
+
+        // The wire format is run-together and the row on screen is not, so a
+        // search that only matched one of them would look broken from
+        // whichever side the user happened to type.
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "giftsub").Matches
+                .Any(entry => entry is { Source: "Twitch", Type: "GiftSub" }),
+            "Searching the raw run-together name did not find the event.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "gift sub").Matches
+                .Any(entry => entry is { Source: "Twitch", Type: "GiftSub" }),
+            "Searching the spaced display name did not find the event.");
+
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "nothingmatchesthis").MatchCount == 0,
+            "A query matching nothing still produced results.");
+        Assert(
+            StreamerBotEventSearch.Search(catalog, "", limit: 5).Matches.Count == 5,
+            "An explicit smaller cap was not honoured.");
+        Assert(
+            StreamerBotEventSearch.Search([], "follow").TotalCount == 0,
+            "An empty catalog did not report a zero total.");
+    }
+
+    /// <summary>
+    /// Proves no hardcoded platform list crept into the chip lookup, using a
+    /// source name that exists nowhere: it must resolve to a drawable badge
+    /// with a palette colour, exactly as a well-known source does, and give
+    /// the same answer on every call and every run. Colour stability is not
+    /// cosmetic - <see cref="object.GetHashCode"/> is randomised per process,
+    /// so a chip built on it would change colour at each launch.
+    /// </summary>
+    private static void TestStreamerBotSourceChipHandlesAnySourceDeterministically()
+    {
+        const string fabricated = "Zorblatt";
+        var badge = StreamerBotSourceChip.BadgeFor(fabricated);
+        Assert(
+            badge.Source == fabricated && badge.Abbreviation.Length > 0,
+            "A source nobody anticipated did not produce a usable chip.");
+        Assert(
+            badge.Colour.StartsWith('#') && badge.Colour.Length == 7,
+            "A chip colour was not the \"#RRGGBB\" form the rest of this app uses.");
+        Assert(
+            StreamerBotSourceChip.ColourFor(fabricated) == badge.Colour
+            && StreamerBotSourceChip.ColourFor(fabricated.ToUpperInvariant()) == badge.Colour,
+            "The same source resolved to two different colours, so chips would not be stable.");
+
+        // Sources from the live capture, checked only for the generic rules -
+        // capitals when there are two, first two letters otherwise. No branch
+        // in the resolver knows any of these names.
+        Assert(
+            StreamerBotSourceChip.AbbreviationFor("YouTube") == "YT"
+            && StreamerBotSourceChip.AbbreviationFor("StreamElements") == "SE"
+            && StreamerBotSourceChip.AbbreviationFor("Twitch") == "TW"
+            && StreamerBotSourceChip.AbbreviationFor("Kick") == "KI",
+            "The generic abbreviation rules did not produce the expected short labels.");
+        Assert(
+            StreamerBotSourceChip.AbbreviationFor("") == "?"
+            && StreamerBotSourceChip.AbbreviationFor(null) == "?"
+            && StreamerBotSourceChip.BadgeFor(null).Colour.Length == 7,
+            "An empty or missing source threw or produced something undrawable.");
+    }
+
+    /// <summary>
+    /// A catalog the shape and size of a real one, for the search tests and
+    /// for the picker's own responsiveness check. Source names and counts are
+    /// from a live <c>GetEvents</c> capture (Streamer.bot 1.0.4): 467 events
+    /// across 44 sources. The first events under each source are that
+    /// source's real names so search assertions mean something; the rest are
+    /// filler standing in for the long tail, which is all the picker has to
+    /// scroll past anyway.
+    /// </summary>
+    private static IReadOnlyList<StreamerBotEventDescriptor> BuildRealisticEventCatalog()
+    {
+        var sources = new (string Source, int Count, string[] Real)[]
+        {
+            ("Twitch", 137, ["Follow", "Cheer", "Sub", "ReSub", "GiftSub", "GiftBomb", "Raid",
+                "HypeTrainStart", "HypeTrainLevelUp", "RewardRedemption", "ChatMessage", "Whisper"]),
+            ("Elgato", 90, ["ActionTriggered"]),
+            ("YouTube", 29, ["BroadcastStarted", "Message", "SuperChat", "NewSponsor"]),
+            ("Kick", 21, ["Follow", "Subscription", "GiftSubscription", "ChatMessage", "StreamOnline"]),
+            ("Trovo", 16, ["Follow", "Subscription"]),
+            ("Misc", 13, ["TimedAction"]),
+            ("Fourthwall", 13, ["OrderPlaced"]),
+            ("MeldStudio", 12, ["SceneChanged"]),
+            ("VTubeStudio", 11, ["ModelLoaded"]),
+            ("Obs", 9, ["SceneChanged", "StreamingStarted"]),
+            ("CrowdControl", 9, ["EffectRedeemed"]),
+            ("ThrowingSystem", 8, ["ObjectThrown"]),
+            ("StreamlabsDesktop", 7, ["SceneChanged"]),
+            ("Streamlabs", 6, ["Donation"]),
+            ("Application", 6, ["Started"]),
+            ("StreamElements", 5, ["Tip"]),
+            ("Kofi", 5, ["Donation"]),
+            ("Patreon", 5, ["PledgeCreated"]),
+            ("General", 1, ["Custom"]),
+            ("Pallygg", 3, ["Tip"]),
+            ("DonorDrive", 3, ["Donation"]),
+            ("HypeRate", 4, ["HeartRatePulse", "Connected"]),
+            ("StreamDeck", 4, ["ButtonPressed"]),
+            ("Zorblatt", 4, ["SomethingHappened"])
+        };
+
+        var catalog = new List<StreamerBotEventDescriptor>();
+        foreach (var (source, count, real) in sources)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                catalog.Add(
+                    new StreamerBotEventDescriptor(
+                        source,
+                        index < real.Length ? real[index] : $"LongTailEvent{index:D3}"));
+            }
+        }
+
+        return catalog;
+    }
+
     private static StreamerBotEventPayload MapTwitchChatMessage(string json)
     {
         using var document = JsonDocument.Parse(json);
@@ -1035,7 +1239,9 @@ internal static class SelfTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
 
         var notificationEvents = new NotificationEventSettings(
-            ["Twitch.Follow", "twitch.follow"],
+            // Kick.Subscription is enabled but deliberately absent from the
+            // catalog below - see the assertion on it further down.
+            ["Twitch.Follow", "twitch.follow", "Kick.Subscription"],
             new Dictionary<string, string>(),
             NotificationEventSettings.GenericDefaultTemplate,
             true);
@@ -1073,6 +1279,17 @@ internal static class SelfTests
         Assert(
             !subscribedEvents.TryGetProperty("YouTube", out _),
             "A source with nothing enabled (YouTube) still appeared in the Subscribe request.");
+
+        // The wearer enabled Kick.Subscription and this instance's GetEvents
+        // did not mention it. Dropping it would look like tidiness and behave
+        // like a silent failure: a fetch that failed, or came back while an
+        // integration was reloading, would turn their alerts off with nothing
+        // on screen to explain why. An event name Streamer.bot does not know
+        // simply never fires, which is the far cheaper wrong answer.
+        Assert(
+            subscribedEvents.TryGetProperty("Kick", out var kick)
+            && kick.EnumerateArray().Any(entry => entry.GetString() == "Subscription"),
+            "An enabled event this GetEvents response did not report was silently dropped from Subscribe.");
 
         await SendEventAsync(
             socket,
