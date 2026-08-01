@@ -178,6 +178,21 @@ public static class SteamVrApplications
         }
     }
 
+    // EVRApplicationError_UnknownApplication. AddApplicationManifest can
+    // return success and every call that follows it in the same SteamVR
+    // session that needs to look the app_key back up - this one, and
+    // whatever SteamVR does internally to decide the dashboard should show a
+    // tile for it - can still fail with this, because SteamVR does not
+    // rebuild its installed-application list until it next starts. Confirmed
+    // against a live report (registered seven times across three folders in
+    // one session, dashboard tile never appeared, appconfig.json never
+    // gained an entry) and matches upstream reports of the same shape:
+    // https://github.com/ValveSoftware/openvr/issues/106 and
+    // https://github.com/ValveSoftware/openvr/issues/1378. The fix on the
+    // user's side is a full SteamVR restart, not another SteamVR2Bot
+    // relaunch - the previous message here gave no reason to suspect that.
+    private const int UnknownApplicationError = 104;
+
     /// <summary>
     /// Puts the app on SteamVR's startup list, so its lifetime matches
     /// SteamVR's: launched with SteamVR, and shut down again on VREvent_Quit.
@@ -191,6 +206,15 @@ public static class SteamVrApplications
         try
         {
             var result = applications.SetApplicationAutoLaunch(keyPointer, true);
+            if (result == UnknownApplicationError)
+            {
+                log("SteamVR registered the manifest but has not indexed it into this "
+                    + "session's application list yet - that only happens when SteamVR "
+                    + "itself (re)starts, not when SteamVR2Bot does. Restart SteamVR once "
+                    + "and startup, the dashboard tile, and this message should all clear.");
+                return;
+            }
+
             if (result != 0)
             {
                 log($"Could not add SteamVR2Bot to SteamVR startup (SteamVR application error {result}).");
