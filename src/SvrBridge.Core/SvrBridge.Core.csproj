@@ -5,4 +5,31 @@
     <Nullable>enable</Nullable>
     <RootNamespace>SvrBridge.Core</RootNamespace>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      SidecarAssets' embedded fallback copies. PublishSingleFile bundles the
+      managed assembly but leaves None/CopyToOutputDirectory items (the
+      app.vrmanifest, actions.json and bindings_vive_controller.json every
+      published build already carries next to the exe) as loose files -
+      someone who runs a bare exe without them hits "manifest not found" and
+      it reads like a SteamVR problem instead of a missing-file one. These
+      are the same files under src\SvrBridge\assets, embedded here so
+      SidecarAssets.EnsurePresent can recreate whichever ones are missing
+      next to the running exe. Source of truth stays the one copy in
+      SvrBridge\assets; nothing here is duplicated by hand.
+    -->
+    <EmbeddedResource Include="..\SvrBridge\assets\app.vrmanifest">
+      <LogicalName>SvrBridge.Core.Assets.app.vrmanifest</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SvrBridge\assets\actions.json">
+      <LogicalName>SvrBridge.Core.Assets.actions.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SvrBridge\assets\bindings_vive_controller.json">
+      <LogicalName>SvrBridge.Core.Assets.bindings_vive_controller.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SvrBridge\assets\SteamVR2Bot.png">
+      <LogicalName>SvrBridge.Core.Assets.SteamVR2Bot.png</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
 </Project>

@@ -9,6 +9,7 @@ internal static class TraySelfTests
         TestVrActionBrowser();
         TestVrScrollLimiter();
         TestPackagedViveBinding();
+        TestSidecarAssetsSelfHeal();
         TestDashboardBottomBarLayout();
         TestSettingsPageLayoutRectangles();
         TestRenamedDataDirectoryMigration();
@@ -738,6 +739,55 @@ internal static class TraySelfTests
             expected.All(action => actionNames.Contains(action))
             && expected.All(action => outputs.Contains(action, StringComparer.Ordinal)),
             "The packaged Vive binding does not expose every selectable Vive input.");
+    }
+
+    /// <summary>
+    /// Covers the failure this exists to prevent: a bare, sidecar-less exe -
+    /// what someone gets if they run the lone
+    /// SteamVR2Bot-vX.Y.Z-windows-x64.exe from the release page instead of
+    /// extracting the .zip - must recreate app.vrmanifest, actions.json and
+    /// bindings_vive_controller.json next to itself instead of failing with
+    /// "manifest not found". Runs against a throwaway temp directory, never
+    /// against <see cref="AppContext.BaseDirectory"/>, so it cannot disturb
+    /// the real sidecar files a dev build already has sitting there.
+    /// </summary>
+    private static void TestSidecarAssetsSelfHeal()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"svrbridge-sidecar-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        try
+        {
+            SvrBridge.Core.SidecarAssets.EnsurePresent(tempDirectory);
+
+            foreach (var fileName in new[]
+                     {
+                         "app.vrmanifest",
+                         "actions.json",
+                         "bindings_vive_controller.json",
+                         "SteamVR2Bot.png"
+                     })
+            {
+                var restoredPath = Path.Combine(tempDirectory, fileName);
+                Assert(
+                    File.Exists(restoredPath),
+                    $"SidecarAssets.EnsurePresent did not restore {fileName} into an empty directory.");
+                Assert(
+                    new FileInfo(restoredPath).Length > 0,
+                    $"SidecarAssets.EnsurePresent restored {fileName} as an empty file.");
+            }
+
+            const string customMarker = "{\"custom\":true}";
+            File.WriteAllText(Path.Combine(tempDirectory, "actions.json"), customMarker);
+            SvrBridge.Core.SidecarAssets.EnsurePresent(tempDirectory);
+            Assert(
+                File.ReadAllText(Path.Combine(tempDirectory, "actions.json")) == customMarker,
+                "SidecarAssets.EnsurePresent overwrote an existing actions.json instead of leaving "
+                + "a user's file alone.");
+        }
+        finally
+        {
+            Directory.Delete(tempDirectory, recursive: true);
+        }
     }
 
     /// <summary>

@@ -14,6 +14,15 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // Must run before any branch below: --openvr-worker re-invokes this
+        // same exe as a child process, and every other path resolves a
+        // sidecar file (app.vrmanifest, actions.json,
+        // bindings_vive_controller.json) under AppContext.BaseDirectory.
+        // Recreating whatever is missing here means a bare, sidecar-less
+        // exe self-heals instead of failing with a "manifest not found"
+        // error that reads like a SteamVR problem.
+        SidecarAssets.EnsurePresent();
+
         if (args.Contains("--openvr-worker", StringComparer.OrdinalIgnoreCase))
         {
             return OpenVrWorker.RunAsync(args).GetAwaiter().GetResult();

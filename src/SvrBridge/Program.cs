@@ -7,6 +7,12 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        // Recreates any sidecar file (app.vrmanifest, actions.json,
+        // bindings_vive_controller.json) missing next to this exe before
+        // anything below resolves one - see SidecarAssets for why a bare
+        // published exe can end up without them.
+        SidecarAssets.EnsurePresent();
+
         try
         {
             if (args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
