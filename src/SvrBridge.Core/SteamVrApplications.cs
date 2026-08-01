@@ -231,9 +231,26 @@ public static class SteamVrApplications
         foreach (var entry in paths.EnumerateArray())
         {
             if (entry.GetString() is not { } path
-                || path.Equals(currentManifestPath, StringComparison.OrdinalIgnoreCase)
-                || !File.Exists(path)
-                || !DeclaresOurAppKey(path))
+                || path.Equals(currentManifestPath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // A path that no longer exists on disk cannot be a live
+            // registration for anything - whatever app it named cannot be
+            // launched from there either, by us or by SteamVR. That makes it
+            // safe to remove unconditionally, unlike an *existing* file,
+            // which still needs the app-key check below so this cannot
+            // clobber some other real app's manifest.
+            //
+            // This matters because it is exactly the case moving install
+            // folders produces: register once from Desktop\app.vrmanifest,
+            // delete that copy, register again from
+            // Desktop\SteamVR2Bot\app.vrmanifest - the old path was
+            // previously skipped forever (DeclaresOurAppKey cannot read a
+            // file that is gone), so appconfig.json accumulated a dead
+            // manifest_paths entry on every reinstall to a new folder.
+            if (File.Exists(path) && !DeclaresOurAppKey(path))
             {
                 continue;
             }
