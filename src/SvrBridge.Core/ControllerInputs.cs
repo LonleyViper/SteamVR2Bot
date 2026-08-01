@@ -31,13 +31,18 @@ public static class ControllerInputs
             0 => "System Button",
             1 => "Menu Button",
             2 => "Grip",
-            7 when controllerType.Contains("knuckles") => "A Button",
-            7 => hand == ControllerHand.Left ? "X Button" : "A Button",
-            32 when controllerType.Contains("vive") => "Trackpad",
+            7 when controllerType == "knuckles" => "A Button",
+            7 when controllerType == "oculus_touch" =>
+                hand == ControllerHand.Left ? "X Button" : "A Button",
+            7 => "Button 7",
+            32 when controllerType == "vive_controller" => "Trackpad",
+            32 when controllerType is "knuckles" or "oculus_touch" => "Thumbstick",
             32 => "Thumbstick / Trackpad",
             33 => "Trigger",
-            34 when controllerType.Contains("knuckles") => "B Button",
-            34 => hand == ControllerHand.Left ? "Y Button" : "B Button",
+            34 when controllerType == "knuckles" => "B Button",
+            34 when controllerType == "oculus_touch" =>
+                hand == ControllerHand.Left ? "Y Button" : "B Button",
+            34 => "Button 34",
             _ => $"Button {button}"
         };
         return $"{handName} {inputName}";
@@ -49,6 +54,32 @@ public static class ControllerInputs
             .Distinct(StringComparer.CurrentCultureIgnoreCase)
             .FirstOrDefault() ?? "VR controller";
 
+    /// <summary>
+    /// The physical inputs the in-VR/desktop picker offers for one hand, in a
+    /// fixed per-family order (menu, grip, trigger, trackpad/thumbstick, then
+    /// any face buttons) so the list never reshuffles as controllers wake up
+    /// or swap roles.
+    /// <para>
+    /// Two families are asymmetric between hands, which is why this takes a
+    /// <paramref name="hand"/> rather than deciding once for both:
+    /// </para>
+    /// <list type="bullet">
+    /// <item>Index has no application-menu input at all - real Knuckles
+    /// hardware exposes no <c>/input/application_menu</c> path, so there is
+    /// nothing to offer on either hand.</item>
+    /// <item>Touch exposes its menu (three-line "hamburger") button only on
+    /// the left controller. The right controller's equivalent position is
+    /// the Oculus/system button, which the runtime reserves for itself and
+    /// never hands to an application - offering it here would produce a
+    /// selectable input that can never actually be recorded.</item>
+    /// </list>
+    /// <para>
+    /// An unrecognised controller type gets the conservative grip/trigger/
+    /// stick set only: those three exist in some form on effectively every
+    /// motion controller, whereas a face-button pair or a menu button is not
+    /// safe to assume.
+    /// </para>
+    /// </summary>
     public static IReadOnlyList<ControllerInputBinding> AvailableInputs(
         ControllerHand hand,
         ControllerSetup setup)
@@ -59,9 +90,15 @@ public static class ControllerInputs
                 controller.Hand.Equals(handName, StringComparison.OrdinalIgnoreCase))
             ?.ControllerType
             .ToLowerInvariant() ?? "";
-        uint[] buttons = controllerType.Contains("vive")
-            ? [1, 2, 33, 32]
-            : [1, 2, 33, 32, 7, 34];
+
+        uint[] buttons = controllerType switch
+        {
+            "vive_controller" => [1, 2, 33, 32],
+            "knuckles" => [2, 33, 32, 7, 34],
+            "oculus_touch" when hand == ControllerHand.Left => [1, 2, 33, 32, 7, 34],
+            "oculus_touch" => [2, 33, 32, 7, 34],
+            _ => [2, 33, 32]
+        };
 
         return buttons
             .Select(button => ControllerInputBinding.Physical(

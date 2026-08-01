@@ -21,7 +21,7 @@ internal sealed class OpenVrWorkerSessionFactory : IOpenVrSessionFactory
             cancellationToken);
 }
 
-internal sealed class OpenVrWorkerSession : IOpenVrSession
+internal sealed partial class OpenVrWorkerSession : IOpenVrSession
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -478,14 +478,64 @@ internal sealed class OpenVrWorkerSession : IOpenVrSession
 
     private async Task ReadErrorsAsync()
     {
+        string? crashLine = null;
         while (await _process.StandardError.ReadLineAsync() is { } line)
         {
             if (!string.IsNullOrWhiteSpace(line))
             {
                 _log($"SteamVR input worker: {line}");
             }
+
+            // .NET's default unhandled-exception handler writes exactly this
+            // prefix before the crashing exception's own ToString() - the
+            // one reliable signal on this stream that the worker hit a bug
+            // that will recur identically on the next attempt, rather than
+            // SteamVR merely closing the pipe on it.
+            if (crashLine is null
+                && line.StartsWith("Unhandled exception.", StringComparison.Ordinal))
+            {
+                crashLine = line;
+            }
+        }
+
+        // Waiting for end-of-stream rather than reacting to the line the
+        // instant it arrives, and rather than relying on Process.Exited's
+        // timing relative to output draining (undocumented, and not worth
+        // depending on): the pipe cannot reach EOF until every byte the
+        // worker wrote has been delivered here, so this is the point the
+        // capture above is known to be complete.
+        if (crashLine is not null)
+        {
+            SetFailure(new WorkerCrashedException(DescribeCrash(crashLine)));
         }
     }
+
+    /// <summary>
+    /// Turns the worker's crash line into something a user can act on.
+    /// Internal rather than private so TraySelfTests can prove both the
+    /// named-DLL and generic-fallback wording without spawning a real
+    /// worker process.
+    /// </summary>
+    internal static string DescribeCrash(string crashLine)
+    {
+        if (crashLine.Contains("DllNotFoundException", StringComparison.Ordinal))
+        {
+            var dllMatch = DllNameInMessage().Match(crashLine);
+            var component = dllMatch.Success
+                ? dllMatch.Groups[1].Value
+                : "one of its required native components";
+            return $"SteamVR2Bot could not load {component} and cannot continue. " +
+                   "This normally means SteamVR2Bot.exe is running without the rest " +
+                   "of its published folder - run it from inside the complete " +
+                   "extracted publish folder, not moved out on its own.";
+        }
+
+        return "The SteamVR input worker crashed and cannot continue: " +
+               crashLine["Unhandled exception. ".Length..];
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"'([^']+\.dll)'")]
+    private static partial System.Text.RegularExpressions.Regex DllNameInMessage();
 
     private void HandleMessage(OpenVrWorkerMessage message)
     {

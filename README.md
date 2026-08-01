@@ -34,14 +34,25 @@ Build the ready-to-run folder:
 .\scripts\Publish-Poc.ps1
 ```
 
+This produces `artifacts\publish\` and, alongside it, a versioned zip of that
+same folder (`artifacts\SteamVR2Bot-<version>-windows-x64.zip`) — send a
+tester either one.
+
 The published app includes its required .NET runtime, so no separate .NET
 installation is needed for normal use.
 
-Then open:
+**The deliverable is the whole folder, not just the exe.** Extract the zip
+(or copy `artifacts\publish\`) to wherever you want to run it, keeping every
+file together, then open `SteamVR2Bot.exe` from inside that folder:
 
 ```text
-artifacts\publish\SteamVR2Bot.exe
+SteamVR2Bot.exe
 ```
+
+Copying `SteamVR2Bot.exe` out on its own and running it elsewhere will not
+work — it needs the rest of the folder beside it, including its native WPF
+libraries, to draw chat and notifications. Running it without them crashes
+the first time either one is used, with a `DllNotFoundException`.
 
 In the SteamVR2Bot window:
 
@@ -231,13 +242,53 @@ Menu Button**, **Left Grip**, and **Right Trigger**. This avoids SteamVR's
 dashboard consuming a button while the wizard is trying to observe it. SteamVR
 reserves raw controller input while its system dashboard has focus, so live
 recording briefly yields that focus and returns to the wizard automatically.
-SteamVR2Bot installs its complete Vive input map automatically, so these choices
-do not require a separate visit to SteamVR Controller Bindings.
 
-The recorder is validated first for Vive controllers. Controller button layouts
-vary by family. For Index, Touch, WMR, Cosmos, or another controller, verify the
-recorded names and run the live test matrix before treating it as a packaged
-default.
+The picker's offered inputs are controller-family-aware and hand-aware:
+
+| Family | Left hand | Right hand |
+|---|---|---|
+| Vive wand | Menu, Grip, Trigger, Trackpad | Menu, Grip, Trigger, Trackpad |
+| Valve Index | Grip, Trigger, Thumbstick, A, B | Grip, Trigger, Thumbstick, A, B |
+| Quest / Touch | Menu, Grip, Trigger, Thumbstick, X, Y | Grip, Trigger, Thumbstick, A, B |
+| Anything else | Grip, Trigger, stick/trackpad | Grip, Trigger, stick/trackpad |
+
+Index has no application-menu input in this picker — real Index (Knuckles)
+hardware exposes no such input at all. Touch exposes its menu button only on
+the left controller; the same position on the right controller is the
+Oculus/system button, which SteamVR reserves for itself and never hands to an
+application. An unrecognised controller type gets only the conservative
+grip/trigger/stick set, since a face-button pair or a menu button is not safe
+to assume for hardware this app has never seen.
+
+**Only the Vive preset is hardware-validated.** SteamVR2Bot installs its
+complete Vive input map automatically and keeps re-installing it on every
+launch, so a Vive shortcut needs no separate visit to SteamVR Controller
+Bindings, and its inputs are not something a workshop binding or a stray
+click can silently break.
+
+Index and Quest/Touch now have **provided** default input maps too —
+`bindings_index_controller.json` and `bindings_oculus_touch.json` — installed
+automatically through SteamVR's own `default_bindings` mechanism the first
+time SteamVR sees that controller type with no binding of its own yet. They
+were built from SteamVR's own shipped input-profile and dashboard-binding
+files for each controller, not guessed, but **neither has been confirmed on
+real hardware.** Unlike Vive, they are not forced back into place on every
+launch — see [SteamVR binding](#steamvr-binding) below for why that matters.
+Verify the recorded names and run the live test matrix (`LIVE_TEST_RESULTS.md`)
+before treating either as validated. For WMR, Cosmos, or any other controller,
+the picker falls back to the conservative grip/trigger/stick set above; verify
+recorded names the same way before relying on it.
+
+The provided Index map treats the grip's force input as pressed at **0.80**
+and released at **0.65**. The provided Touch map treats each analog grip as
+pressed at **0.65** and released at **0.50**. Those lower release values add
+hysteresis so a deliberate squeeze remains stable as the hand relaxes, while
+the higher activation values are intended to avoid firing from merely resting
+a hand on the controller. Touch triggers use SteamVR's shipped dashboard
+thresholds (**0.65** press, **0.60** release); Index uses the controller's
+genuine trigger click output. These choices are schema-checked but still need
+the grip-rest, squeeze, release and chatter rows in the hardware matrix before
+their feel can be called validated.
 
 The original SteamVR logical-input route remains available as a compatibility
 fallback:
@@ -249,9 +300,9 @@ Choose **SteamVR input bindings** to open the official binding page directly.
 SteamVR keeps a separate binding for each controller family, so changing an
 Index binding does not overwrite a Vive or Touch binding.
 
-The packaged Vive preset—Left Grip plus Right Trigger—is live-validated. Other
-controller families are detected and can be configured through SteamVR, but no
-untested default preset is labelled as validated.
+The packaged Vive preset—Left Grip plus Right Trigger—is live-validated. Index
+and Quest/Touch are detected and now ship with a provided default preset each,
+but neither is labelled as validated until the live hardware matrix passes.
 
 Each shortcut's gesture behavior supports:
 
@@ -305,16 +356,33 @@ The packaged Vive binding uses:
 - **Safety button:** Left Grip
 - **Action button:** Right Trigger
 
-To change it, open SteamVR Controller Bindings and select **SteamVR2Bot**. Its
-logical controls are:
+Every family's default gesture is the same — hold Left Grip, then press Right
+Trigger — but Vive, Index, and Quest/Touch get there differently, and the
+difference is intentional:
+
+- **Vive's binding is force-reinstalled on every launch.** SteamVR2Bot
+  actively re-selects the packaged Vive map every time it starts, so a Vive
+  binding can never silently drift from the validated preset — but it also
+  means an edit made through SteamVR's own Controller Bindings page does not
+  survive a restart. This is existing, unchanged behaviour.
+- **Index and Quest/Touch are installed only once, through SteamVR's own
+  `default_bindings` mechanism** — the first time SteamVR sees that
+  controller type with no binding of its own for this app yet. After that,
+  SteamVR2Bot never touches the binding again. A binding you customise
+  through SteamVR's Controller Bindings page for Index or Touch survives
+  every future launch, unlike Vive's.
+
+To change any binding, open SteamVR Controller Bindings and select
+**SteamVR2Bot**. Its logical controls are:
 
 - **Safety Button (hold)**
 - **Action Button (press)**
 
 The bridge has passed 20/20 attempts in the SteamVR shell through both the
 diagnostic and tray hosts. With GERONIMO active and the dashboard closed, it
-passed 20/20 through the diagnostic host and 21/21 through the tray host. See
-`LIVE_TEST_RESULTS.md` for the evidence.
+passed 20/20 through the diagnostic host and 21/21 through the tray host. That
+result covers the Vive preset only. See `LIVE_TEST_RESULTS.md` for the
+evidence, and for the Index/Quest hardware matrix, recorded as not yet run.
 
 ## Status messages
 

@@ -126,6 +126,16 @@ public interface IOpenVrSession : IDisposable
 public sealed class SteamVrShutdownException()
     : Exception("SteamVR is shutting down.");
 
+/// <summary>
+/// The SteamVR input worker crashed with an unhandled exception - most often
+/// a missing native dependency from running a bare exe outside its published
+/// folder - rather than SteamVR itself being temporarily unavailable.
+/// Distinct from an ordinary dropped session so the engine reports it
+/// plainly and stops instead of retrying a failure that will recur
+/// identically on the next attempt.
+/// </summary>
+public sealed class WorkerCrashedException(string message) : Exception(message);
+
 public interface IOpenVrSessionFactory
 {
     Task<IOpenVrSession> ConnectAsync(

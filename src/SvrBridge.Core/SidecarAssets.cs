@@ -4,13 +4,11 @@ namespace SvrBridge.Core;
 
 /// <summary>
 /// Both shipped executables (the tray app and the console diagnostics tool)
-/// are published with <c>PublishSingleFile</c>, which bundles the managed
-/// assembly but leaves the None/CopyToOutputDirectory sidecar files -
-/// app.vrmanifest, actions.json, bindings_vive_controller.json,
-/// SteamVR2Bot.png - sitting loose next to the exe. The release zip carries
-/// them correctly, but the release page also links the bare exe on its own
-/// (for the "just give me the file" case), and anyone who runs that copy,
-/// or drags just the .exe out of the extracted folder, gets
+/// are published with their None/CopyToOutputDirectory sidecar files -
+/// app.vrmanifest, actions.json, the per-family bindings_*.json files,
+/// SteamVR2Bot.png - sitting loose next to the exe, not bundled into it.
+/// Anyone who copies just the .exe out of the extracted folder on its own -
+/// still possible even though the deliverable is the whole folder - gets
 /// FileNotFoundException("SteamVR action/application manifest not found.")
 /// on startup. That reads like a SteamVR problem; it is actually a missing
 /// file next to the exe.
@@ -29,6 +27,12 @@ public static class SidecarAssets
             ["app.vrmanifest"] = "SvrBridge.Core.Assets.app.vrmanifest",
             ["actions.json"] = "SvrBridge.Core.Assets.actions.json",
             ["bindings_vive_controller.json"] = "SvrBridge.Core.Assets.bindings_vive_controller.json",
+            // Provided, not hardware-validated - see README's Controller
+            // inputs section. Restored the same way as the Vive file so a
+            // bare exe still has something for SteamVR's default_bindings
+            // to fall back to, not so these are equally proven.
+            ["bindings_index_controller.json"] = "SvrBridge.Core.Assets.bindings_index_controller.json",
+            ["bindings_oculus_touch.json"] = "SvrBridge.Core.Assets.bindings_oculus_touch.json",
             ["SteamVR2Bot.png"] = "SvrBridge.Core.Assets.SteamVR2Bot.png"
         };
 

@@ -8,13 +8,12 @@
 
   <ItemGroup>
     <!--
-      SidecarAssets' embedded fallback copies. PublishSingleFile bundles the
-      managed assembly but leaves None/CopyToOutputDirectory items (the
-      app.vrmanifest, actions.json and bindings_vive_controller.json every
-      published build already carries next to the exe) as loose files -
-      someone who runs a bare exe without them hits "manifest not found" and
-      it reads like a SteamVR problem instead of a missing-file one. These
-      are the same files under src\SvrBridge\assets, embedded here so
+      SidecarAssets' embedded fallback copies. Every published build already
+      carries these as loose None/CopyToOutputDirectory files next to the
+      exe, but someone who copies just the exe out on its own - the mistake
+      this fallback exists for - leaves them behind, and hits "manifest not
+      found" that reads like a SteamVR problem instead of a missing-file one.
+      These are the same files under src\SvrBridge\assets, embedded here so
       SidecarAssets.EnsurePresent can recreate whichever ones are missing
       next to the running exe. Source of truth stays the one copy in
       SvrBridge\assets; nothing here is duplicated by hand.
@@ -27,6 +26,17 @@
     </EmbeddedResource>
     <EmbeddedResource Include="..\SvrBridge\assets\bindings_vive_controller.json">
       <LogicalName>SvrBridge.Core.Assets.bindings_vive_controller.json</LogicalName>
+    </EmbeddedResource>
+    <!--
+      Provided, not hardware-validated, the same as their entries in
+      actions.json's default_bindings and README's Controller inputs section
+      say - see that section before calling either "tested".
+    -->
+    <EmbeddedResource Include="..\SvrBridge\assets\bindings_index_controller.json">
+      <LogicalName>SvrBridge.Core.Assets.bindings_index_controller.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\SvrBridge\assets\bindings_oculus_touch.json">
+      <LogicalName>SvrBridge.Core.Assets.bindings_oculus_touch.json</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="..\SvrBridge\assets\SteamVR2Bot.png">
       <LogicalName>SvrBridge.Core.Assets.SteamVR2Bot.png</LogicalName>

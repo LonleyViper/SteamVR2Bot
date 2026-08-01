@@ -15,7 +15,7 @@ if (-not (Test-Path -LiteralPath $manifest)) {
     throw "app.vrmanifest was not found at $manifest. Run scripts\Publish-Poc.ps1 first."
 }
 
-$bridge = Join-Path $PublishDirectory "diagnosticsSteamVR2Bot.Diagnostics.exe"
+$bridge = Join-Path $PublishDirectory "diagnostics\SteamVR2Bot.Diagnostics.exe"
 if (-not (Test-Path -LiteralPath $bridge)) {
     throw "The SteamVR2Bot diagnostic tool was not found at $bridge. Run scripts\Publish-Poc.ps1 first."
 }

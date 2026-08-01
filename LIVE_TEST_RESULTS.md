@@ -2929,3 +2929,238 @@ row, marked "not reported"); an unknown source resolves to a chip rather than
 throwing; search filters correctly and caps its result set. Passing those is
 not evidence the headset rows pass - this phase alone had two bugs every
 automated test went straight through.
+
+## SteamVR registration retry and the repair script
+
+### Scope
+
+Per `FIX_REGISTRATION_RETRY_PROMPT.md`, two defects found by a second review
+of the area the first-run fix (blocking on zero shortcuts) touched, neither
+caused by and neither fixed by that change:
+
+1. `RegisterSteamVrAsync` ran once at startup and from the manual repair
+   button only. If SteamVR was not yet running when SteamVR2Bot opened,
+   nothing ever retried registration for the rest of the session, even once
+   SteamVR came up - no manifest, no dashboard entry, until the user
+   relaunched. Fixed with `RetryRegistrationAsync`/`RunRetryLoopAsync`: a
+   background retry on the same 1/2/5/10/30 s ladder `BridgeEngine` already
+   uses for its own SteamVR reconnect, stopping the moment registration
+   succeeds (from either the retry loop or a successful manual repair), and
+   logging only the first failure of a run at Warning (subsequent ones drop
+   to Debug), matching `StreamerBotEventStream`'s precedent for an
+   indefinitely-retrying dependency.
+2. `scripts\Register-SteamVrApp.ps1` line 18 built
+   `diagnosticsSteamVR2Bot.Diagnostics.exe` (missing a path separator), so its
+   own `Test-Path` always failed and the script always threw before doing
+   anything. One-character fix (`diagnostics\SteamVR2Bot.Diagnostics.exe`);
+   the rest of the script was read in full and has no further defect.
+
+Also re-verified rather than assumed, per the same prompt: the SteamVR error
+104 message (explains the manifest-not-yet-indexed condition and correctly
+advises a full SteamVR restart, without implying that restart is what makes
+the dashboard tile appear now that the first-run fix means it is already
+there) and the stale-manifest cleanup (`RemoveStaleRegistrations` /
+`FindStaleManifestPaths`, including the already-deleted-file case, logging
+each removal) - both confirmed present and unmodified in
+`src/SvrBridge.Core/SteamVrApplications.cs`.
+
+A genuine deadlock was found and fixed along the way, unrelated to either bug
+above: the two new self-tests proving the retry loop's schedule/log-level
+behaviour were the first `await`-based tests `TraySelfTests` has ever had.
+Several earlier synchronous tests create WinForms controls, which installs a
+`WindowsFormsSynchronizationContext` on the test thread as a side effect of
+the framework - and because a console self-test run never pumps a message
+loop to service it, any later `await` on that thread hangs forever waiting
+for a continuation that will never be posted. Fixed by insulating the two new
+tests' blocking calls from whatever context an earlier test left behind
+(`TraySelfTests.RunSync`), not by changing production code, which never hits
+this because `Application.Run()` really is pumping messages there.
+
+### What is already covered without a headset
+
+Both self-test suites pass (`SvrBridge` and `SvrBridge.Tray`, including the
+newly-fixed full `--self-test` run, previously an unconditional hang once the
+two new tests were added), both projects build with zero warnings, and
+`dotnet format --verify-no-changes` is clean for both.
+`TestRegistrationRetryLoopSucceedsAfterFailures` proves the loop keeps
+attempting on its own until an injected attempt stops failing (no relaunch),
+stops immediately afterwards, and logs only the first of two failures at full
+severity. `TestRegistrationRetryLoopStopsWhenCancelled` proves cancellation -
+the production stand-in for a successful manual repair, or app exit - ends
+the loop with no further attempts.
+
+### Live verification performed (no headset attached this session)
+
+Both fixes were also run for real against the packaged
+`artifacts\publish\SteamVR2Bot.exe` and `Register-SteamVrApp.ps1`, on this
+machine's real Steam/SteamVR install, with SteamVR's compositor/dashboard not
+attached to a headset. This is not the literal "close SteamVR, watch it fail,
+start SteamVR, watch it recover" script from the prompt - on this machine,
+Steam auto-launches a working SteamVR session the moment any app calls into
+OpenVR, closed or not, so that condition could not be produced by simply
+closing SteamVR. Instead `%LOCALAPPDATA%\openvr\openvrpaths.vrpath`'s
+`runtime` entry was pointed at a nonexistent folder (backed up first,
+restored after), which makes `openvr_api.dll` genuinely unresolvable -
+functionally the same failure registration sees when SteamVR truly cannot be
+reached - while touching no Steam-owned file.
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | `.\scripts\Register-SteamVrApp.ps1` against a real publish | Completes without throwing, reaching its final `Write-Host` lines | **PASS** |
+| 2 | Launch the packaged tray exe with `openvr_api.dll` unresolvable | `steamvr.setup_unavailable` logged once at Warning: "SteamVR is not available yet; registration will retry automatically: Could not locate openvr_api.dll...". Main bridge separately enters its own "Waiting for SteamVR" ladder | **PASS** |
+| 3 | Leave the app running; do nothing | Retry loop's own failures log at 1/2/5/10 s, first at Warning and every one after at Debug, matching the ladder exactly | **PASS** |
+| 4 | Restore `openvrpaths.vrpath`; wait for the next scheduled attempt (no relaunch, no button press) | `dashboard.available` and `steamvr.setup_recovered` ("SteamVR registration succeeded now that SteamVR is running.") both logged, main bridge also reconnects to Ready | **PASS** |
+| 5 | Genuine headset session: repeat the above with a headset attached, confirm the dashboard tile is visible and interactive in-headset, and confirm auto-launch survives a full SteamVR restart | — | **not run** - needs a headset session |
+| 6 | The first-run fix's own decisive test (delete `settings.json`, fresh launch, dashboard tile with no shortcuts/no Streamer.bot, create a shortcut entirely from inside VR) | — | **not run** - still needs a headset session; not attempted again this round |
+
+### Result, 2026-08-01 — both bugs fixed and confirmed against the real app; headset rows still outstanding
+
+Rows 1-4 are as strong a confirmation as this machine allows without a
+headset: the real published exe and the real repair script, against a real
+(if headset-less) SteamVR runtime, with the failure condition reproduced
+honestly rather than assumed. The exact log line, delay ladder, and recovery
+sequence all match the code. Rows 5-6 need an actual headset session, which
+this environment does not have; nothing here should be read as evidence for
+either.
+
+## WPF native DLL crash - PublishSingleFile removed, worker crash reporting added
+
+### Scope
+
+Per `FIX_WPF_NATIVE_DLL_CRASH_PROMPT.md`: `scripts\Publish-Poc.ps1` published
+with `-p:PublishSingleFile=true`, which leaves WPF's native dependencies
+(`PresentationNative_cor3.dll`, `wpfgfx_cor3.dll`, `D3DCompiler_47_cor3.dll`,
+`vcruntime140_cor3.dll`) as loose files beside the exe rather than bundling
+them. A user who copies `SteamVR2Bot.exe` out on its own - which a
+single-file exe invites - gets a bare `DllNotFoundException` the first time
+chat or a notification touches WPF, crashing the SteamVR input worker. The
+parent only ever saw a generic exit code, so it treated this exactly like an
+ordinary dropped SteamVR connection: looping the 1/2/5/10/30 s reconnect
+ladder over a fault that would fail identically on every attempt, with
+nothing in the status area or activity log naming the real problem.
+
+Fixed:
+
+* `PublishSingleFile` removed from both publishes in `Publish-Poc.ps1` (tray
+  and diagnostics, for consistency - the diagnostic console has no WPF or
+  other native dependency of its own, confirmed by its `.csproj` having no
+  `UseWPF`/`UseWindowsForms` and no native `PackageReference`). Both publishes
+  now land their whole managed+native dependency set in the output folder.
+* The script now also zips the publish folder as
+  `artifacts\SteamVR2Bot-<version>-windows-x64.zip` (version from
+  `git describe --tags --always`, falling back to a timestamp), and the
+  README's setup section says plainly that the exe will not work moved out
+  of the folder on its own.
+* `OpenVrWorkerSession.ReadErrorsAsync` (`src/SvrBridge.Tray/OpenVrWorker.cs`)
+  now watches the worker's stderr for .NET's `Unhandled exception.` marker -
+  the one reliable signal, on that stream, that the worker crashed rather
+  than SteamVR simply closing the pipe on it - and waits for the stream to
+  reach EOF (not the racier `Process.Exited` event) before deciding, so the
+  whole crash line is guaranteed captured. `DescribeCrash` turns that into
+  wording a user can act on: it names the missing DLL when .NET's own message
+  includes one, falls back to "one of its required native components" and
+  the same folder-relocation guidance when it does not (confirmed against
+  the real field report's terse "Dll was not found." message, which names
+  nothing), and otherwise names whatever exception actually crashed the
+  process.
+* New `WorkerCrashedException` (`src/SvrBridge.Core/OpenVrSession.cs`) carries
+  that message. `BridgeEngine.RunAsync` catches it before the generic SteamVR
+  retry handler, logs it at Error, sets a distinct "SteamVR2Bot cannot
+  continue" status, and returns - no reconnect delay, no further connection
+  attempt, matching the requirement that a fault which will recur identically
+  must not be retried indefinitely.
+
+### What is already covered without a headset
+
+Both self-test suites pass, both projects (plus `SvrBridge.Core`) build with
+zero warnings, and `dotnet format --verify-no-changes` is clean for all
+three. `TestWorkerCrashDescribesNamedDll` and
+`TestWorkerCrashFallsBackToGenericWordingWithoutADllName` prove
+`DescribeCrash` against both shapes of `DllNotFoundException.Message` .NET is
+known to produce - one naming the DLL, one not (the field report's exact
+wording) - and `TestWorkerCrashOnNonDllExceptionNamesTheException` proves a
+non-DLL crash still names itself rather than falling through to a bare
+"worker exited with code N". `TestWorkerCrashedExceptionStopsWithoutRetryingAsync`
+(`src/SvrBridge/SelfTests.cs`) proves `BridgeEngine.RunAsync` connects exactly
+once and returns immediately on `WorkerCrashedException` - no reconnect delay,
+no "Waiting for SteamVR" wording, and a final status carrying the specific
+detail - rather than looping the SteamVR ladder over it.
+
+### Live verification performed
+
+| # | Step | Expected | Result |
+|---|---|---|---|
+| 1 | Structural check: inspect `artifacts\publish\` after `.\scripts\Publish-Poc.ps1` | `PresentationNative_cor3.dll`, `wpfgfx_cor3.dll`, `D3DCompiler_47_cor3.dll`, `vcruntime140_cor3.dll` and the full managed dependency set (`PresentationCore.dll`, `PresentationFramework.dll`, hundreds of `System.*.dll`, etc.) present as loose files next to `SteamVR2Bot.exe` - not merged into one file | **PASS** |
+| 2 | Copy the entire `artifacts\publish\` folder to a fresh, unrelated location (`%TEMP%\svrbridge-fresh-location-test`, never built or published to before) and launch `SteamVR2Bot.exe` from there | Starts cleanly: SteamVR registers, connects to Streamer.bot, the OpenVR worker connects, the SteamVR dashboard becomes available - no crash | **PASS** |
+| 3 | From that same fresh-location process, deliberately touch the WPF path (chat and/or a notification) and confirm no `DllNotFoundException`/worker restart | — | **not run this round** - a GUI pass to trigger the tray's chat/notification test harnesses was underway (native DLLs already confirmed present per row 1, and the app already confirmed stable from that location per row 2) but was stopped at the user's request before completing; nothing here should be read as evidence either way |
+| 4 | Publish once more with `-p:PublishSingleFile=true`, copy only the bare exe out, launch it, and confirm the crash reproduces - then confirm the same treatment against the *new* packaging either does not crash or fails with the distinct "SteamVR2Bot cannot continue" message rather than a silent SteamVR-reconnect loop | — | **not run** - not reached before the same stop |
+
+### Result, 2026-08-01 — packaging fix and crash-reporting code complete and self-test-verified; live WPF-trigger and old-packaging comparison still outstanding
+
+The root cause is fixed and structurally confirmed (row 1), and the fresh-location
+smoke test (row 2) - the most likely way this bug actually reaches a user -
+passes clean. The crash-detection and no-retry code paths are proven
+deterministically by the four new self-tests, which exercise the exact
+wording and control flow rather than merely the presence of a code path.
+What remains unverified live is narrower than the full manual test plan: an
+actual WPF render (chat/notification) firing without crashing from the fresh
+location, and a side-by-side reproduction proving the single-file packaging
+really was the cause. Both need either a headset-free GUI pass (tray menu's
+developer test harnesses) or someone at the keyboard to click through - not
+run this round at the user's request; they said they would test themselves.
+
+## Provided Index and Quest / Touch default bindings — automated checks complete, hardware not run
+
+### Scope and evidence boundary
+
+SteamVR2Bot now provides default binding files for SteamVR controller types
+`knuckles` and `oculus_touch`, alongside the existing Vive file. The new files
+parse as JSON, use input paths/modes/parameters taken from SteamVR's locally
+installed controller profiles and dashboard bindings, and pass the repository's
+manifest, action-map, capability, packaging and self-healing checks. The
+installed SteamVR runtime had no Index or Touch controllers connected, so it
+did not select or load either controller-specific default. Runtime binding-load
+acceptance and every hardware row below are therefore **Not run**. Vive remains
+the only hardware-validated preset.
+
+The Index grip uses force-input activation/release thresholds 0.80/0.65. Touch
+grips use 0.65/0.50. Touch triggers use the shipped dashboard binding's
+0.65/0.60 analog thresholds; Index triggers use their genuine click output.
+Every threshold pair has a lower release point for hysteresis. The intended
+feel — deliberate squeeze, no activation from resting, and clean release — is
+not evidence until the relevant controller passes the matrix.
+
+### Valve Index (`knuckles`) hardware matrix
+
+| Hand | Check | Result |
+|---|---|---|
+| Left | Grip, Trigger, Thumbstick, A and B each record independently with the exact friendly name | **Not run** |
+| Left | Menu is absent from the picker | **Not run** |
+| Left | Grip activates with a deliberate squeeze, not from merely holding the controller | **Not run** |
+| Left | Grip releases cleanly without threshold chatter | **Not run** |
+| Left | Trigger uses its physical click correctly | **Not run** |
+| Right | Grip, Trigger, Thumbstick, A and B each record independently with the exact friendly name | **Not run** |
+| Right | Menu is absent from the picker | **Not run** |
+| Right | Grip activates with a deliberate squeeze, not from merely holding the controller | **Not run** |
+| Right | Grip releases cleanly without threshold chatter | **Not run** |
+| Right | Trigger uses its physical click correctly | **Not run** |
+| Both | Hold Left Grip, then press Right Trigger; the action fires exactly once with no miss or duplicate | **Not run** |
+| Both | The provided default appears for a fresh `knuckles` binding | **Not run** |
+| Both | An existing customized Index binding is not overwritten on launch, repair, or sidecar recovery | **Not run** |
+
+### Meta Quest / Touch (`oculus_touch`) hardware matrix
+
+| Hand | Check | Result |
+|---|---|---|
+| Left | Menu, Grip, Trigger, Thumbstick, X and Y each record independently with the exact friendly name | **Not run** |
+| Left | Grip activates with a deliberate squeeze, not from merely holding the controller | **Not run** |
+| Left | Grip releases cleanly without threshold chatter | **Not run** |
+| Left | Trigger threshold produces one clean press and release | **Not run** |
+| Right | Grip, Trigger, Thumbstick, A and B each record independently with the exact friendly name | **Not run** |
+| Right | Menu and the reserved Oculus/system button are absent from the picker | **Not run** |
+| Right | Grip activates with a deliberate squeeze, not from merely holding the controller | **Not run** |
+| Right | Grip releases cleanly without threshold chatter | **Not run** |
+| Right | Trigger threshold produces one clean press and release | **Not run** |
+| Both | Hold Left Grip, then press Right Trigger; the action fires exactly once with no miss or duplicate | **Not run** |
+| Both | The provided default appears for a fresh `oculus_touch` binding | **Not run** |
+| Both | An existing customized Touch binding is not overwritten on launch, repair, or sidecar recovery | **Not run** |

@@ -10,6 +10,9 @@ internal static class TraySelfTests
         TestVrScrollLimiter();
         TestPackagedViveBinding();
         TestSidecarAssetsSelfHeal();
+        TestWorkerCrashDescribesNamedDll();
+        TestWorkerCrashFallsBackToGenericWordingWithoutADllName();
+        TestWorkerCrashOnNonDllExceptionNamesTheException();
         TestDashboardBottomBarLayout();
         TestSettingsPageLayoutRectangles();
         TestRenamedDataDirectoryMigration();
@@ -66,6 +69,8 @@ internal static class TraySelfTests
         TestNotificationEventPickerStaysBoundedAtARealCatalogSize();
         TestNotificationEventPickerRoundTripsAndKeepsUnreportedEvents();
         TestNotificationRendersAtTheConfiguredSizeWithItsIcon();
+        TestRegistrationRetryLoopSucceedsAfterFailures();
+        TestRegistrationRetryLoopStopsWhenCancelled();
 
         var testDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -764,6 +769,14 @@ internal static class TraySelfTests
                          "app.vrmanifest",
                          "actions.json",
                          "bindings_vive_controller.json",
+                         // Provided, not hardware-validated (see README's
+                         // Controller inputs section) - but a user who
+                         // downloads or moves only the exe still needs both
+                         // reconstructed beside it the same as the Vive file,
+                         // or SteamVR's default_bindings has nothing to load
+                         // for either controller_type.
+                         "bindings_index_controller.json",
+                         "bindings_oculus_touch.json",
                          "SteamVR2Bot.png"
                      })
             {
@@ -778,16 +791,93 @@ internal static class TraySelfTests
 
             const string customMarker = "{\"custom\":true}";
             File.WriteAllText(Path.Combine(tempDirectory, "actions.json"), customMarker);
+            // A user's own edits to a provided-but-unvalidated binding are
+            // exactly what must survive here too - this app already forces
+            // the Vive preset back into place every launch (see
+            // TrayApplicationContext.RegisterSteamVrCoreAsync), and Index/
+            // Touch deliberately do not, so self-healing a missing copy must
+            // not become a second way to silently discard one.
+            File.WriteAllText(
+                Path.Combine(tempDirectory, "bindings_index_controller.json"),
+                customMarker);
+            File.WriteAllText(
+                Path.Combine(tempDirectory, "bindings_oculus_touch.json"),
+                customMarker);
             SvrBridge.Core.SidecarAssets.EnsurePresent(tempDirectory);
             Assert(
                 File.ReadAllText(Path.Combine(tempDirectory, "actions.json")) == customMarker,
                 "SidecarAssets.EnsurePresent overwrote an existing actions.json instead of leaving "
                 + "a user's file alone.");
+            Assert(
+                File.ReadAllText(Path.Combine(tempDirectory, "bindings_index_controller.json")) == customMarker,
+                "SidecarAssets.EnsurePresent overwrote an existing customized Index binding instead "
+                + "of leaving a user's file alone.");
+            Assert(
+                File.ReadAllText(Path.Combine(tempDirectory, "bindings_oculus_touch.json")) == customMarker,
+                "SidecarAssets.EnsurePresent overwrote an existing customized Touch binding instead "
+                + "of leaving a user's file alone.");
         }
         finally
         {
             Directory.Delete(tempDirectory, recursive: true);
         }
+    }
+
+    /// <summary>
+    /// The exact shape of the bug report: a bare exe missing its WPF native
+    /// DLLs crashes the worker with a message .NET sometimes names the DLL
+    /// in. Confirms the report is named, and the folder-relocation guidance
+    /// is present.
+    /// </summary>
+    private static void TestWorkerCrashDescribesNamedDll()
+    {
+        var described = OpenVrWorkerSession.DescribeCrash(
+            "Unhandled exception. System.DllNotFoundException: Unable to load DLL "
+            + "'PresentationNative_cor3.dll' or one of its dependencies: The specified "
+            + "module could not be found.");
+
+        Assert(
+            described.Contains("PresentationNative_cor3.dll", StringComparison.Ordinal),
+            "A DLL name present in the crash line was not surfaced to the user.");
+        Assert(
+            described.Contains("published folder", StringComparison.OrdinalIgnoreCase),
+            "The described crash did not point the user at running from the published folder.");
+    }
+
+    /// <summary>
+    /// The report from the field: .NET's own <c>DllNotFoundException.Message</c>
+    /// does not always name the DLL ("Dll was not found."). The description
+    /// must still be actionable rather than silently omitting the reason.
+    /// </summary>
+    private static void TestWorkerCrashFallsBackToGenericWordingWithoutADllName()
+    {
+        var described = OpenVrWorkerSession.DescribeCrash(
+            "Unhandled exception. System.DllNotFoundException: Dll was not found.");
+
+        Assert(
+            described.Contains("native component", StringComparison.OrdinalIgnoreCase),
+            "A DllNotFoundException with no DLL name in its message produced no fallback wording.");
+        Assert(
+            described.Contains("published folder", StringComparison.OrdinalIgnoreCase),
+            "The described crash did not point the user at running from the published folder.");
+    }
+
+    /// <summary>
+    /// A crash unrelated to a missing DLL must still be reported plainly -
+    /// this is what stands between the user and a bare "worker exited with
+    /// code 1" for any other bug that crashes the process outright.
+    /// </summary>
+    private static void TestWorkerCrashOnNonDllExceptionNamesTheException()
+    {
+        var described = OpenVrWorkerSession.DescribeCrash(
+            "Unhandled exception. System.InvalidOperationException: Something else broke.");
+
+        Assert(
+            described.Contains("System.InvalidOperationException", StringComparison.Ordinal),
+            "A non-DLL crash did not name the exception that caused it.");
+        Assert(
+            described.Contains("Something else broke.", StringComparison.Ordinal),
+            "A non-DLL crash dropped the exception's own message.");
     }
 
     /// <summary>
@@ -3838,6 +3928,109 @@ internal static class TraySelfTests
                 + $"{index} (pixel {index / 4}, channel {"RGBA"[index % 4]}) was written as "
                 + $"{written[index]} and read back as {readBack[index]} - a channel swap, a "
                 + "row-pitch mistake, or a copy that was never waited for.");
+        }
+    }
+
+    /// <summary>
+    /// Regression test for the bootstrap order that used to strand a user
+    /// with no dashboard entry for the rest of the session: SteamVR2Bot
+    /// opened before SteamVR, registration failed once, and nothing ever
+    /// retried it. Proves <see cref="TrayApplicationContext.RunRetryLoopAsync"/>
+    /// keeps attempting until it succeeds, stops immediately afterwards, and
+    /// only logs the first failure at full severity - all without a real
+    /// OpenVR session or a process relaunch.
+    /// </summary>
+    private static void TestRegistrationRetryLoopSucceedsAfterFailures()
+    {
+        var attemptCount = 0;
+        var succeeded = false;
+        var failureLogs = new List<bool>();
+
+        Task Attempt(CancellationToken cancellationToken)
+        {
+            attemptCount++;
+            if (attemptCount < 3)
+            {
+                throw new InvalidOperationException($"SteamVR not available yet (attempt {attemptCount}).");
+            }
+
+            return Task.CompletedTask;
+        }
+
+        RunSync(() => TrayApplicationContext.RunRetryLoopAsync(
+            Attempt,
+            [TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1)],
+            (alreadyFailedBefore, _) => failureLogs.Add(alreadyFailedBefore),
+            () => succeeded = true,
+            CancellationToken.None));
+
+        Assert(
+            attemptCount == 3,
+            "The retry loop did not keep attempting on its own until SteamVR became available.");
+        Assert(succeeded, "The retry loop did not report success once the attempt stopped failing.");
+        Assert(
+            failureLogs.Count == 2 && !failureLogs[0] && failureLogs[1],
+            "The retry loop did not log only the first failure at full severity, dropping later ones to keep an unavailable SteamVR from flooding the activity log.");
+    }
+
+    /// <summary>
+    /// Proves the other half of the same contract: once something else
+    /// (a successful manual repair, or the app exiting) cancels the loop, it
+    /// stops rather than continuing to retry for the life of the process.
+    /// </summary>
+    private static void TestRegistrationRetryLoopStopsWhenCancelled()
+    {
+        var attemptCount = 0;
+        var succeeded = false;
+        using var cancellation = new CancellationTokenSource();
+
+        Task Attempt(CancellationToken cancellationToken)
+        {
+            attemptCount++;
+            if (attemptCount == 2)
+            {
+                cancellation.Cancel();
+            }
+
+            throw new InvalidOperationException("SteamVR still not available.");
+        }
+
+        RunSync(() => TrayApplicationContext.RunRetryLoopAsync(
+            Attempt,
+            [TimeSpan.FromMilliseconds(1)],
+            (_, _) => { },
+            () => succeeded = true,
+            cancellation.Token));
+
+        Assert(!succeeded, "A cancelled retry loop reported success anyway.");
+        Assert(
+            attemptCount == 2,
+            "The retry loop kept attempting after it was cancelled instead of leaving no timer running.");
+    }
+
+    /// <summary>
+    /// Blocks this thread on an async self-test, insulated from whatever
+    /// <see cref="SynchronizationContext"/> an earlier WinForms test in this
+    /// same run may have left installed. Creating any control's handle
+    /// installs one implicitly as a side effect of the framework, not
+    /// something any test here does on purpose, and nothing in a console
+    /// self-test run ever pumps a message loop to service it - so left in
+    /// place, an ordinary <c>await</c> deadlocks waiting for a continuation
+    /// that will never be posted anywhere. Every other test in this file is
+    /// synchronous; this exists for the two registration-retry tests, the
+    /// first to await anything.
+    /// </summary>
+    private static void RunSync(Func<Task> action)
+    {
+        var previousContext = SynchronizationContext.Current;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(null);
+            action().GetAwaiter().GetResult();
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previousContext);
         }
     }
 

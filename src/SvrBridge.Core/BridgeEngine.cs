@@ -87,6 +87,20 @@ public sealed class BridgeEngine
                 VrShutdownRequested?.Invoke();
                 return;
             }
+            catch (WorkerCrashedException exception)
+            {
+                // Unlike a dropped SteamVR connection, this will fail the
+                // exact same way on every retry - looping the SteamVR
+                // reconnect ladder over it just hides the real fault behind
+                // "Waiting for SteamVR" messages that tell the user nothing
+                // they can act on.
+                Log("worker.crashed", exception.Message, BridgeLogLevel.Error);
+                SetStatus(
+                    BridgeState.Error,
+                    "SteamVR2Bot cannot continue",
+                    exception.Message);
+                return;
+            }
             catch (Exception exception)
             {
                 var delay = SteamVrRetryDelays[
@@ -649,7 +663,8 @@ public sealed class BridgeEngine
         }
         catch (Exception exception)
             when (exception is not (OperationCanceledException
-                      or SteamVrShutdownException)
+                      or SteamVrShutdownException
+                      or WorkerCrashedException)
                   && openVr.IsQuitRequested())
         {
             // The worker reports the quit and then exits at once, so the

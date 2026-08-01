@@ -15,6 +15,8 @@
   <ItemGroup>
     <None Include="assets\actions.json" Link="actions.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="assets\bindings_vive_controller.json" Link="bindings_vive_controller.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="assets\bindings_index_controller.json" Link="bindings_index_controller.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="assets\bindings_oculus_touch.json" Link="bindings_oculus_touch.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="assets\app.vrmanifest" Link="app.vrmanifest" CopyToOutputDirectory="PreserveNewest" />
     <None Include="assets\SteamVR2Bot.png" Link="SteamVR2Bot.png" CopyToOutputDirectory="PreserveNewest" />
     <None Include="appsettings.example.json" Link="appsettings.example.json" CopyToOutputDirectory="PreserveNewest" />

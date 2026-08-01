@@ -18,6 +18,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly SemaphoreSlim _dashboardGate = new(1, 1);
     private CancellationTokenSource? _bridgeCancellation;
     private Task? _bridgeTask;
+    private CancellationTokenSource? _registrationRetryCancellation;
     private StreamerBotEventStream? _eventStream;
     private Task? _eventPump;
     private EventStreamSettings? _appliedEventStream;
@@ -225,6 +226,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
             _bridgeCancellation?.Dispose();
+            _registrationRetryCancellation?.Cancel();
             _runtimeGate.Dispose();
             _dashboardGate.Dispose();
             _mainForm.Dispose();
@@ -1161,27 +1163,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private async void RepairSteamVrSetup() =>
         await RegisterSteamVrAsync(showSuccess: true);
 
+    /// <summary>
+    /// Backoff between background registration retries once an attempt has
+    /// failed; the last entry repeats forever. Mirrors
+    /// <c>BridgeEngine</c>'s own SteamVR connection ladder rather than
+    /// inventing a third schedule - registration and the bridge's OpenVR
+    /// session are both just "is SteamVR up yet", so they wait the same way.
+    /// </summary>
+    private static readonly TimeSpan[] SteamVrRegistrationRetryDelays =
+    [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(30)
+    ];
+
     private async Task RegisterSteamVrAsync(bool showSuccess)
     {
         try
         {
-            await Task.Run(
-                () => SteamVrApplications.Register(
-                    Path.Combine(AppContext.BaseDirectory, "app.vrmanifest"),
-                    Path.Combine(AppContext.BaseDirectory, "actions.json"),
-                    message => OnActivity(
-                        new BridgeActivity("steamvr.setup", message))));
-            // SteamVR may still be completing the binding load started by the
-            // short-lived registration connection. Let that finish before
-            // replacing an old user/workshop binding with the app-owned map.
-            await Task.Delay(750);
-            await SteamVrApplications.SelectPackagedViveBindingAsync(
-                Path.Combine(AppContext.BaseDirectory, "bindings_vive_controller.json"));
-            await Task.Delay(500);
-            OnActivity(
-                new BridgeActivity(
-                    "steamvr.inputs_ready",
-                    "Installed the built-in Vive controller input map."));
+            await RegisterSteamVrCoreAsync(CancellationToken.None);
             if (showSuccess)
             {
                 OnStatusChanged(
@@ -1190,13 +1192,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         "SteamVR setup repaired",
                         "SteamVR2Bot is registered and stays available while the app is open."));
             }
+
+            // A background retry from an earlier failure may still be
+            // waiting out its delay; this attempt already succeeded, so
+            // there is nothing left for it to do.
+            StopRegistrationRetry();
         }
         catch (Exception exception)
         {
             OnActivity(
                 new BridgeActivity(
                     "steamvr.setup_unavailable",
-                    $"SteamVR registration will retry next launch: {exception.Message}",
+                    $"SteamVR is not available yet; registration will retry automatically: {exception.Message}",
                     BridgeLogLevel.Warning));
             if (showSuccess)
             {
@@ -1205,6 +1212,162 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         BridgeState.Error,
                         "SteamVR setup failed",
                         exception.Message));
+            }
+
+            StartRegistrationRetryIfNeeded();
+        }
+    }
+
+    /// <summary>
+    /// The actual registration steps, shared by the single attempt in
+    /// <see cref="RegisterSteamVrAsync"/> and every attempt
+    /// <see cref="RetryRegistrationAsync"/> makes afterwards.
+    /// </summary>
+    private async Task RegisterSteamVrCoreAsync(CancellationToken cancellationToken)
+    {
+        await Task.Run(
+            () => SteamVrApplications.Register(
+                Path.Combine(AppContext.BaseDirectory, "app.vrmanifest"),
+                Path.Combine(AppContext.BaseDirectory, "actions.json"),
+                message => OnActivity(
+                    new BridgeActivity("steamvr.setup", message))),
+            cancellationToken);
+        // SteamVR may still be completing the binding load started by the
+        // short-lived registration connection. Let that finish before
+        // replacing an old user/workshop binding with the app-owned map.
+        //
+        // Vive only, deliberately: this forces the packaged Vive binding
+        // back into place on every launch, which is why a user's own edits
+        // to the Vive binding never survive a restart - the validated preset
+        // must never silently drift from what shipped. Index and Touch have
+        // no equivalent call. Their default bindings
+        // (bindings_index_controller.json, bindings_oculus_touch.json) are
+        // registered in actions.json's own default_bindings list instead, so
+        // SteamVR applies them itself the first time it sees that
+        // controller_type with no binding yet, and never touches them again
+        // once a user (or SteamVR's own binding UI) has set one - unlike
+        // Vive, an Index or Touch customization survives every future
+        // launch. That asymmetry is intentional: these two presets are
+        // provided, not hardware-validated (see README's Controller inputs
+        // section), so nothing here should force them back into place the
+        // way the proven Vive preset is.
+        await Task.Delay(750, cancellationToken);
+        await SteamVrApplications.SelectPackagedViveBindingAsync(
+            Path.Combine(AppContext.BaseDirectory, "bindings_vive_controller.json"),
+            cancellationToken);
+        await Task.Delay(500, cancellationToken);
+        OnActivity(
+            new BridgeActivity(
+                "steamvr.inputs_ready",
+                "Installed the built-in Vive controller input map."));
+    }
+
+    /// <summary>
+    /// Starts the background registration retry loop if one is not already
+    /// running. Idempotent so a failed manual repair while an earlier
+    /// automatic retry is already waiting does not start a second one
+    /// racing it.
+    /// </summary>
+    private void StartRegistrationRetryIfNeeded()
+    {
+        if (_isExiting || _registrationRetryCancellation is not null)
+        {
+            return;
+        }
+
+        var cancellation = new CancellationTokenSource();
+        _registrationRetryCancellation = cancellation;
+        _ = RetryRegistrationAsync(cancellation);
+    }
+
+    private void StopRegistrationRetry() =>
+        _registrationRetryCancellation?.Cancel();
+
+    /// <summary>
+    /// Retries SteamVR registration on <see cref="SteamVrRegistrationRetryDelays"/>
+    /// until it succeeds, so a user who opens SteamVR2Bot before SteamVR is
+    /// running - the most likely order right after install - does not have to
+    /// relaunch once SteamVR comes up. Previously registration was attempted
+    /// only once at startup and by the manual repair button, so that exact
+    /// order stranded the user with no dashboard entry for the rest of the
+    /// session. The schedule/logging mechanics live in
+    /// <see cref="RunRetryLoopAsync"/> so they are provable without a real
+    /// OpenVR session - see TraySelfTests.
+    /// </summary>
+    private async Task RetryRegistrationAsync(CancellationTokenSource ownedCancellation)
+    {
+        try
+        {
+            await RunRetryLoopAsync(
+                RegisterSteamVrCoreAsync,
+                SteamVrRegistrationRetryDelays,
+                (alreadyFailedBefore, message) =>
+                    OnActivity(
+                        new BridgeActivity(
+                            "steamvr.setup_unavailable",
+                            $"SteamVR registration still unavailable: {message}",
+                            alreadyFailedBefore ? BridgeLogLevel.Debug : BridgeLogLevel.Warning)),
+                () =>
+                    OnActivity(
+                        new BridgeActivity(
+                            "steamvr.setup_recovered",
+                            "SteamVR registration succeeded now that SteamVR is running.")),
+                ownedCancellation.Token);
+        }
+        finally
+        {
+            // Stopped because registration already succeeded through another
+            // path (the manual repair button), or the app is exiting.
+            if (ReferenceEquals(_registrationRetryCancellation, ownedCancellation))
+            {
+                _registrationRetryCancellation = null;
+            }
+
+            ownedCancellation.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Retries <paramref name="attempt"/> on <paramref name="delays"/> (the
+    /// last entry repeats forever) until it succeeds or
+    /// <paramref name="cancellationToken"/> is cancelled. Only the first
+    /// failure of a run is worth the user's attention -
+    /// <paramref name="logFailure"/> is told whether an earlier attempt in
+    /// this same run already failed, the same "service still isn't back"
+    /// precedent <c>StreamerBotEventStream</c> uses for its own indefinite
+    /// reconnect, so a dependency staying unavailable for an hour does not
+    /// fill the activity log with the same line. Internal rather than
+    /// private so TraySelfTests can prove the schedule and log-level
+    /// behaviour without a real OpenVR session.
+    /// </summary>
+    internal static async Task RunRetryLoopAsync(
+        Func<CancellationToken, Task> attempt,
+        IReadOnlyList<TimeSpan> delays,
+        Action<bool, string> logFailure,
+        Action logSuccess,
+        CancellationToken cancellationToken)
+    {
+        var attemptIndex = 0;
+        var failureLogged = false;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var delay = delays[Math.Min(attemptIndex, delays.Count - 1)];
+            attemptIndex++;
+            try
+            {
+                await Task.Delay(delay, cancellationToken);
+                await attempt(cancellationToken);
+                logSuccess();
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                logFailure(failureLogged, exception.Message);
+                failureLogged = true;
             }
         }
     }
@@ -1256,6 +1419,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _isExiting = true;
         _settingsTimer.Stop();
+        StopRegistrationRetry();
         await _runtimeGate.WaitAsync();
         try
         {

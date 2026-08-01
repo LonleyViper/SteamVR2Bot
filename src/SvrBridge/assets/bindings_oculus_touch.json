@@ -1,0 +1,133 @@
+{
+  "alias_info": {},
+  "bindings": {
+    "/actions/svrbridge": {
+      "chords": [],
+      "haptics": [],
+      "poses": [],
+      "skeleton": [],
+      "sources": [
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/left_menu"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/system"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/left_grip"
+            }
+          },
+          "mode": "button",
+          "parameters": {
+            "click_activate_threshold": "0.65",
+            "click_deactivate_threshold": "0.5"
+          },
+          "path": "/user/hand/left/input/grip"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/right_grip"
+            }
+          },
+          "mode": "button",
+          "parameters": {
+            "click_activate_threshold": "0.65",
+            "click_deactivate_threshold": "0.5"
+          },
+          "path": "/user/hand/right/input/grip"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/left_trigger"
+            }
+          },
+          "mode": "button",
+          "parameters": {
+            "click_activate_threshold": "0.65",
+            "click_deactivate_threshold": "0.6"
+          },
+          "path": "/user/hand/left/input/trigger"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/right_trigger"
+            }
+          },
+          "mode": "button",
+          "parameters": {
+            "click_activate_threshold": "0.65",
+            "click_deactivate_threshold": "0.6"
+          },
+          "path": "/user/hand/right/input/trigger"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/left_trackpad"
+            }
+          },
+          "mode": "joystick",
+          "path": "/user/hand/left/input/joystick"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/right_trackpad"
+            }
+          },
+          "mode": "joystick",
+          "path": "/user/hand/right/input/joystick"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/left_face1"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/x"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/left_face2"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/left/input/y"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/right_face1"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/a"
+        },
+        {
+          "inputs": {
+            "click": {
+              "output": "/actions/svrbridge/in/right_face2"
+            }
+          },
+          "mode": "button",
+          "path": "/user/hand/right/input/b"
+        }
+      ]
+    }
+  },
+  "controller_type": "oculus_touch",
+  "description": "Provided Meta Quest / Oculus Touch input map. Not yet hardware-validated - see README's Controller inputs section.",
+  "name": "SteamVR2Bot — Quest / Touch Controller (provided, not hardware-validated)",
+  "options": {},
+  "simulated_actions": []
+}

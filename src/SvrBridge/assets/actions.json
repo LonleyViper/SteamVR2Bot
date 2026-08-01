@@ -3,6 +3,14 @@
     {
       "controller_type": "vive_controller",
       "binding_url": "bindings_vive_controller.json"
+    },
+    {
+      "controller_type": "knuckles",
+      "binding_url": "bindings_index_controller.json"
+    },
+    {
+      "controller_type": "oculus_touch",
+      "binding_url": "bindings_oculus_touch.json"
     }
   ],
   "action_sets": [
@@ -61,6 +69,26 @@
       "name": "/actions/svrbridge/in/right_trackpad",
       "requirement": "optional",
       "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/left_face1",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/left_face2",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/right_face1",
+      "requirement": "optional",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/svrbridge/in/right_face2",
+      "requirement": "optional",
+      "type": "boolean"
     }
   ],
   "localization": [
@@ -76,7 +104,11 @@
       "/actions/svrbridge/in/left_trigger": "Left Trigger",
       "/actions/svrbridge/in/right_trigger": "Right Trigger",
       "/actions/svrbridge/in/left_trackpad": "Left Trackpad",
-      "/actions/svrbridge/in/right_trackpad": "Right Trackpad"
+      "/actions/svrbridge/in/right_trackpad": "Right Trackpad",
+      "/actions/svrbridge/in/left_face1": "Left Face Button 1",
+      "/actions/svrbridge/in/left_face2": "Left Face Button 2",
+      "/actions/svrbridge/in/right_face1": "Right Face Button 1",
+      "/actions/svrbridge/in/right_face2": "Right Face Button 2"
     }
   ]
 }

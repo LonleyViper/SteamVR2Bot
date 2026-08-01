@@ -21,6 +21,10 @@ internal static class SelfTests
         TestCooldown();
         TestPhysicalControllerInputs();
         TestAvailableControllerInputs();
+        TestAvailableInputsPerFamily();
+        TestFriendlyNamesForFaceButtonsAndStick();
+        TestFaceButtonActionsMapToExpectedButtonNumbers();
+        TestIndexAndTouchBindingFilesAreConsistentWithActionsManifest();
         TestDashboardPointerTracking();
         TestInputProbe();
         TestBodyFrame();
@@ -45,6 +49,7 @@ internal static class SelfTests
         await TestSteamVrSessionRestartAsync();
         await TestRuntimeStartsWithNoShortcutsAsync();
         await TestRuntimeStartsWithMalformedStreamerBotAddressAsync();
+        await TestWorkerCrashedExceptionStopsWithoutRetryingAsync();
         Console.WriteLine(
             "SELF-TEST PASS: chord detection, physical controller mapping, authentication, SteamVR worker " +
             "recovery, Streamer.bot restart recovery, no-duplicate delivery, " +
@@ -112,6 +117,383 @@ internal static class SelfTests
                               && input.FriendlyName == "Left Trigger"),
             "The Vive input picker omitted Left Trigger.");
     }
+
+    private static void TestAvailableInputsPerFamily()
+    {
+        var cases = new[]
+        {
+            (Type: "vive_controller", Hand: ControllerHand.Left, Buttons: new uint[] { 1, 2, 33, 32 }),
+            (Type: "vive_controller", Hand: ControllerHand.Right, Buttons: new uint[] { 1, 2, 33, 32 }),
+            (Type: "knuckles", Hand: ControllerHand.Left, Buttons: new uint[] { 2, 33, 32, 7, 34 }),
+            (Type: "knuckles", Hand: ControllerHand.Right, Buttons: new uint[] { 2, 33, 32, 7, 34 }),
+            (Type: "oculus_touch", Hand: ControllerHand.Left, Buttons: new uint[] { 1, 2, 33, 32, 7, 34 }),
+            (Type: "oculus_touch", Hand: ControllerHand.Right, Buttons: new uint[] { 2, 33, 32, 7, 34 }),
+            (Type: "unrecognised_controller", Hand: ControllerHand.Left, Buttons: new uint[] { 2, 33, 32 }),
+            (Type: "unrecognised_controller", Hand: ControllerHand.Right, Buttons: new uint[] { 2, 33, 32 })
+        };
+
+        foreach (var testCase in cases)
+        {
+            var inputs = ControllerInputs.AvailableInputs(
+                testCase.Hand,
+                ControllerSetupFor(testCase.Type));
+            var expectedIds = testCase.Buttons.Select(
+                button => $"{testCase.Hand.ToString().ToLowerInvariant()}:{button}");
+
+            Assert(
+                inputs.Select(input => input.Id).SequenceEqual(expectedIds),
+                $"{testCase.Type} {testCase.Hand} inputs did not match the exact ordered capability set.");
+        }
+
+        var index = ControllerSetupFor("knuckles");
+        Assert(
+            !ControllerInputs.AvailableInputs(ControllerHand.Left, index).Any(input => input.Id == "left:1")
+            && !ControllerInputs.AvailableInputs(ControllerHand.Right, index).Any(input => input.Id == "right:1"),
+            "Index offered an application-menu input even though Knuckles has none.");
+
+        var touch = ControllerSetupFor("oculus_touch");
+        Assert(
+            ControllerInputs.AvailableInputs(ControllerHand.Left, touch).Any(input => input.Id == "left:1"),
+            "Touch omitted the left application-menu input.");
+        Assert(
+            !ControllerInputs.AvailableInputs(ControllerHand.Right, touch).Any(input => input.Id == "right:1"),
+            "Touch offered the reserved right Oculus/system button.");
+    }
+
+    private static void TestFriendlyNamesForFaceButtonsAndStick()
+    {
+        var index = ControllerSetupFor("knuckles");
+        Assert(
+            ControllerInputs.FriendlyName(ControllerHand.Left, 7, index) == "Left A Button"
+            && ControllerInputs.FriendlyName(ControllerHand.Left, 34, index) == "Left B Button"
+            && ControllerInputs.FriendlyName(ControllerHand.Right, 7, index) == "Right A Button"
+            && ControllerInputs.FriendlyName(ControllerHand.Right, 34, index) == "Right B Button",
+            "Index face-button labels were not A/B on both hands.");
+        Assert(
+            ControllerInputs.FriendlyName(ControllerHand.Left, 32, index) == "Left Thumbstick",
+            "Index button 32 was not labelled as a thumbstick.");
+
+        var touch = ControllerSetupFor("oculus_touch");
+        Assert(
+            ControllerInputs.FriendlyName(ControllerHand.Left, 7, touch) == "Left X Button"
+            && ControllerInputs.FriendlyName(ControllerHand.Left, 34, touch) == "Left Y Button"
+            && ControllerInputs.FriendlyName(ControllerHand.Right, 7, touch) == "Right A Button"
+            && ControllerInputs.FriendlyName(ControllerHand.Right, 34, touch) == "Right B Button",
+            "Touch face-button labels did not preserve the X/Y-left and A/B-right asymmetry.");
+        Assert(
+            ControllerInputs.FriendlyName(ControllerHand.Right, 32, touch) == "Right Thumbstick",
+            "Touch button 32 was not labelled as a thumbstick.");
+
+        var vive = ControllerSetupFor("vive_controller");
+        var unknown = ControllerSetupFor("unrecognised_controller");
+        Assert(
+            ControllerInputs.FriendlyName(ControllerHand.Left, 32, vive) == "Left Trackpad",
+            "Vive button 32 stopped using trackpad terminology.");
+        Assert(
+            ControllerInputs.FriendlyName(ControllerHand.Left, 32, unknown)
+            == "Left Thumbstick / Trackpad",
+            "An unknown controller guessed one specific button-32 control type.");
+    }
+
+    private static void TestFaceButtonActionsMapToExpectedButtonNumbers()
+    {
+        var expected = new[]
+        {
+            (Path: "/actions/svrbridge/in/left_face1", Hand: ControllerHand.Left, Button: 7U),
+            (Path: "/actions/svrbridge/in/left_face2", Hand: ControllerHand.Left, Button: 34U),
+            (Path: "/actions/svrbridge/in/right_face1", Hand: ControllerHand.Right, Button: 7U),
+            (Path: "/actions/svrbridge/in/right_face2", Hand: ControllerHand.Right, Button: 34U)
+        };
+
+        foreach (var expectedAction in expected)
+        {
+            var (left, right) = OpenVrInput.MapPhysicalActionStates(
+                (_, _, actionPath, _) => actionPath == expectedAction.Path);
+            var expectedLeft = expectedAction.Hand == ControllerHand.Left
+                ? 1UL << (int)expectedAction.Button
+                : 0;
+            var expectedRight = expectedAction.Hand == ControllerHand.Right
+                ? 1UL << (int)expectedAction.Button
+                : 0;
+
+            Assert(
+                left == expectedLeft && right == expectedRight,
+                $"Digital action {expectedAction.Path} did not set only {expectedAction.Hand} button {expectedAction.Button}.");
+
+            var snapshot = new InputSnapshot(false, false, left, right);
+            var binding = ControllerInputBinding.Physical(
+                expectedAction.Hand,
+                expectedAction.Button,
+                "test face button");
+            Assert(
+                binding.IsPressed(snapshot),
+                $"The bit set by {expectedAction.Path} did not reach ControllerInputBinding.IsPressed.");
+
+            var recorded = ControllerInputs.PressedInputs(snapshot, ControllerSetupFor("knuckles"));
+            Assert(
+                recorded.Count == 1 && recorded[0].Id == binding.Id,
+                $"The bit set by {expectedAction.Path} did not reach physical-input recording.");
+        }
+    }
+
+    private static void TestIndexAndTouchBindingFilesAreConsistentWithActionsManifest()
+    {
+        var assetsDirectory = AppContext.BaseDirectory;
+        using var actionsDocument = JsonDocument.Parse(
+            File.ReadAllText(Path.Combine(assetsDirectory, "actions.json")));
+        var actionPaths = actionsDocument.RootElement
+            .GetProperty("actions")
+            .EnumerateArray()
+            .Select(action => action.GetProperty("name").GetString()!)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var defaultBindings = actionsDocument.RootElement
+            .GetProperty("default_bindings")
+            .EnumerateArray()
+            .ToDictionary(
+                binding => binding.GetProperty("controller_type").GetString()!,
+                binding => binding.GetProperty("binding_url").GetString()!,
+                StringComparer.Ordinal);
+        Assert(
+            defaultBindings.TryGetValue("vive_controller", out var viveFile)
+            && viveFile == "bindings_vive_controller.json"
+            && defaultBindings.TryGetValue("knuckles", out var indexFile)
+            && indexFile == "bindings_index_controller.json"
+            && defaultBindings.TryGetValue("oculus_touch", out var touchFile)
+            && touchFile == "bindings_oculus_touch.json",
+            "actions.json did not register the exact Vive, Index, and Touch default binding files.");
+
+        var expectedMappings = new Dictionary<string, (string Path, string Output)[]>(StringComparer.Ordinal)
+        {
+            ["bindings_vive_controller.json"] =
+            [
+                ("/user/hand/left/input/application_menu", "/actions/svrbridge/in/left_menu"),
+                ("/user/hand/right/input/application_menu", "/actions/svrbridge/in/right_menu"),
+                ("/user/hand/left/input/grip", "/actions/svrbridge/in/left_grip"),
+                ("/user/hand/right/input/grip", "/actions/svrbridge/in/right_grip"),
+                ("/user/hand/left/input/trigger", "/actions/svrbridge/in/left_trigger"),
+                ("/user/hand/right/input/trigger", "/actions/svrbridge/in/right_trigger"),
+                ("/user/hand/left/input/trackpad", "/actions/svrbridge/in/left_trackpad"),
+                ("/user/hand/right/input/trackpad", "/actions/svrbridge/in/right_trackpad")
+            ],
+            ["bindings_index_controller.json"] =
+            [
+                ("/user/hand/left/input/grip", "/actions/svrbridge/in/left_grip"),
+                ("/user/hand/right/input/grip", "/actions/svrbridge/in/right_grip"),
+                ("/user/hand/left/input/trigger", "/actions/svrbridge/in/left_trigger"),
+                ("/user/hand/right/input/trigger", "/actions/svrbridge/in/right_trigger"),
+                ("/user/hand/left/input/thumbstick", "/actions/svrbridge/in/left_trackpad"),
+                ("/user/hand/right/input/thumbstick", "/actions/svrbridge/in/right_trackpad"),
+                ("/user/hand/left/input/a", "/actions/svrbridge/in/left_face1"),
+                ("/user/hand/left/input/b", "/actions/svrbridge/in/left_face2"),
+                ("/user/hand/right/input/a", "/actions/svrbridge/in/right_face1"),
+                ("/user/hand/right/input/b", "/actions/svrbridge/in/right_face2")
+            ],
+            ["bindings_oculus_touch.json"] =
+            [
+                ("/user/hand/left/input/system", "/actions/svrbridge/in/left_menu"),
+                ("/user/hand/left/input/grip", "/actions/svrbridge/in/left_grip"),
+                ("/user/hand/right/input/grip", "/actions/svrbridge/in/right_grip"),
+                ("/user/hand/left/input/trigger", "/actions/svrbridge/in/left_trigger"),
+                ("/user/hand/right/input/trigger", "/actions/svrbridge/in/right_trigger"),
+                ("/user/hand/left/input/joystick", "/actions/svrbridge/in/left_trackpad"),
+                ("/user/hand/right/input/joystick", "/actions/svrbridge/in/right_trackpad"),
+                ("/user/hand/left/input/x", "/actions/svrbridge/in/left_face1"),
+                ("/user/hand/left/input/y", "/actions/svrbridge/in/left_face2"),
+                ("/user/hand/right/input/a", "/actions/svrbridge/in/right_face1"),
+                ("/user/hand/right/input/b", "/actions/svrbridge/in/right_face2")
+            ]
+        };
+
+        var controllerTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["bindings_vive_controller.json"] = "vive_controller",
+            ["bindings_index_controller.json"] = "knuckles",
+            ["bindings_oculus_touch.json"] = "oculus_touch"
+        };
+
+        foreach (var (fileName, expected) in expectedMappings)
+        {
+            var (controllerType, sources) = ReadBindingFile(
+                Path.Combine(assetsDirectory, fileName));
+            Assert(
+                controllerType == controllerTypes[fileName],
+                $"{fileName} declared controller type '{controllerType}' instead of '{controllerTypes[fileName]}'.");
+            Assert(
+                sources.Count == expected.Length,
+                $"{fileName} contained an unexpected number of bound inputs.");
+            Assert(
+                sources.All(source => actionPaths.Contains(source.Output)),
+                $"{fileName} referenced a misspelled or nonexistent action path.");
+
+            foreach (var mapping in expected)
+            {
+                Assert(
+                    sources.Any(source =>
+                        source.Path == mapping.Path && source.Output == mapping.Output),
+                    $"{fileName} did not bind {mapping.Path} to {mapping.Output}.");
+            }
+
+            // The manifest's legacy button_one/button_two actions may remain
+            // unbound: Poll applies the same default through the physical
+            // left-grip/right-trigger actions. Drive that exact production
+            // fallback here so every family proves the same gesture rather
+            // than merely containing two plausible-looking JSON entries.
+            var defaultOutputs = new HashSet<string>(
+                sources
+                    .Where(source =>
+                        source.Path == "/user/hand/left/input/grip"
+                        || source.Path == "/user/hand/right/input/trigger")
+                    .Select(source => source.Output),
+                StringComparer.Ordinal);
+            var masks = OpenVrInput.MapPhysicalActionStates(
+                (_, _, actionPath, _) => defaultOutputs.Contains(actionPath));
+            var defaultGesture = OpenVrInput.MapDefaultGestureActions(
+                false,
+                false,
+                masks.Left,
+                masks.Right);
+            Assert(
+                defaultGesture.ButtonOne && defaultGesture.ButtonTwo,
+                $"{fileName} did not produce Button One from left grip and Button Two from right trigger.");
+        }
+
+        var indexSources = ReadBindingFile(
+            Path.Combine(assetsDirectory, "bindings_index_controller.json")).Sources;
+        AssertBindingParameters(
+            indexSources,
+            "/user/hand/left/input/grip",
+            "button",
+            "0.8",
+            "0.65",
+            "force");
+        AssertBindingParameters(
+            indexSources,
+            "/user/hand/right/input/grip",
+            "button",
+            "0.8",
+            "0.65",
+            "force");
+        Assert(
+            indexSources.Where(source => source.Path.EndsWith("/input/trigger", StringComparison.Ordinal))
+                .All(source => source.Mode == "trigger"),
+            "Index triggers did not use their genuine trigger click output.");
+
+        var touchSources = ReadBindingFile(
+            Path.Combine(assetsDirectory, "bindings_oculus_touch.json")).Sources;
+        AssertBindingParameters(
+            touchSources,
+            "/user/hand/left/input/grip",
+            "button",
+            "0.65",
+            "0.5");
+        AssertBindingParameters(
+            touchSources,
+            "/user/hand/right/input/grip",
+            "button",
+            "0.65",
+            "0.5");
+        AssertBindingParameters(
+            touchSources,
+            "/user/hand/left/input/trigger",
+            "button",
+            "0.65",
+            "0.6");
+        AssertBindingParameters(
+            touchSources,
+            "/user/hand/right/input/trigger",
+            "button",
+            "0.65",
+            "0.6");
+        Assert(
+            touchSources.All(source => source.Path != "/user/hand/right/input/system"),
+            "The Touch binding claimed the reserved right Oculus/system button.");
+    }
+
+    private static ControllerSetup ControllerSetupFor(string controllerType) =>
+        new(
+            [
+                new ControllerDevice(controllerType, controllerType, "Left", controllerType),
+                new ControllerDevice(controllerType, controllerType, "Right", controllerType)
+            ],
+            null,
+            null,
+            BindingAvailability.Ready,
+            $"{controllerType} controllers detected.",
+            controllerType == "vive_controller");
+
+    private static (string ControllerType, IReadOnlyList<ParsedBindingSource> Sources)
+        ReadBindingFile(string path)
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var root = document.RootElement;
+        var sources = new List<ParsedBindingSource>();
+        foreach (var source in root
+                     .GetProperty("bindings")
+                     .GetProperty("/actions/svrbridge")
+                     .GetProperty("sources")
+                     .EnumerateArray())
+        {
+            var sourcePath = source.GetProperty("path").GetString()!;
+            var mode = source.GetProperty("mode").GetString()!;
+            var parameters = source.TryGetProperty("parameters", out var parametersElement)
+                ? parametersElement.EnumerateObject().ToDictionary(
+                    property => property.Name,
+                    property => property.Value.ToString(),
+                    StringComparer.Ordinal)
+                : new Dictionary<string, string>(StringComparer.Ordinal);
+
+            foreach (var input in source.GetProperty("inputs").EnumerateObject())
+            {
+                if (input.Value.TryGetProperty("output", out var output))
+                {
+                    sources.Add(
+                        new ParsedBindingSource(
+                            sourcePath,
+                            mode,
+                            output.GetString()!,
+                            parameters));
+                }
+            }
+        }
+
+        return (root.GetProperty("controller_type").GetString()!, sources);
+    }
+
+    private static void AssertBindingParameters(
+        IReadOnlyList<ParsedBindingSource> sources,
+        string path,
+        string mode,
+        string activation,
+        string deactivation,
+        string? forceInput = null)
+    {
+        var source = sources.Single(candidate => candidate.Path == path);
+        Assert(source.Mode == mode, $"{path} used binding mode {source.Mode} instead of {mode}.");
+        Assert(
+            source.Parameters.TryGetValue("click_activate_threshold", out var actualActivation)
+            && actualActivation == activation
+            && source.Parameters.TryGetValue("click_deactivate_threshold", out var actualDeactivation)
+            && actualDeactivation == deactivation,
+            $"{path} did not preserve its documented {activation}/{deactivation} hysteresis thresholds.");
+        Assert(
+            double.Parse(deactivation, System.Globalization.CultureInfo.InvariantCulture)
+            < double.Parse(activation, System.Globalization.CultureInfo.InvariantCulture),
+            $"{path} did not deactivate below its activation threshold.");
+        if (forceInput is not null)
+        {
+            Assert(
+                source.Parameters.TryGetValue("force_input", out var actualForceInput)
+                && actualForceInput == forceInput,
+                $"{path} did not use the Index controller's force input.");
+        }
+    }
+
+    private sealed record ParsedBindingSource(
+        string Path,
+        string Mode,
+        string Output,
+        IReadOnlyDictionary<string, string> Parameters);
 
     private static void TestDashboardPointerTracking()
     {
@@ -2183,6 +2565,57 @@ internal static class SelfTests
         await run;
     }
 
+    /// <summary>
+    /// Regression test for the bug that shipped a missing WPF native DLL: the
+    /// worker crashing with an unhandled exception was indistinguishable from
+    /// SteamVR merely being unavailable, so the engine looped the SteamVR
+    /// reconnect ladder over a fault that would recur identically on every
+    /// attempt, and the activity log filled with "Waiting for SteamVR"
+    /// instead of anything the user could act on. Proves
+    /// <c>WorkerCrashedException</c> ends <see cref="BridgeEngine.RunAsync"/>
+    /// outright - no reconnect delay, no further connection attempt - and
+    /// reports it distinctly rather than as a dropped SteamVR connection.
+    /// </summary>
+    private static async Task TestWorkerCrashedExceptionStopsWithoutRetryingAsync()
+    {
+        var factory = new CrashingOpenVrSessionFactory();
+        var engine = new BridgeEngine(factory);
+        BridgeStatus? finalStatus = null;
+        var sawSteamVrReconnectWording = false;
+        engine.StatusChanged += status =>
+        {
+            finalStatus = status;
+            sawSteamVrReconnectWording |= status.FriendlyName == "Waiting for SteamVR";
+        };
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var config = new AppConfig
+        {
+            ActionManifestPath = Path.Combine(AppContext.BaseDirectory, "actions.json"),
+            PollIntervalMs = 1,
+            StreamerBot = new StreamerBotConfig { ActionName = "", ActionId = null, DryRun = true },
+            Shortcuts = []
+        };
+
+        // No cancellation needed: a fixed WorkerCrashedException must make
+        // RunAsync return on its own well inside the timeout, not merely
+        // survive until one is imposed - that is the entire behaviour under
+        // test, so awaiting it directly (rather than racing a signal and
+        // cancelling) is the assertion.
+        await engine.RunAsync(config, timeout.Token).WaitAsync(TimeSpan.FromSeconds(4));
+
+        Assert(factory.ConnectionCount == 1, "The engine reconnected after a worker crash instead of stopping.");
+        Assert(
+            !sawSteamVrReconnectWording,
+            "A worker crash was reported as an ordinary SteamVR dropout.");
+        Assert(
+            finalStatus is { State: BridgeState.Error, FriendlyName: "SteamVR2Bot cannot continue" },
+            "A worker crash did not leave a distinct, actionable final status.");
+        Assert(
+            finalStatus!.Detail.Contains("PresentationNative_cor3.dll", StringComparison.Ordinal),
+            "The final status dropped the specific detail naming what failed.");
+    }
+
     private static async Task RunMockStreamerBotAsync(
         HttpListener listener,
         CancellationToken cancellationToken,
@@ -2342,6 +2775,55 @@ internal static class SelfTests
     private sealed class ReadyOpenVrSession : IOpenVrSession
     {
         public InputSnapshot Poll() => default;
+
+        public ControllerSetup GetControllerSetup() => new(
+            [],
+            null,
+            null,
+            BindingAvailability.Ready,
+            "Test controllers ready.",
+            false);
+
+        public void OpenBindingUi()
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    /// <summary>
+    /// A SteamVR session that connects successfully but then fails its first
+    /// poll with <see cref="WorkerCrashedException"/>, standing in for the
+    /// real worker crashing on a missing native DLL - never a second
+    /// connection, since <c>RunAsync</c> must not retry this.
+    /// </summary>
+    private sealed class CrashingOpenVrSessionFactory : IOpenVrSessionFactory
+    {
+        private int _connectionCount;
+
+        public int ConnectionCount => _connectionCount;
+
+        public Task<IOpenVrSession> ConnectAsync(
+            AppConfig config,
+            string actionManifest,
+            Action<string> log,
+            CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _connectionCount);
+            return Task.FromResult<IOpenVrSession>(new CrashingOpenVrSession());
+        }
+    }
+
+    private sealed class CrashingOpenVrSession : IOpenVrSession
+    {
+        public InputSnapshot Poll() =>
+            throw new WorkerCrashedException(
+                "SteamVR2Bot could not load PresentationNative_cor3.dll and cannot "
+                + "continue. This normally means SteamVR2Bot.exe is running without "
+                + "the rest of its published folder - run it from inside the "
+                + "complete extracted publish folder, not moved out on its own.");
 
         public ControllerSetup GetControllerSetup() => new(
             [],

@@ -41,8 +41,83 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
         new(ControllerHand.Left, 33, "/actions/svrbridge/in/left_trigger"),
         new(ControllerHand.Right, 33, "/actions/svrbridge/in/right_trigger"),
         new(ControllerHand.Left, 32, "/actions/svrbridge/in/left_trackpad"),
-        new(ControllerHand.Right, 32, "/actions/svrbridge/in/right_trackpad")
+        new(ControllerHand.Right, 32, "/actions/svrbridge/in/right_trackpad"),
+        // Index A/B and Touch X/Y share these two slots - see
+        // ControllerInputs.FriendlyName, which is what actually decides
+        // which physical label button 7/34 reads as for a given hand and
+        // controller type. The action names stay neutral ("face1"/"face2")
+        // on purpose: one pair of actions serves every family that has a
+        // face-button pair, rather than one named for Index and a duplicate
+        // named for Touch.
+        new(ControllerHand.Left, 7, "/actions/svrbridge/in/left_face1"),
+        new(ControllerHand.Left, 34, "/actions/svrbridge/in/left_face2"),
+        new(ControllerHand.Right, 7, "/actions/svrbridge/in/right_face1"),
+        new(ControllerHand.Right, 34, "/actions/svrbridge/in/right_face2")
     ];
+
+    /// <summary>
+    /// The physical-input to action-path wiring <see cref="ReadControllerButtons"/>
+    /// uses to assemble each hand's bitmask - the same array, not a parallel
+    /// copy. Public and data-only (no native call) so a self-test can prove a
+    /// new action path is wired to the exact button number
+    /// <see cref="ControllerInputs.AvailableInputs"/> and
+    /// <see cref="ControllerInputs.FriendlyName"/> already expect, without a
+    /// live OpenVR session.
+    /// </summary>
+    public static IReadOnlyList<(ControllerHand Hand, uint Button, string ActionPath)> PhysicalActionMap { get; } =
+        Array.ConvertAll(
+            PhysicalActions,
+            definition => (definition.Hand, definition.Button, definition.ActionPath));
+
+    /// <summary>
+    /// Reads the declared physical actions and assembles the exact per-hand
+    /// bitmasks consumed by recording and gesture detection. This is the
+    /// production mapping seam used by <see cref="ReadControllerButtons"/>;
+    /// it is public and native-free so the self-test can drive one digital
+    /// action at a time and prove its resulting button number.
+    /// </summary>
+    public static (ulong Left, ulong Right) MapPhysicalActionStates(
+        Func<ControllerHand, uint, string, string, bool> isPressed)
+    {
+        ulong left = 0;
+        ulong right = 0;
+        foreach (var definition in PhysicalActions)
+        {
+            if (!isPressed(
+                    definition.Hand,
+                    definition.Button,
+                    definition.ActionPath,
+                    definition.ProbeName))
+            {
+                continue;
+            }
+
+            if (definition.Hand == ControllerHand.Left)
+            {
+                left |= 1UL << (int)definition.Button;
+            }
+            else
+            {
+                right |= 1UL << (int)definition.Button;
+            }
+        }
+
+        return (left, right);
+    }
+
+    /// <summary>
+    /// Applies the physical-input fallback that keeps the packaged default
+    /// gesture working even when the legacy logical actions are unbound:
+    /// left grip is Button One and right trigger is Button Two. The runtime
+    /// and binding-consistency self-test share this exact method.
+    /// </summary>
+    public static (bool ButtonOne, bool ButtonTwo) MapDefaultGestureActions(
+        bool buttonOne,
+        bool buttonTwo,
+        ulong leftButtons,
+        ulong rightButtons) =>
+        (buttonOne || IsPressed(leftButtons, 2),
+         buttonTwo || IsPressed(rightButtons, 33));
 
     private readonly nint _library;
     private readonly VrShutdownInternal _shutdown;
@@ -251,9 +326,14 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
         }
 
         var (leftButtons, rightButtons) = ReadControllerButtons();
+        var (buttonOne, buttonTwo) = MapDefaultGestureActions(
+            ReadDigital(_buttonOne, "button_one"),
+            ReadDigital(_buttonTwo, "button_two"),
+            leftButtons,
+            rightButtons);
         var snapshot = new InputSnapshot(
-            ReadDigital(_buttonOne, "button_one") || IsPressed(leftButtons, 2),
-            ReadDigital(_buttonTwo, "button_two") || IsPressed(rightButtons, 33),
+            buttonOne,
+            buttonTwo,
             leftButtons,
             rightButtons);
         _probe.EndPoll(Environment.TickCount64);
@@ -1400,30 +1480,9 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
     }
 
     private (ulong Left, ulong Right) ReadControllerButtons()
-    {
-        ulong left = 0;
-        ulong right = 0;
-        foreach (var definition in PhysicalActions)
-        {
-            if (!ReadDigital(
-                    _physicalButtons[(definition.Hand, definition.Button)],
-                    definition.ProbeName))
-            {
-                continue;
-            }
-
-            if (definition.Hand == ControllerHand.Left)
-            {
-                left |= 1UL << (int)definition.Button;
-            }
-            else
-            {
-                right |= 1UL << (int)definition.Button;
-            }
-        }
-
-        return (left, right);
-    }
+        => MapPhysicalActionStates(
+            (hand, button, _, probeName) =>
+                ReadDigital(_physicalButtons[(hand, button)], probeName));
 
     private static bool IsPressed(ulong buttons, uint button) =>
         (buttons & (1UL << (int)button)) != 0;
