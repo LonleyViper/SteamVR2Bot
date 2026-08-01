@@ -7,7 +7,17 @@ internal sealed class MainForm : Form
 {
     private readonly Label _statusName = new();
     private readonly Label _statusDetail = new();
-    private readonly Panel _statusPanel = new();
+
+    // A FlowLayoutPanel rather than a plain Panel: it needs to autosize to
+    // its two stacked labels rather than carry a fixed height. See
+    // CreateStatusCard's remarks.
+    private readonly FlowLayoutPanel _statusPanel = new()
+    {
+        FlowDirection = FlowDirection.TopDown,
+        WrapContents = false,
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink
+    };
     private readonly Label _controllerFamily = new();
     private readonly Label _bindingDetail = new();
     private readonly DataGridView _shortcuts = new();
@@ -495,35 +505,53 @@ internal sealed class MainForm : Form
         activityTab.Controls.Add(CreateActivityPage());
     }
 
+    // CreateHeader and CreateStatusCard used to be a fixed-Height Panel with
+    // its labels manually placed at hardcoded Point offsets - tuned to fit a
+    // 22pt title and a status line at 100% text size. Windows' "text size"
+    // accessibility setting (distinct from, and invisible to, the per-monitor
+    // DPI scaling AutoScaleMode.Dpi already handles) scales rendered text
+    // without ever resizing the box it sits in, so on a system with that
+    // setting raised the second line landed lower than the fixed box was
+    // tall and overlapped whatever came next. A top-down AutoSize
+    // FlowLayoutPanel - the same pattern Section() already uses successfully
+    // below - sizes itself from its labels' actual rendered height instead
+    // of a guess, so it grows with them no matter what set the text size.
     private Control CreateHeader()
     {
-        var panel = new Panel { Height = 72, Dock = DockStyle.Top };
+        var panel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top
+        };
         panel.Controls.Add(new Label
         {
             Text = "SteamVR2Bot",
             Font = new Font(Font.FontFamily, 22, FontStyle.Bold),
             AutoSize = true,
-            Location = new Point(0, 0)
+            Margin = new Padding(0)
         });
         panel.Controls.Add(new Label
         {
             Text = "Connect friendly controller shortcuts to Streamer.bot actions.",
             AutoSize = true,
             ForeColor = Color.FromArgb(92, 101, 112),
-            Location = new Point(2, 42)
+            Margin = new Padding(2, 4, 0, 8)
         });
         return panel;
     }
 
     private Control CreateStatusCard()
     {
-        _statusPanel.Height = 72;
         _statusPanel.Dock = DockStyle.Top;
-        _statusPanel.Padding = new Padding(16, 12, 16, 10);
+        _statusPanel.Padding = new Padding(16, 12, 16, 12);
         _statusName.AutoSize = true;
         _statusName.Font = new Font(Font, FontStyle.Bold);
+        _statusName.Margin = new Padding(0);
         _statusDetail.AutoSize = true;
-        _statusDetail.Location = new Point(16, 39);
+        _statusDetail.Margin = new Padding(0, 4, 0, 0);
         _statusPanel.Controls.AddRange([_statusName, _statusDetail]);
         return _statusPanel;
     }
@@ -600,17 +628,28 @@ internal sealed class MainForm : Form
     }
 
     // --- Settings page layout ---
-    // Every setting row puts its label in a column of this fixed width, so
-    // the controls beside them line up down the page. The previous layout
-    // gave each row its own AutoSize label, which meant the control after it
-    // started at a different x on every single row - three "Pick…" buttons in
-    // a column of three landed in three different places. A fixed column is
-    // the whole fix; nothing here is cleverer than that.
-    private const int LabelColumnWidth = 300;
-    private const int RowControlHeight = 26;
+    // Every setting row puts its label in a column of the same width, so the
+    // controls beside them line up down the page - three "Pick…" buttons in a
+    // column of three previously landed in three different places without
+    // this. That column used to be a hardcoded 300x26 pixels, tuned to fit
+    // the longest label ("Background image (optional):") at 100% text size.
+    // Windows' "text size" accessibility setting scales rendered text
+    // without resizing anything laid out in fixed pixels and without
+    // triggering the DPI-changed notification AutoScaleMode.Dpi reacts to,
+    // so raising it clipped every label in the column - "WebSocket address:"
+    // and friends were cut off mid-word. AlignSettingRowLabels measures each
+    // RowLabel's own actual rendered size after the whole page is built and
+    // gives all of them the widest one's width, so the column is always
+    // exactly as wide as it needs to be for whatever text size is in effect,
+    // and no wider.
+    private const int LabelColumnHorizontalPadding = 10;
+    private const int LabelColumnVerticalPadding = 8;
 
     /// <summary>The page's own left edge for section bodies, so every section indents identically.</summary>
     private const int SectionBodyIndent = 14;
+
+    /// <summary>Marks a <see cref="SettingRow"/> label so <see cref="AlignSettingRowLabels"/> can find every one of them once the page is fully built.</summary>
+    private sealed class RowLabel : Label;
 
     private Control CreateSettingsPage()
     {
@@ -639,7 +678,51 @@ internal sealed class MainForm : Form
             ForeColor = MutedForeColour,
             Margin = new Padding(0, 18, 0, 0)
         });
+
+        AlignSettingRowLabels(panel);
         return panel;
+    }
+
+    /// <summary>
+    /// Gives every <see cref="RowLabel"/> on the settings page the same
+    /// width and height, measured from each label's own <see
+    /// cref="Control.PreferredSize"/> - i.e. its actual rendered text at
+    /// whatever font, DPI and text-size scale is currently in effect -
+    /// rather than a constant tuned for one of those. Must run after every
+    /// section has already been added to <paramref name="root"/>: it walks
+    /// the tree it is handed and does nothing for labels added later.
+    /// </summary>
+    private static void AlignSettingRowLabels(Control root)
+    {
+        var labels = FindRowLabels(root).ToList();
+        if (labels.Count == 0)
+        {
+            return;
+        }
+
+        var columnWidth = labels.Max(label => label.PreferredSize.Width) + LabelColumnHorizontalPadding;
+        var rowHeight = labels.Max(label => label.PreferredSize.Height) + LabelColumnVerticalPadding;
+        foreach (var label in labels)
+        {
+            label.AutoSize = false;
+            label.Size = new Size(columnWidth, rowHeight);
+        }
+    }
+
+    private static IEnumerable<RowLabel> FindRowLabels(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            if (child is RowLabel rowLabel)
+            {
+                yield return rowLabel;
+            }
+
+            foreach (var nested in FindRowLabels(child))
+            {
+                yield return nested;
+            }
+        }
     }
 
     /// <summary>Where and how to reach Streamer.bot, and whether to listen to it at all.</summary>
@@ -807,13 +890,16 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>
-    /// One setting: its label in a fixed-width column, then its controls.
+    /// One setting: its label in a column shared with every other row, then
+    /// its controls.
     /// <para>
-    /// The fixed column is the entire point. Every row used to size its own
+    /// The shared column is the entire point. Every row used to size its own
     /// label, so the control after it began at whatever x that label happened
     /// to end at - which is why three colour rows put their three identical
     /// "Pick…" buttons in three different places. Nothing here is cleverer
-    /// than giving them all the same column to start from.
+    /// than giving them all the same column to start from; see
+    /// <see cref="AlignSettingRowLabels"/> for how that column's width is
+    /// actually decided.
     /// </para>
     /// </summary>
     private static Control SettingRow(string label, params Control[] controls)
@@ -825,12 +911,10 @@ internal sealed class MainForm : Form
             WrapContents = false,
             Margin = new Padding(SectionBodyIndent, 0, 0, 8)
         };
-        row.Controls.Add(new Label
+        row.Controls.Add(new RowLabel
         {
             Text = label,
-            AutoSize = false,
-            Width = LabelColumnWidth,
-            Height = RowControlHeight,
+            AutoSize = true,
             TextAlign = ContentAlignment.MiddleLeft,
             Margin = new Padding(0, 0, 8, 0)
         });
@@ -969,13 +1053,15 @@ internal sealed class MainForm : Form
                 _clearTemplatePath));
     }
 
+    // Both of these get their Margin overwritten by SettingRow, which sets
+    // the same right-hand gap on every control it lines up - only AutoSize
+    // and TextAlign here are actually theirs.
+
     /// <summary>The inline second label on the transition row - "Slide from:" only qualifies the combo beside it, so it does not get a column of its own.</summary>
     private static Label SlideFromLabel() => new()
     {
         Text = "Slide from:",
-        AutoSize = false,
-        Width = 76,
-        Height = RowControlHeight,
+        AutoSize = true,
         TextAlign = ContentAlignment.MiddleLeft
     };
 
@@ -983,9 +1069,7 @@ internal sealed class MainForm : Form
     private static Label PanelSizeByLabel() => new()
     {
         Text = "×",
-        AutoSize = false,
-        Width = 16,
-        Height = RowControlHeight,
+        AutoSize = true,
         TextAlign = ContentAlignment.MiddleCenter
     };
 
