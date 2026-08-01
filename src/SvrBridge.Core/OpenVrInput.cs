@@ -95,7 +95,9 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
             NativeLibrary.Free(_library);
             throw new InvalidOperationException(
                 initError == VrInitError.NoServerForBackgroundApp
-                    ? "SteamVR is not running."
+                    ? "Could not reach SteamVR. Either it is not running, or it is running as "
+                      + "administrator while this app is not - launch both elevated, or neither, "
+                      + "and make sure SteamVR is fully started first."
                     : $"OpenVR initialization failed: {initError} ({(int)initError}).");
         }
 
@@ -1612,7 +1614,17 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
     private enum VrInitError
     {
         None = 0,
-        NoServerForBackgroundApp = 312
+
+        // The value SteamVR actually returns for this case
+        // (VRInitError_Init_NoServerForBackgroundApp in openvr.h) is 121, not
+        // 312. That mismatch meant the friendly "SteamVR is not running."
+        // message below never fired against a real SteamVR - callers saw the
+        // raw "OpenVR initialization failed: 121 (121)." fallback instead,
+        // including the specific case this exists for: SteamVR launched
+        // elevated (Run as administrator) while this app is not, which
+        // blocks the client from reaching SteamVR's IPC server even though
+        // SteamVR is genuinely running.
+        NoServerForBackgroundApp = 121
     }
 
     private enum VrInputError
