@@ -371,27 +371,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _dashboardAvailable = false;
             await StopRuntimeLockedAsync();
 
-            // Deliberately ahead of the shortcut validation below: the event
-            // feed is a display surface, not a delivery path, so it comes up
-            // for a user who has configured a connection but no shortcuts yet,
-            // and an unreachable feed never stops one being delivered.
+            // The event feed is a display surface, not a delivery path, so it
+            // comes up for a user who has configured a connection but no
+            // shortcuts yet, and an unreachable feed never stops one being
+            // delivered.
             await RestartEventStreamLockedAsync();
             _ = EnsureEmoteCatalogAsync();
 
-            try
-            {
-                UserSettingsStore.Validate(_settings);
-            }
-            catch (InvalidDataException exception)
-            {
-                OnStatusChanged(
-                    new BridgeStatus(
-                        BridgeState.Error,
-                        "Finish this setting",
-                        exception.Message));
-                return;
-            }
-
+            // A first run has no shortcuts and may have no reachable
+            // Streamer.bot yet - both are normal, not errors. The SteamVR
+            // session must still open so the dashboard appears and the in-VR
+            // wizard is reachable; BridgeEngine.SetReadyStatus already turns
+            // "no shortcuts" into on-screen guidance instead of a hard stop,
+            // and a missing or unreachable Streamer.bot only ever blocks
+            // delivery of an actual shortcut, never the session itself. A
+            // shortcut is still fully validated at save time by
+            // UserSettingsStore.ValidateForSave, so nothing malformed reaches
+            // here.
             _bridgeCancellation = new CancellationTokenSource();
             var cancellation = _bridgeCancellation;
             _bridgeTask = _engine.RunAsync(

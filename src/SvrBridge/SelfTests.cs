@@ -43,6 +43,8 @@ internal static class SelfTests
         await TestStreamerBotEventStreamFallsBackWhenGetEventsFailsAtConnectAsync();
         await TestStreamerBotEventStreamGetEventsFailureDoesNotStopTheFeedAsync();
         await TestSteamVrSessionRestartAsync();
+        await TestRuntimeStartsWithNoShortcutsAsync();
+        await TestRuntimeStartsWithMalformedStreamerBotAddressAsync();
         Console.WriteLine(
             "SELF-TEST PASS: chord detection, physical controller mapping, authentication, SteamVR worker " +
             "recovery, Streamer.bot restart recovery, no-duplicate delivery, " +
@@ -2104,6 +2106,83 @@ internal static class SelfTests
         Assert(reconnectLogged, "SteamVR session loss was not logged.");
     }
 
+    /// <summary>
+    /// A first-run install has no shortcuts configured yet - the SteamVR
+    /// session must still open so the dashboard appears and the in-VR wizard
+    /// is reachable to create one, rather than the runtime refusing to start.
+    /// Regression test for the shortcut-count check that used to gate
+    /// <c>BridgeEngine.RunAsync</c> being reached at all.
+    /// </summary>
+    private static async Task TestRuntimeStartsWithNoShortcutsAsync()
+    {
+        var engine = new BridgeEngine(new ReadyOpenVrSessionFactory());
+        var readyWithGuidance = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.StatusChanged += status =>
+        {
+            if (status.State == BridgeState.Ready
+                && status.Detail.Contains("No shortcuts yet", StringComparison.Ordinal))
+            {
+                readyWithGuidance.TrySetResult();
+            }
+        };
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var config = new AppConfig
+        {
+            ActionManifestPath = Path.Combine(AppContext.BaseDirectory, "actions.json"),
+            PollIntervalMs = 1,
+            StreamerBot = new StreamerBotConfig { ActionName = "", ActionId = null, DryRun = true },
+            Shortcuts = []
+        };
+
+        var run = engine.RunAsync(config, timeout.Token);
+        await readyWithGuidance.Task.WaitAsync(timeout.Token);
+        timeout.Cancel();
+        await run;
+    }
+
+    /// <summary>
+    /// A missing or malformed Streamer.bot address is guidance, not a reason
+    /// to keep the SteamVR session from opening - it only ever blocks
+    /// delivery of an actual shortcut, which <see cref="StreamerBotClient"/>
+    /// only touches when one fires. Regression test for the connection check
+    /// that used to gate <c>BridgeEngine.RunAsync</c> being reached at all.
+    /// </summary>
+    private static async Task TestRuntimeStartsWithMalformedStreamerBotAddressAsync()
+    {
+        var engine = new BridgeEngine(new ReadyOpenVrSessionFactory());
+        var reachedReady = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.StatusChanged += status =>
+        {
+            if (status.State == BridgeState.Ready)
+            {
+                reachedReady.TrySetResult();
+            }
+        };
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var config = new AppConfig
+        {
+            ActionManifestPath = Path.Combine(AppContext.BaseDirectory, "actions.json"),
+            PollIntervalMs = 1,
+            StreamerBot = new StreamerBotConfig
+            {
+                WebSocketUrl = "not-a-websocket",
+                ActionName = "",
+                ActionId = null,
+                DryRun = true
+            },
+            Shortcuts = []
+        };
+
+        var run = engine.RunAsync(config, timeout.Token);
+        await reachedReady.Task.WaitAsync(timeout.Token);
+        timeout.Cancel();
+        await run;
+    }
+
     private static async Task RunMockStreamerBotAsync(
         HttpListener listener,
         CancellationToken cancellationToken,
@@ -2242,6 +2321,42 @@ internal static class SelfTests
         if (!condition)
         {
             throw new InvalidOperationException($"SELF-TEST FAIL: {message}");
+        }
+    }
+
+    /// <summary>
+    /// A SteamVR session that connects once and reports controllers as ready,
+    /// never failing - unlike <see cref="RestartingOpenVrSessionFactory"/>,
+    /// which exists to exercise reconnection instead.
+    /// </summary>
+    private sealed class ReadyOpenVrSessionFactory : IOpenVrSessionFactory
+    {
+        public Task<IOpenVrSession> ConnectAsync(
+            AppConfig config,
+            string actionManifest,
+            Action<string> log,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<IOpenVrSession>(new ReadyOpenVrSession());
+    }
+
+    private sealed class ReadyOpenVrSession : IOpenVrSession
+    {
+        public InputSnapshot Poll() => default;
+
+        public ControllerSetup GetControllerSetup() => new(
+            [],
+            null,
+            null,
+            BindingAvailability.Ready,
+            "Test controllers ready.",
+            false);
+
+        public void OpenBindingUi()
+        {
+        }
+
+        public void Dispose()
+        {
         }
     }
 
