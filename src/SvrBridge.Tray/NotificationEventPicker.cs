@@ -37,7 +37,7 @@ internal sealed class NotificationEventPicker : UserControl
     /// </summary>
     private const int SearchDebounceMilliseconds = 150;
 
-    private const int RowHeight = 30;
+    private const int DefaultRowHeight = 30;
     private const int ChipWidth = 38;
     private const int ListWidth = 560;
 
@@ -162,6 +162,32 @@ internal sealed class NotificationEventPicker : UserControl
         RenderResults();
     }
 
+    /// <summary>
+    /// The Windows text-size accessibility setting can enlarge rendered text
+    /// without changing a hardcoded pixel constant. The picker used to keep
+    /// its rows at 30 px (and its buttons at 24 px), which left the text
+    /// vertically clipped on those systems. Font.Height is measured from the
+    /// font that this control actually inherited, so the rows follow both DPI
+    /// and the active accessibility text size.
+    /// </summary>
+    private int CurrentRowHeight => Math.Max(DefaultRowHeight, Font.Height + 12);
+
+    private int CurrentButtonHeight => Math.Max(24, Font.Height + 8);
+
+    protected override void OnFontChanged(EventArgs e)
+    {
+        base.OnFontChanged(e);
+
+        // The control is constructed before it is attached to MainForm, so
+        // its inherited font can change after the initial render. Rebuild at
+        // that point so rows made with the default font are not left behind.
+        if (Controls.Count > 0)
+        {
+            RenderEnabled();
+            RenderResults();
+        }
+    }
+
     /// <summary>The enabled "Source.Type" keys, for <see cref="UserSettings.EnabledEvents"/>.</summary>
     public IReadOnlyList<string> EnabledKeys => _enabled.ToArray();
 
@@ -249,11 +275,13 @@ internal sealed class NotificationEventPicker : UserControl
                 {
                     Text = "✕",
                     Width = 34,
-                    Height = 24,
+                    Height = CurrentButtonHeight,
                     FlatStyle = FlatStyle.Flat,
                     BackColor = Color.White,
                     ForeColor = Color.FromArgb(150, 45, 45),
-                    Location = new Point(actionColumn, 3)
+                    Location = new Point(
+                        actionColumn,
+                        (CurrentRowHeight - CurrentButtonHeight) / 2)
                 };
                 remove.FlatAppearance.BorderColor = RowBorder;
                 var removedKey = key;
@@ -276,7 +304,7 @@ internal sealed class NotificationEventPicker : UserControl
                         AutoSize = true,
                         ForeColor = MutedText,
                         Font = SmallFont,
-                        Location = new Point(NotReportedColumn, 7)
+                        Location = new Point(NotReportedColumn, (CurrentRowHeight - SmallFont.Height) / 2)
                     });
                 }
 
@@ -328,7 +356,7 @@ internal sealed class NotificationEventPicker : UserControl
                         ForeColor = MutedText,
                         // Same column as the Add button it stands in for, so
                         // a list mixing the two does not look ragged.
-                        Location = new Point(actionColumn - 20, 7)
+                        Location = new Point(actionColumn - 20, (CurrentRowHeight - Font.Height) / 2)
                     });
                 }
                 else
@@ -337,10 +365,12 @@ internal sealed class NotificationEventPicker : UserControl
                     {
                         Text = "Add",
                         Width = 60,
-                        Height = 24,
+                        Height = CurrentButtonHeight,
                         FlatStyle = FlatStyle.Flat,
                         BackColor = Color.White,
-                        Location = new Point(actionColumn - 26, 3)
+                        Location = new Point(
+                            actionColumn - 26,
+                            (CurrentRowHeight - CurrentButtonHeight) / 2)
                     };
                     add.FlatAppearance.BorderColor = RowBorder;
                     var addedKey = descriptor.Key;
@@ -384,12 +414,12 @@ internal sealed class NotificationEventPicker : UserControl
     /// leaves the view parked past the end of a now-shorter list - which is
     /// the same blank space, arrived at from the other direction.
     /// </summary>
-    private static void FitListToContent(FlowLayoutPanel list)
+    private void FitListToContent(FlowLayoutPanel list)
     {
         var content = list.Controls.Cast<Control>().Sum(child => child.Height + child.Margin.Vertical);
         list.Height = Math.Clamp(
             content + list.Padding.Vertical + 2,
-            RowHeight + list.Padding.Vertical + 2,
+            CurrentRowHeight + list.Padding.Vertical + 2,
             MaxListHeight);
         list.AutoScrollPosition = new Point(0, 0);
     }
@@ -428,10 +458,11 @@ internal sealed class NotificationEventPicker : UserControl
     /// </summary>
     private Panel BuildRow(StreamerBotEventDescriptor descriptor, out int actionColumn)
     {
+        var rowHeight = CurrentRowHeight;
         var row = new Panel
         {
             Width = ListWidth - 40,
-            Height = RowHeight,
+            Height = rowHeight,
             Margin = new Padding(0),
             Tag = descriptor.Key
         };
@@ -445,7 +476,7 @@ internal sealed class NotificationEventPicker : UserControl
             // inside its own column instead of running into the source
             // beside it - the columns have to stay columns.
             Width = SourceColumn - (ChipWidth + 16) - 8,
-            Height = RowHeight - 8,
+            Height = rowHeight - 8,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true,
             Location = new Point(ChipWidth + 16, 4)
@@ -455,7 +486,7 @@ internal sealed class NotificationEventPicker : UserControl
             Text = descriptor.Source,
             AutoSize = false,
             Width = NotReportedColumn - SourceColumn - 8,
-            Height = RowHeight - 8,
+            Height = rowHeight - 8,
             TextAlign = ContentAlignment.MiddleLeft,
             AutoEllipsis = true,
             ForeColor = MutedText,

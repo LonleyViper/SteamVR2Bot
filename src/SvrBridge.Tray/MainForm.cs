@@ -1436,6 +1436,10 @@ internal sealed class ShortcutEditorForm : Form
         panel.Controls.Add(Heading("Streamer.bot action"));
         _action.Width = 540;
         _action.DropDownStyle = ComboBoxStyle.DropDown;
+        // StreamerBotAction is a record, so without an explicit display
+        // member WinForms renders its generated ToString() value (the full
+        // Id/Name/Group record) instead of the friendly action label.
+        _action.DisplayMember = nameof(StreamerBotAction.FriendlyName);
         foreach (var action in actions)
         {
             _action.Items.Add(action);

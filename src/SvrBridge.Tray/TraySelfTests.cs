@@ -69,6 +69,7 @@ internal static class TraySelfTests
         TestSourceIconResourceFindsEveryEmbeddedIcon();
         TestNotificationEventPickerStaysBoundedAtARealCatalogSize();
         TestNotificationEventPickerRoundTripsAndKeepsUnreportedEvents();
+        TestNotificationEventPickerScalesRowsForLargeText();
         TestNotificationRendersAtTheConfiguredSizeWithItsIcon();
         TestRegistrationRetryLoopSucceedsAfterFailures();
         TestRegistrationRetryLoopStopsWhenCancelled();
@@ -1949,6 +1950,33 @@ internal static class TraySelfTests
         Assert(
             fresh.EnabledKeys.Count == 0,
             "A picker built from a catalog alone enabled something by itself.");
+    }
+
+    private static void TestNotificationEventPickerScalesRowsForLargeText()
+    {
+        using var picker = new NotificationEventPicker();
+        picker.SetCatalog(
+        [
+            new SvrBridge.Core.StreamerBotEventDescriptor("Twitch", "Follow")
+        ]);
+        picker.ApplySearchNow("follow");
+
+        // This simulates the Windows text-size setting that exposed the
+        // original fixed 30/24 px row and button heights.
+        picker.Font = new Font("Segoe UI", 24F);
+        picker.ApplySearchNow("follow");
+
+        var layout = picker.Controls.OfType<FlowLayoutPanel>().Single();
+        var lists = layout.Controls.OfType<FlowLayoutPanel>().ToArray();
+        var resultRow = lists[1].Controls.OfType<Panel>().Single();
+        var addButton = resultRow.Controls.OfType<Button>().Single();
+
+        Assert(
+            resultRow.Height >= picker.Font.Height + 12,
+            "A large display font still produced a vertically clipped alert row.");
+        Assert(
+            addButton.Height >= picker.Font.Height + 8,
+            "A large display font still produced a vertically clipped alert button.");
     }
 
     /// <summary>
