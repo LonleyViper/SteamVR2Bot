@@ -1093,13 +1093,7 @@ internal sealed class MainForm : Form
 
         _templateEventPicker.DropDownStyle = ComboBoxStyle.DropDown;
         _templateEventPicker.Width = 240;
-        _templateEventPicker.Format += (_, args) =>
-        {
-            if (args.ListItem is StreamerBotEventDescriptor descriptor)
-            {
-                args.Value = descriptor.Key;
-            }
-        };
+        _templateEventPicker.DisplayMember = nameof(StreamerBotEventDescriptor.FriendlyName);
         ConfigureButton(_editEventTemplate, "Edit template…", false);
         _editEventTemplate.Click += (_, _) =>
         {

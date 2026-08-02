@@ -1339,6 +1339,10 @@ internal static class SelfTests
             new StreamerBotEventDescriptor("Twitch", "RewardRedemption").DisplayName
             == "Reward Redemption",
             "StreamerBotEventDescriptor.DisplayName did not use the spaced form.");
+        Assert(
+            new StreamerBotEventDescriptor("Twitch", "RewardRedemption").FriendlyName
+            == "Twitch — Reward Redemption",
+            "StreamerBotEventDescriptor.FriendlyName did not include a readable source and event name.");
     }
 
     /// <summary>

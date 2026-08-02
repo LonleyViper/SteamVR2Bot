@@ -16,6 +16,14 @@ public sealed record StreamerBotEventDescriptor(string Source, string Type)
     /// pure string transform rather than a lookup table.
     /// </summary>
     public string DisplayName => StreamerBotEventCatalog.SpaceCamelCase(Type);
+
+    /// <summary>
+    /// The readable event label used in pickers. <see cref="Key"/> remains
+    /// the stable value used to store subscriptions and wording templates.
+    /// </summary>
+    public string FriendlyName => string.IsNullOrWhiteSpace(Source)
+        ? DisplayName
+        : $"{Source} — {DisplayName}";
 }
 
 /// <summary>
