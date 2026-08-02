@@ -32,6 +32,8 @@ internal static class TraySelfTests
         TestChatRepaintThrottleCoalescesBurst();
         TestDashboardRepaintCoordinatorCoalescesBurst();
         TestChatGazeHysteresisNoOscillationAtBoundary();
+        TestGazeReferenceCalibrationUsesHeadRelativeDirection();
+        TestGazeCalibrationOverridesHiddenSurfaceUntilCompletion();
         TestGazeScaleAnimationConvergesAndStopsIssuingCalls();
         TestChatRenderWrapsLongUnbrokenString();
         TestChatRenderHandlesEmptyUsernameAndColour();
@@ -116,6 +118,7 @@ internal static class TraySelfTests
                 GazeSensitivity = SvrBridge.Core.GazeSensitivity.Tight,
                 // Non-default, so a dropped field cannot pass by accident.
                 ChatGazeScaleEnabled = true,
+                ChatGazeReference = new SvrBridge.Core.GazeReference(0.15f, -0.1f, 0.9836158f),
                 NotificationOpacity = 0.7,
                 NotificationSizeScale = 0.6,
                 // Deliberately not the default in either mode: a placement
@@ -157,12 +160,20 @@ internal static class TraySelfTests
                 && actual.ChatSizeScale == expected.ChatSizeScale
                 && actual.GazeSensitivity == expected.GazeSensitivity
                 && actual.ChatGazeScaleEnabled == expected.ChatGazeScaleEnabled
+                && actual.ChatGazeReference == expected.ChatGazeReference
                 && actual.NotificationOpacity == expected.NotificationOpacity
                 && actual.NotificationSizeScale == expected.NotificationSizeScale,
                 "The Phase 4b appearance/gaze settings did not round-trip.");
             Assert(
                 actual.ChatPlacement.Equals(expected.ChatPlacement),
                 "A hand-dragged chat window position did not survive a save and load.");
+            using (var form = new MainForm())
+            {
+                form.ApplySettings(actual);
+                Assert(
+                    form.ReadSettings().ChatGazeReference == expected.ChatGazeReference,
+                    "An unrelated desktop save erased the VR gaze calibration.");
+            }
 
             UserSettingsStore.ValidateForSave(
                 expected with
@@ -2167,6 +2178,7 @@ internal static class TraySelfTests
             // Deliberately true: the default is false, so a field dropped in
             // transit would still round-trip if this matched the default.
             true,
+            new SvrBridge.Core.GazeReference(0.1f, 0.1f, 0.9899495f),
             true,
             SvrBridge.Core.OverlayAnchor.Head,
             0.7,
@@ -2196,7 +2208,8 @@ internal static class TraySelfTests
         Assert(
             received!.ChatAnchor.Equals(settings.ChatAnchor)
             && received.GazeSensitivity == settings.GazeSensitivity
-            && received.ChatGazeScaleEnabled,
+            && received.ChatGazeScaleEnabled
+            && received.ChatGazeReference == settings.ChatGazeReference,
             "The rest of the VR settings snapshot did not survive the worker message channel.");
         Assert(
             received.NotificationPlacement.Equals(placement)
@@ -2243,6 +2256,7 @@ internal static class TraySelfTests
             1.44,
             SvrBridge.Core.GazeSensitivity.Tight,
             true,
+            new SvrBridge.Core.GazeReference(0.2f, 0.1f, 0.9746794f),
             true,
             new SvrBridge.Core.OverlayAnchor(SvrBridge.Core.OverlayAnchorMode.Controller, SvrBridge.Core.OverlayAnchorHand.Right),
             0.71,
@@ -2259,6 +2273,7 @@ internal static class TraySelfTests
         Assert(updated.ChatOpacity == 0.81, "ChatOpacity was not merged.");
         Assert(updated.ChatSizeScale == 1.44, "ChatSizeScale was not merged.");
         Assert(updated.GazeSensitivity == SvrBridge.Core.GazeSensitivity.Tight, "GazeSensitivity was not merged.");
+        Assert(updated.ChatGazeReference == snapshot.ChatGazeReference, "ChatGazeReference was not merged.");
         Assert(updated.ChatGazeScaleEnabled, "ChatGazeScaleEnabled was not merged.");
         Assert(updated.NotificationsEnabled, "NotificationsEnabled was not merged.");
         Assert(
@@ -2339,6 +2354,7 @@ internal static class TraySelfTests
             ChatOpacity = 0.95,
             ChatSizeScale = 1.0,
             GazeSensitivity = SvrBridge.Core.GazeSensitivity.Normal,
+            ChatGazeReference = new SvrBridge.Core.GazeReference(0.1f, 0.1f, 0.9899495f),
             NotificationOpacity = 1.0,
             NotificationSizeScale = 1.0
         };
@@ -2360,6 +2376,18 @@ internal static class TraySelfTests
                     GazeSensitivity = SvrBridge.Core.GazeSensitivity.Tight
                 }),
             "Changing anchor mode or gaze sensitivity required a restart.");
+        Assert(
+            TrayApplicationContext.ReconcileChatGazeReference(
+                baseline,
+                baseline with { ChatOpacity = 0.6 }).ChatGazeReference
+            == baseline.ChatGazeReference,
+            "An unrelated desktop appearance edit cleared the gaze calibration.");
+        Assert(
+            !TrayApplicationContext.ReconcileChatGazeReference(
+                    baseline,
+                    baseline with { ChatAnchorMode = SvrBridge.Core.OverlayAnchorMode.Head })
+                .ChatGazeReference.IsUsable,
+            "Changing the chat anchor kept a calibration measured in the old reference frame.");
 
         Assert(
             TrayApplicationContext.RequiresRuntimeRestart(
@@ -3116,6 +3144,48 @@ internal static class TraySelfTests
         Assert(
             !hysteresis.Update(exitCosine - 0.01f),
             "Gaze hysteresis never exited once the gaze moved clearly past the exit boundary.");
+    }
+
+    /// <summary>
+    /// A calibration must remember the direction relative to the HMD, rather
+    /// than a world coordinate or a controller location: only that remains a
+    /// meaningful "look here" centre as the wearer moves around in VR.
+    /// </summary>
+    private static void TestGazeReferenceCalibrationUsesHeadRelativeDirection()
+    {
+        var head = SvrBridge.Core.VrOverlayTransform.Identity;
+        var panel = SvrBridge.Core.VrOverlayTransform.Translation(0.35f, -0.1f, -0.8f);
+        Assert(
+            SvrBridge.Core.GazeReference.TryMeasure(head, panel, out var first)
+            && first.IsUsable,
+            "A readable chat panel did not produce a usable gaze-calibration sample.");
+
+        var total = SvrBridge.Core.GazeReference.ToVector3(first) * 180;
+        Assert(
+            SvrBridge.Core.GazeReference.TryAverage(total, 180, out var calibrated)
+            && calibrated.IsUsable,
+            "Three seconds of valid gaze samples did not produce a usable calibration centre.");
+        Assert(
+            calibrated.Dot(first) > 0.999f,
+            "The averaged calibration centre drifted away from the direction the wearer was asked to look at.");
+        var workerArgument = OpenVrWorker.SerialiseGazeReference(calibrated);
+        Assert(
+            OpenVrWorker.ParseGazeReferenceArgument(workerArgument) == calibrated,
+            "The calibrated gaze centre did not survive the tray-to-worker command line.");
+        Assert(
+            !SvrBridge.Core.GazeReference.None.IsUsable,
+            "An absent calibration stopped being distinguishable from a real saved gaze centre.");
+    }
+
+    private static void TestGazeCalibrationOverridesHiddenSurfaceUntilCompletion()
+    {
+        Assert(
+            ChatOverlay.ShouldShowSurface(hidden: true, autoVisible: false, calibratingGaze: true),
+            "A hidden chat surface still returned before gaze calibration could complete.");
+        Assert(
+            !ChatOverlay.ShouldShowSurface(hidden: true, autoVisible: true, calibratingGaze: false)
+            && !ChatOverlay.ShouldShowSurface(hidden: false, autoVisible: false, calibratingGaze: false),
+            "Normal hidden and automatic-visibility gates changed outside calibration.");
     }
 
     /// <summary>

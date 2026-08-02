@@ -111,6 +111,9 @@ internal sealed record UserSettings
     /// </summary>
     public bool ChatGazeScaleEnabled { get; init; }
 
+    /// <summary>Optional wearer-calibrated centre for the chat gaze cone; the invalid default keeps the original direct-to-panel behaviour.</summary>
+    public GazeReference ChatGazeReference { get; init; } = GazeReference.None;
+
     /// <summary>
     /// The notification panel's peak alpha while holding, 0.2-1.0. Defaults
     /// to 1.0 - the value <see cref="NotificationOverlay"/> hardcoded before
@@ -308,6 +311,7 @@ internal sealed record UserSettings
             ChatSizeScale = ChatSizeScale,
             GazeSensitivity = GazeSensitivity,
             ChatGazeScaleEnabled = ChatGazeScaleEnabled,
+            ChatGazeReference = ChatGazeReference,
             NotificationOpacity = NotificationOpacity,
             NotificationSizeScale = NotificationSizeScale,
             NotificationPlacement = NotificationPlacement,
@@ -382,6 +386,7 @@ internal sealed class UserSettingsStore
             ChatSizeScale = settings.ChatSizeScale,
             GazeSensitivity = settings.GazeSensitivity,
             ChatGazeScaleEnabled = settings.ChatGazeScaleEnabled,
+            ChatGazeReference = settings.ChatGazeReference,
             NotificationOpacity = settings.NotificationOpacity,
             NotificationSizeScale = settings.NotificationSizeScale,
             NotificationPlacement = settings.NotificationPlacement,
@@ -486,6 +491,9 @@ internal sealed class UserSettingsStore
                 ChatSizeScale = saved.ChatSizeScale,
                 GazeSensitivity = saved.GazeSensitivity,
                 ChatGazeScaleEnabled = saved.ChatGazeScaleEnabled,
+                ChatGazeReference = saved.ChatGazeReference.IsUsable
+                    ? saved.ChatGazeReference
+                    : GazeReference.None,
                 NotificationOpacity = saved.NotificationOpacity,
                 NotificationSizeScale = saved.NotificationSizeScale,
                 // Absent from every settings file written before Phase 7,
@@ -612,6 +620,7 @@ internal sealed class UserSettingsStore
         public double ChatSizeScale { get; init; } = 1.0;
         public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
         public bool ChatGazeScaleEnabled { get; init; }
+        public GazeReference ChatGazeReference { get; init; } = GazeReference.None;
         public double NotificationOpacity { get; init; } = 1.0;
         public double NotificationSizeScale { get; init; } = 1.0;
         public OverlayPlacement NotificationPlacement { get; init; } = OverlayPlacement.Default;

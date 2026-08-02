@@ -65,6 +65,9 @@ public sealed class AppConfig
     /// </summary>
     public bool ChatGazeScaleEnabled { get; init; }
 
+    /// <summary>A wearer-calibrated centre for the chat gaze cone; <see cref="GazeReference.None"/> keeps the original direct-to-panel behaviour.</summary>
+    public GazeReference ChatGazeReference { get; init; } = GazeReference.None;
+
     /// <summary>The notification panel's saved default peak alpha. See <see cref="ChatOpacity"/>.</summary>
     public double NotificationOpacity { get; init; } = 1.0;
 

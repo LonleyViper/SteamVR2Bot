@@ -268,7 +268,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var previous = _settings;
         try
         {
-            updated = _mainForm.ReadSettings();
+            updated = ReconcileChatGazeReference(previous, _mainForm.ReadSettings());
             UserSettingsStore.ValidateForSave(updated);
             _settingsStore.Save(updated);
             _settings = updated;
@@ -332,6 +332,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
         || CanonicaliseEventTemplates(previous.EventTemplates) != CanonicaliseEventTemplates(updated.EventTemplates)
         || previous.ShowTestEvents != updated.ShowTestEvents;
 
+    /// <summary>
+    /// A calibrated direction is relative to one physical chat placement and
+    /// anchor. Desktop controls can change the anchor but do not expose the
+    /// calibration itself, so preserve it for unrelated saves and clear it
+    /// only when the reference frame actually changed.
+    /// </summary>
+    internal static UserSettings ReconcileChatGazeReference(
+        UserSettings previous,
+        UserSettings updated) =>
+        !previous.ChatAnchor.Equals(updated.ChatAnchor)
+        || !previous.ChatPlacement.Equals(updated.ChatPlacement)
+            ? updated with { ChatGazeReference = GazeReference.None }
+            : updated;
+
     /// <summary>Order-independent canonical form of a "Source.Type" selection - see <see cref="EventStreamSettings"/>.</summary>
     private static string CanonicaliseEventKeys(IReadOnlyCollection<string> keys) =>
         string.Join(
@@ -358,6 +372,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             settings.ChatSizeScale,
             settings.GazeSensitivity,
             settings.ChatGazeScaleEnabled,
+            settings.ChatGazeReference,
             settings.NotificationsEnabled,
             settings.NotificationAnchor,
             settings.NotificationOpacity,
@@ -1087,6 +1102,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ChatSizeScale = snapshot.ChatSizeScale,
             GazeSensitivity = snapshot.GazeSensitivity,
             ChatGazeScaleEnabled = snapshot.ChatGazeScaleEnabled,
+            ChatGazeReference = snapshot.ChatGazeReference,
             NotificationsEnabled = snapshot.NotificationsEnabled,
             NotificationAnchorMode = snapshot.NotificationAnchor.Mode,
             NotificationAnchorHand = snapshot.NotificationAnchor.Hand,

@@ -50,6 +50,7 @@ public sealed record VrSettingsSnapshot(
     double ChatSizeScale,
     GazeSensitivity GazeSensitivity,
     bool ChatGazeScaleEnabled,
+    GazeReference ChatGazeReference,
     bool NotificationsEnabled,
     OverlayAnchor NotificationAnchor,
     double NotificationOpacity,

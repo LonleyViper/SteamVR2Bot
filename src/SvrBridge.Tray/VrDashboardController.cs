@@ -9,6 +9,7 @@ internal sealed class VrDashboardController : IDisposable
     private readonly Action<string> _shortcutDeleted;
     private readonly Action<VrSettingsSnapshot> _settingsChanged;
     private readonly Action<bool> _notificationPositioningChanged;
+    private readonly Func<bool> _startChatGazeCalibration;
     private readonly Action<string> _log;
     private readonly List<ShortcutConfig> _shortcuts;
     private readonly IReadOnlyList<StreamerBotAction> _actions;
@@ -56,6 +57,7 @@ internal sealed class VrDashboardController : IDisposable
     /// to place the frame and back off when done.
     /// </summary>
     private bool _positioningNotifications;
+    private bool _chatGazeCalibrationInProgress;
 
     public VrDashboardController(
         OpenVrInput openVr,
@@ -68,6 +70,7 @@ internal sealed class VrDashboardController : IDisposable
         Action<string> shortcutDeleted,
         Action<VrSettingsSnapshot> settingsChanged,
         Action<bool> notificationPositioningChanged,
+        Func<bool> startChatGazeCalibration,
         Action<string> log)
     {
         _openVr = openVr;
@@ -92,6 +95,7 @@ internal sealed class VrDashboardController : IDisposable
         _shortcutDeleted = shortcutDeleted;
         _settingsChanged = settingsChanged;
         _notificationPositioningChanged = notificationPositioningChanged;
+        _startChatGazeCalibration = startChatGazeCalibration;
         _log = log;
         ShowList(activate, throwOnError: true);
     }
@@ -719,7 +723,7 @@ internal sealed class VrDashboardController : IDisposable
     private void ShowChatSettings() =>
         ShowPage(
             DashboardPage.ChatSettings,
-            () => VrDashboardRenderer.RenderChatSettings(_settings));
+            () => VrDashboardRenderer.RenderChatSettings(_settings, _chatGazeCalibrationInProgress));
 
     private void ShowNotificationSettings() =>
         ShowPage(
@@ -742,6 +746,22 @@ internal sealed class VrDashboardController : IDisposable
     public void UpdateSettings(VrSettingsSnapshot settings)
     {
         _settings = settings;
+        if (!settings.ChatEnabled)
+        {
+            _chatGazeCalibrationInProgress = false;
+        }
+
+        if (_page == DashboardPage.ChatSettings)
+        {
+            ShowChatSettings();
+        }
+    }
+
+    /// <summary>Called by the chat overlay after its three-second gaze sample completes.</summary>
+    public void OnChatGazeCalibrationFinished(VrSettingsSnapshot settings)
+    {
+        _settings = settings;
+        _chatGazeCalibrationInProgress = false;
         if (_page == DashboardPage.ChatSettings)
         {
             ShowChatSettings();
@@ -765,6 +785,24 @@ internal sealed class VrDashboardController : IDisposable
         if (IsWithinRow(y, VrDashboardLayout.GazeSensitivityY, VrDashboardLayout.SettingsRowHeight))
         {
             HandleGazeSensitivityClick(x);
+            return;
+        }
+
+        if (IsWithinRow(y, VrDashboardLayout.GazeCalibrationY, VrDashboardLayout.SettingsRowHeight))
+        {
+            if (_chatGazeCalibrationInProgress
+                || x < VrDashboardLayout.GazeCalibration.Left
+                || x > VrDashboardLayout.GazeCalibration.Right)
+            {
+                return;
+            }
+
+            _chatGazeCalibrationInProgress = _startChatGazeCalibration();
+            if (_chatGazeCalibrationInProgress)
+            {
+                ShowChatSettings();
+            }
+
             return;
         }
 
@@ -858,7 +896,11 @@ internal sealed class VrDashboardController : IDisposable
         // there is idempotent and costs one repaint, so there is nothing to
         // buy by guessing.
         _log("The chat window position was reset to its default from the VR settings page.");
-        _settings = _settings with { ChatPlacement = OverlayPlacement.Default };
+        _settings = _settings with
+        {
+            ChatPlacement = OverlayPlacement.Default,
+            ChatGazeReference = GazeReference.None
+        };
         ApplySettingsChange();
     }
 
@@ -906,7 +948,7 @@ internal sealed class VrDashboardController : IDisposable
     private void SetAnchor(bool isChat, OverlayAnchor anchor)
     {
         _settings = isChat
-            ? _settings with { ChatAnchor = anchor }
+            ? _settings with { ChatAnchor = anchor, ChatGazeReference = GazeReference.None }
             : _settings with { NotificationAnchor = anchor };
         ApplySettingsChange();
     }

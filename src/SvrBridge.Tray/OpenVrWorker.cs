@@ -412,6 +412,8 @@ internal sealed partial class OpenVrWorkerSession : IOpenVrSession
         startInfo.ArgumentList.Add(((int)config.GazeSensitivity).ToString());
         startInfo.ArgumentList.Add("--chat-gaze-scale");
         startInfo.ArgumentList.Add(config.ChatGazeScaleEnabled.ToString());
+        startInfo.ArgumentList.Add("--chat-gaze-reference");
+        startInfo.ArgumentList.Add(OpenVrWorker.SerialiseGazeReference(config.ChatGazeReference));
         startInfo.ArgumentList.Add("--notification-opacity");
         startInfo.ArgumentList.Add(config.NotificationOpacity.ToString(CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add("--notification-size-scale");
@@ -753,6 +755,8 @@ internal static class OpenVrWorker
                 GetArgumentValue(args, "--gaze-sensitivity"),
                 GazeSensitivity.Normal);
             var chatGazeScaleEnabled = ParseBoolArgument(GetArgumentValue(args, "--chat-gaze-scale"));
+            var chatGazeReference = ParseGazeReferenceArgument(
+                GetArgumentValue(args, "--chat-gaze-reference"));
             var notificationsEnabled = ParseBoolArgument(GetArgumentValue(args, "--notifications-enabled"));
             var notificationOpacity = ParseDoubleArgument(GetArgumentValue(args, "--notification-opacity"), 1.0);
             var notificationSizeScale =
@@ -872,7 +876,9 @@ internal static class OpenVrWorker
                     chatSizeScale,
                     gazeSensitivity,
                     chatGazeScaleEnabled,
+                    chatGazeReference,
                     OnChatPlacementDragged,
+                    OnChatGazeCalibrated,
                     message => Emit(new OpenVrWorkerMessage("log", Message: message)));
 
                 if (chatOverlay is not null)
@@ -913,6 +919,7 @@ internal static class OpenVrWorker
                 chatSizeScale,
                 gazeSensitivity,
                 chatGazeScaleEnabled,
+                chatGazeReference,
                 notificationsEnabled,
                 notificationOverride.SavedDefault,
                 notificationOpacity,
@@ -926,6 +933,8 @@ internal static class OpenVrWorker
             void OnChatPlacementDragged(OverlayPlacement placement)
             {
                 chatPlacement = placement;
+                chatGazeReference = GazeReference.None;
+                chatOverlay?.SetGazeReference(chatGazeReference);
                 // Placing the window by hand is as explicit a user edit as
                 // changing the anchor control on the settings page, so it
                 // takes the same side of the §B5 rule and clears any active
@@ -956,6 +965,31 @@ internal static class OpenVrWorker
                 Emit(new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: settings));
             }
 
+            void OnChatGazeCalibrated(GazeReference reference)
+            {
+                chatGazeReference = reference;
+                var settings = CurrentVrSettings();
+                // This callback runs inside ChatOverlay.Tick. A dashboard
+                // repaint failure must not bubble out and disable chat, and
+                // completion needs one texture replacement rather than an
+                // UpdateSettings repaint followed by a second repaint merely
+                // to clear the transient “Calibrating…” label.
+                try
+                {
+                    dashboard?.OnChatGazeCalibrationFinished(settings);
+                }
+                catch (Exception exception)
+                {
+                    Emit(
+                        new OpenVrWorkerMessage(
+                            "log",
+                            Message: "The VR settings page could not be refreshed after gaze "
+                                     + $"calibration: {exception.Message}"));
+                }
+
+                Emit(new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: settings));
+            }
+
             // The wearer let go of the notification positioning frame's grab
             // - see OnChatPlacementDragged, which this mirrors exactly.
             void OnNotificationPlacementDragged(OverlayPlacement placement)
@@ -979,14 +1013,15 @@ internal static class OpenVrWorker
                 Emit(new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: settings));
             }
 
-            // Applies a change reported by the VR settings page - see
-            // VrDashboardController.ApplySettingsChange - live, in this same
-            // process and thread, and reports it onward to the tray for
-            // persistence. A desktop-made change never reaches this: it goes
-            // through a full worker restart instead, with the new values
-            // baked into fresh spawn args, the same as an address or
-            // password change already does.
-            void ApplyVrSettingsChange(VrSettingsSnapshot newSettings)
+            // Applies a change reported by either settings surface live, in
+            // this same process and thread, and reports it onward to the tray
+            // for persistence. A VR-originated click has already updated and
+            // repainted its controller state. A desktop-originated command
+            // asks this function to refresh that controller from the applied
+            // values so its next click cannot send a stale snapshot back.
+            void ApplyVrSettingsChange(
+                VrSettingsSnapshot newSettings,
+                bool refreshDashboard = false)
             {
                 if (newSettings.ChatEnabled != chatEnabled)
                 {
@@ -1020,6 +1055,9 @@ internal static class OpenVrWorker
                 chatSizeScale = newSettings.ChatSizeScale;
                 gazeSensitivity = newSettings.GazeSensitivity;
                 chatGazeScaleEnabled = newSettings.ChatGazeScaleEnabled;
+                chatGazeReference = newSettings.ChatGazeReference.IsUsable
+                    ? newSettings.ChatGazeReference
+                    : GazeReference.None;
                 notificationOpacity = newSettings.NotificationOpacity;
                 notificationSizeScale = newSettings.NotificationSizeScale;
                 // Normally unchanged - the settings page's only control for
@@ -1059,6 +1097,7 @@ internal static class OpenVrWorker
                 chatOverlay?.SetSizeScale(chatSizeScale);
                 chatOverlay?.SetGazeSensitivity(gazeSensitivity);
                 chatOverlay?.SetGazeScaleEnabled(chatGazeScaleEnabled);
+                chatOverlay?.SetGazeReference(chatGazeReference);
                 notificationOverlay?.SetOpacity(notificationOpacity);
                 notificationOverlay?.SetSizeScale(notificationSizeScale);
                 notificationOverlay?.ApplyAppearance(notificationAppearance);
@@ -1071,7 +1110,24 @@ internal static class OpenVrWorker
                 notificationOverride.SetSavedDefaultAnchor(newSettings.NotificationAnchor);
                 notificationOverlay?.SetAnchorOverride(notificationOverride.EffectiveAnchor);
 
-                Emit(new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: newSettings));
+                var appliedSettings = CurrentVrSettings();
+                if (refreshDashboard)
+                {
+                    try
+                    {
+                        dashboard?.UpdateSettings(appliedSettings);
+                    }
+                    catch (Exception exception)
+                    {
+                        Emit(
+                            new OpenVrWorkerMessage(
+                                "log",
+                                Message: "The VR settings page could not be refreshed after a desktop "
+                                         + $"settings change: {exception.Message}"));
+                    }
+                }
+
+                Emit(new OpenVrWorkerMessage("vrSettingsChanged", VrSettingsChanged: appliedSettings));
             }
 
             _ = Task.Run(() => ReadCommandsAsync(commands.Writer));
@@ -1196,7 +1252,7 @@ internal static class OpenVrWorker
                         // sends this when nothing else changed.
                         try
                         {
-                            ApplyVrSettingsChange(desktopSettings);
+                            ApplyVrSettingsChange(desktopSettings, refreshDashboard: true);
                         }
                         catch (Exception exception)
                         {
@@ -1353,8 +1409,21 @@ internal static class OpenVrWorker
                                     new OpenVrWorkerMessage(
                                         "shortcutDeleted",
                                         ShortcutDeletedId: shortcutId)),
-                                ApplyVrSettingsChange,
+                                settings => ApplyVrSettingsChange(settings),
                                 SetNotificationPositioningEnabled,
+                                () =>
+                                {
+                                    if (!chatEnabled)
+                                    {
+                                        Emit(new OpenVrWorkerMessage(
+                                            "log",
+                                            Message: "Turn chat on before calibrating its gaze fade."));
+                                        return false;
+                                    }
+
+                                    EnsureChatOverlay();
+                                    return chatOverlay?.StartGazeCalibration(Environment.TickCount64) == true;
+                                },
                                 message => Emit(
                                     new OpenVrWorkerMessage(
                                         "log",
@@ -1535,6 +1604,26 @@ internal static class OpenVrWorker
 
     private static double ParseDoubleArgument(string? raw, double fallback) =>
         double.TryParse(raw, CultureInfo.InvariantCulture, out var value) ? value : fallback;
+
+    internal static string SerialiseGazeReference(GazeReference reference) =>
+        reference.IsUsable
+            ? string.Join(",", reference.Right.ToString(CultureInfo.InvariantCulture), reference.Up.ToString(CultureInfo.InvariantCulture), reference.Forward.ToString(CultureInfo.InvariantCulture))
+            : "";
+
+    internal static GazeReference ParseGazeReferenceArgument(string? raw)
+    {
+        var parts = raw?.Split(',');
+        if (parts is not { Length: 3 }
+            || !float.TryParse(parts[0], CultureInfo.InvariantCulture, out var right)
+            || !float.TryParse(parts[1], CultureInfo.InvariantCulture, out var up)
+            || !float.TryParse(parts[2], CultureInfo.InvariantCulture, out var forward))
+        {
+            return GazeReference.None;
+        }
+
+        var reference = new GazeReference(right, up, forward);
+        return reference.IsUsable ? reference : GazeReference.None;
+    }
 
     /// <summary>
     /// Unparseable - or absent, for a worker spawned by an older build - falls

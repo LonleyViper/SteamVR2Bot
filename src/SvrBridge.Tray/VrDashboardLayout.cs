@@ -111,7 +111,12 @@ internal static class VrDashboardLayout
     /// here applies and saves immediately. Chat-only: the Notifications page
     /// has no placement to reset and no gaze-scale animation to toggle.
     /// </summary>
-    public const int ResetPlacementY = 530;
+    public const int GazeCalibrationY = 530;
+
+    public const int ResetPlacementY = 650;
+
+    public static readonly Rectangle GazeCalibration =
+        new(60, GazeCalibrationY, 560, SettingsRowHeight);
 
     /// <summary>
     /// Puts the chat window's hand-dragged offset back to the placement Phase

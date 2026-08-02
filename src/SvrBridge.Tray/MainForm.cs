@@ -100,6 +100,13 @@ internal sealed class MainForm : Form
     /// </summary>
     private OverlayPlacement _chatPlacement = OverlayPlacement.Default;
 
+    /// <summary>
+    /// Calibration is owned by the VR Chat page, so the desktop has no
+    /// control for it. Carry it through ReadSettings exactly like placement;
+    /// otherwise any unrelated desktop autosave silently resets it.
+    /// </summary>
+    private GazeReference _chatGazeReference = GazeReference.None;
+
     /// <summary>The notification panel's hand-placed offset - see <see cref="_chatPlacement"/>'s own remarks; the same reasoning applies since §B1 of the Phase 7 plan.</summary>
     private OverlayPlacement _notificationPlacement = OverlayPlacement.Default;
 
@@ -163,6 +170,7 @@ internal sealed class MainForm : Form
             ChatSizeScale = SizeScaleFromSlider(_chatSizeScale),
             GazeSensitivity = (GazeSensitivity)Math.Clamp(_gazeSensitivity.SelectedIndex, 0, 2),
             ChatGazeScaleEnabled = _chatGazeScale.Checked,
+            ChatGazeReference = _chatGazeReference,
             NotificationOpacity = OpacityFromSlider(_notificationOpacity),
             NotificationSizeScale = SizeScaleFromSlider(_notificationSizeScale),
             NotificationPlacement = _notificationPlacement,
@@ -222,6 +230,9 @@ internal sealed class MainForm : Form
             ApplyAnchorMode(_chatAnchorMode, settings.ChatAnchorMode);
             ApplyAnchorHand(_chatAnchorHand, settings.ChatAnchorHand);
             _chatPlacement = settings.ChatPlacement;
+            _chatGazeReference = settings.ChatGazeReference.IsUsable
+                ? settings.ChatGazeReference
+                : GazeReference.None;
             ApplyAnchorMode(_notificationAnchorMode, settings.NotificationAnchorMode);
             ApplyAnchorHand(_notificationAnchorHand, settings.NotificationAnchorHand);
             ApplyOpacityToSlider(_chatOpacity, settings.ChatOpacity);

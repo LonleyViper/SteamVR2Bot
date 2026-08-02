@@ -144,6 +144,13 @@ dashboard's **Chat** tab has a reset if you put it somewhere unreachable.
 **Grow on gaze** is off by default. Turned on, the window grows and brightens
 when you look at it.
 
+If the fixed gaze choices do not match where you naturally look, open the VR
+dashboard's **Chat** tab and choose **Calibrate gaze fade**. Look directly at
+the chat window for three seconds; SteamVR2Bot saves that head-relative point
+as the centre of the gaze fade, while the Relaxed, Normal and Tight choices
+still set how far away from that calibrated point the window fades. Re-run the
+calibration after moving the chat window or changing its anchor.
+
 > Chat needs at least one enabled trigger in Streamer.bot bound to
 > `Twitch > Chat Message`, even though SteamVR2Bot subscribes to the event
 > directly. See [Known limitations](#known-limitations).

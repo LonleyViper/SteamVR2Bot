@@ -1,4 +1,5 @@
 using SvrBridge.Core;
+using System.Numerics;
 
 namespace SvrBridge.Tray;
 
@@ -86,6 +87,7 @@ internal sealed class ChatOverlay : IDisposable
     /// would be absurd.
     /// </summary>
     private readonly Action<OverlayPlacement> _placementChanged;
+    private readonly Action<GazeReference> _gazeReferenceChanged;
 
     private readonly ChatOverlayInput _input = new(ChatOverlayLayout.Buttons);
     private readonly List<OverlayMouseEvent> _laserEvents = [];
@@ -150,6 +152,13 @@ internal sealed class ChatOverlay : IDisposable
     private bool _loggedFirstLaserEvent;
 
     private ChatGazeHysteresis _gaze;
+    private GazeSensitivity _gazeSensitivity = GazeSensitivity.Normal;
+    private GazeReference _gazeReference;
+    private long? _gazeCalibrationStartedAtMs;
+    private Vector3 _gazeCalibrationTotal;
+    private int _gazeCalibrationSamples;
+
+    private const long GazeCalibrationDurationMs = 3_000;
 
     // Opacity is the gazed-at (large) alpha ceiling; size is a multiplier on
     // both widths. The faint, not-gazed-at state scales proportionally from
@@ -190,6 +199,7 @@ internal sealed class ChatOverlay : IDisposable
         ChatGazeHysteresis gaze,
         OverlayPlacement placement,
         Action<OverlayPlacement> placementChanged,
+        Action<GazeReference> gazeReferenceChanged,
         Action<string> log)
     {
         _surface = surface;
@@ -213,6 +223,7 @@ internal sealed class ChatOverlay : IDisposable
         _gaze = gaze;
         _placement = placement;
         _placementChanged = placementChanged;
+        _gazeReferenceChanged = gazeReferenceChanged;
         _log = log;
     }
 
@@ -231,7 +242,9 @@ internal sealed class ChatOverlay : IDisposable
         double sizeScale,
         GazeSensitivity gazeSensitivity,
         bool gazeScaleEnabled,
+        GazeReference gazeReference,
         Action<OverlayPlacement> placementChanged,
+        Action<GazeReference> gazeReferenceChanged,
         Action<string> log)
     {
         if (!openVr.SupportsOverlaySurfaces)
@@ -286,11 +299,14 @@ internal sealed class ChatOverlay : IDisposable
                 ChatGazeHysteresis.Create(gazeSensitivity),
                 placement,
                 placementChanged,
+                gazeReferenceChanged,
                 log)
             {
                 _opacity = opacity,
                 _sizeScale = sizeScale,
+                _gazeSensitivity = gazeSensitivity,
                 _gazeScaleEnabled = gazeScaleEnabled,
+                _gazeReference = gazeReference.IsUsable ? gazeReference : GazeReference.None,
                 _laserInputAvailable = laserInput
             };
             surface.Show();
@@ -381,6 +397,29 @@ internal sealed class ChatOverlay : IDisposable
         _visibility.ForceVisible();
     }
 
+    /// <summary>Replaces the optional wearer-calibrated centre of the gaze cone.</summary>
+    public void SetGazeReference(GazeReference reference) =>
+        _gazeReference = reference.IsUsable ? reference : GazeReference.None;
+
+    /// <summary>
+    /// Starts a short calibration while the wearer deliberately looks at chat.
+    /// It is deliberately a timed average rather than one pose, so ordinary
+    /// headset tracking noise cannot choose the fade centre.
+    /// </summary>
+    public bool StartGazeCalibration(long nowMs)
+    {
+        if (_disposed)
+        {
+            return false;
+        }
+
+        _gazeCalibrationStartedAtMs = nowMs;
+        _gazeCalibrationTotal = Vector3.Zero;
+        _gazeCalibrationSamples = 0;
+        _log("Gaze calibration started. Look directly at the chat window for 3 seconds.");
+        return true;
+    }
+
     /// <summary>
     /// Forces this surface hidden regardless of gaze, or clears that
     /// override - the effect of a Streamer.bot <c>hide</c>/<c>show</c>
@@ -407,7 +446,11 @@ internal sealed class ChatOverlay : IDisposable
     /// judged to be gazing; a cosmetic reset only, corrected on the very next
     /// tick.
     /// </summary>
-    public void SetGazeSensitivity(GazeSensitivity sensitivity) => _gaze = ChatGazeHysteresis.Create(sensitivity);
+    public void SetGazeSensitivity(GazeSensitivity sensitivity)
+    {
+        _gazeSensitivity = sensitivity;
+        _gaze = ChatGazeHysteresis.Create(sensitivity);
+    }
 
     /// <summary>
     /// Turns the grow-and-brighten-on-gaze animation on or off - a VR or
@@ -448,22 +491,29 @@ internal sealed class ChatOverlay : IDisposable
         // One pose pair, three answers - see PanelView. Measured after the
         // anchor tick, so a drag applied last tick is reflected in where the
         // panel actually is now rather than where it was.
-        var view = MeasurePanel(openVr);
+        var view = MeasurePanel(openVr, out var currentGazeDirection);
 
         // A drag overrules both gates. The wearer has hold of the window, so
         // it must not shrink, must not hide, and must keep accepting the input
         // that will eventually release it - see AnimateGaze and the reconcile
         // in UpdateLaserInput for what happens when it does not.
         var dragging = _drag is not null;
-        if (dragging)
+        var calibratingGaze = _gazeCalibrationStartedAtMs is not null;
+        if (dragging || calibratingGaze)
         {
             _visibility.ForceVisible();
         }
 
-        var autoVisible = dragging || _visibility.Update(view.FacingDot, view.DistanceMeters);
+        // Calibration is an explicit request to look at this surface. Let it
+        // temporarily overrule both automatic visibility and a transient
+        // Streamer.bot hide command; otherwise Tick returns below, the timer
+        // never advances, and the dashboard is stranded on “Calibrating…”.
+        var autoVisible = dragging
+                          || calibratingGaze
+                          || _visibility.Update(view.FacingDot, view.DistanceMeters);
         LogVisibilityChange(autoVisible, view);
 
-        if (_hidden || !autoVisible)
+        if (!ShouldShowSurface(_hidden, autoVisible, calibratingGaze))
         {
             if (_shown)
             {
@@ -498,13 +548,21 @@ internal sealed class ChatOverlay : IDisposable
             _shown = true;
         }
 
-        AnimateGaze(view, nowMs);
+        AnimateGaze(view, currentGazeDirection, nowMs);
         // After the gaze update and before the repaint: the gaze state gates
         // whether input is accepted at all, and a hover change this produces
         // has to reach the screen on this same tick to feel responsive.
         UpdateLaserInput(openVr);
         RepaintIfOwed(nowMs);
     }
+
+    /// <summary>
+    /// Calibration must reach the sampling/timer path even if normal chat
+    /// visibility would return early. Kept pure so the hidden-surface
+    /// regression is deterministic without an OpenVR session.
+    /// </summary>
+    internal static bool ShouldShowSurface(bool hidden, bool autoVisible, bool calibratingGaze) =>
+        calibratingGaze || (!hidden && autoVisible);
 
     /// <summary>
     /// Where the panel stands relative to the wearer's head, from live poses.
@@ -515,16 +573,18 @@ internal sealed class ChatOverlay : IDisposable
     /// leaves whatever state the gates were already in undisturbed.
     /// </para>
     /// </summary>
-    private PanelView MeasurePanel(OpenVrInput openVr)
+    private PanelView MeasurePanel(OpenVrInput openVr, out GazeReference gazeDirection)
     {
         if (_anchorTracker.BoundDeviceIndex is not { } anchorIndex
             || !openVr.TryGetDevicePose(HmdDeviceIndex, out var headPose)
             || !openVr.TryGetDevicePose(anchorIndex, out var anchorPose))
         {
+            gazeDirection = GazeReference.None;
             return new PanelView(1f, 1f, DefaultReadingDistanceMeters);
         }
 
         var panelPose = anchorPose * _placement.ToTransform(_anchorTracker.Anchor.Mode);
+        _ = GazeReference.TryMeasure(headPose, panelPose, out gazeDirection);
         return PanelView.From(headPose, panelPose);
     }
 
@@ -555,26 +615,28 @@ internal sealed class ChatOverlay : IDisposable
                 : "The chat window hid itself: it is turned away from you.");
     }
 
-    private void AnimateGaze(PanelView view, long nowMs)
+    private void AnimateGaze(PanelView view, GazeReference currentGazeDirection, long nowMs)
     {
         var deltaMs = _lastAnimateMs is { } last ? Math.Max(0L, nowMs - last) : 0L;
         _lastAnimateMs = nowMs;
 
         // Updated every tick regardless, so the hysteresis state stays current
         // and the window resolves to the right size the moment a drag ends.
-        var isGazing = _gaze.Update(view.GazeDot);
+        AdvanceGazeCalibration(currentGazeDirection, nowMs);
+        var gazeDot = _gazeReference.IsUsable && currentGazeDirection.IsUsable
+            ? _gazeReference.Dot(currentGazeDirection)
+            : view.GazeDot;
+        var isGazing = _gaze.Update(gazeDot);
 
         // A drag holds the window open whatever gaze says.
         //
-        // Gaze is measured to the anchor *device*, not to the panel - see
-        // GazeDot - so dragging the window away from the wrist and following
-        // it with your head walks the anchor hand out of the gaze cone. The
-        // window then shrinks mid-drag, which drops input, which means the
-        // release that would end the drag can never arrive. Holding it open
-        // for the duration is also simply what the interaction means: the
+        // Moving a panel can carry it out of either the default or calibrated
+        // gaze cone while it is being dragged. The window would then shrink,
+        // drop input, and lose the release that ends the drag. Holding it open
+        // for the duration is simply what the interaction means: the
         // wearer has hold of the thing, so they are unambiguously interacting
         // with it, whichever way they happen to be looking.
-        isGazing |= _drag is not null;
+        isGazing |= _drag is not null || _gazeCalibrationStartedAtMs is not null;
         _isGazing = isGazing;
 
         // With the animation switched off the window sits at its full size and
@@ -601,6 +663,42 @@ internal sealed class ChatOverlay : IDisposable
 
         _surface.SetWidthInMeters(_gazeAnimation.Width);
         _surface.SetAlpha(_gazeAnimation.Alpha);
+    }
+
+    private void AdvanceGazeCalibration(GazeReference currentGazeDirection, long nowMs)
+    {
+        if (_gazeCalibrationStartedAtMs is not { } startedAt)
+        {
+            return;
+        }
+
+        if (currentGazeDirection.IsUsable)
+        {
+            _gazeCalibrationTotal += GazeReference.ToVector3(currentGazeDirection);
+            _gazeCalibrationSamples++;
+        }
+
+        if (nowMs - startedAt < GazeCalibrationDurationMs)
+        {
+            return;
+        }
+
+        _gazeCalibrationStartedAtMs = null;
+        if (!GazeReference.TryAverage(_gazeCalibrationTotal, _gazeCalibrationSamples, out var reference))
+        {
+            _log("Gaze calibration could not read a stable headset pose. Please try again.");
+            // The callback also returns the settings UI from its transient
+            // "Calibrating…" state. Re-reporting the unchanged value is
+            // harmless and avoids leaving that UI state stranded on a
+            // tracking dropout.
+            _gazeReferenceChanged(_gazeReference);
+            return;
+        }
+
+        _gazeReference = reference;
+        _gaze = ChatGazeHysteresis.Create(_gazeSensitivity);
+        _gazeReferenceChanged(reference);
+        _log("Gaze calibration saved. Chat now fades relative to where you looked during calibration.");
     }
 
     /// <summary>

@@ -306,7 +306,7 @@ internal static class VrDashboardRenderer
     /// the Phase 4b plan for the controls themselves). No bottom bar: every
     /// change here applies and saves automatically, the same as the desktop.
     /// </summary>
-    public static RenderedPanel RenderChatSettings(VrSettingsSnapshot settings)
+    public static RenderedPanel RenderChatSettings(VrSettingsSnapshot settings, bool gazeCalibrationInProgress)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
@@ -355,6 +355,7 @@ internal static class VrDashboardRenderer
                 (int)settings.GazeSensitivity,
                 enabled: true);
 
+            DrawGazeCalibration(graphics, fonts, brushes, settings, gazeCalibrationInProgress);
             DrawResetPlacement(graphics, fonts, brushes, settings);
         });
     }
@@ -1321,6 +1322,33 @@ internal static class VrDashboardRenderer
             FormatFlags = StringFormatFlags.NoWrap
         };
         graphics.DrawString(text, font, brush, bounds, format);
+    }
+
+    private static void DrawGazeCalibration(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        VrSettingsSnapshot settings,
+        bool inProgress)
+    {
+        var bounds = VrDashboardLayout.GazeCalibration;
+        DrawRoundedRectangle(graphics, inProgress ? brushes.Blue : brushes.Card, bounds, 14);
+        DrawCenteredText(
+            graphics,
+            inProgress ? "Calibrating…" : "Calibrate gaze fade",
+            fonts.Body,
+            brushes.White,
+            bounds);
+        graphics.DrawString(
+            inProgress
+                ? "Look directly at the chat window for 3 seconds."
+                : settings.ChatGazeReference.IsUsable
+                    ? "A calibrated centre is saved. Run again after moving chat."
+                    : "Look at chat for 3 seconds to set where its gaze fade begins.",
+            fonts.Body,
+            brushes.Muted,
+            bounds.Right + 20,
+            bounds.Top + 22);
     }
 
     /// <summary>
