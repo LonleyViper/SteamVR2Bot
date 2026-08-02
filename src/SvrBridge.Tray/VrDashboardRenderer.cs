@@ -23,11 +23,11 @@ internal static class VrDashboardRenderer
             System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         graphics.Clear(Color.FromArgb(15, 23, 42));
 
-        using var titleFont = new Font("Segoe UI", 38, FontStyle.Bold);
-        using var subtitleFont = new Font("Segoe UI", 18);
-        using var headingFont = new Font("Segoe UI", 20, FontStyle.Bold);
-        using var bodyFont = new Font("Segoe UI", 17);
-        using var smallFont = new Font("Segoe UI", 14);
+        using var titleFont = CreateFixedPixelFont(38, FontStyle.Bold);
+        using var subtitleFont = CreateFixedPixelFont(18);
+        using var headingFont = CreateFixedPixelFont(20, FontStyle.Bold);
+        using var bodyFont = CreateFixedPixelFont(17);
+        using var smallFont = CreateFixedPixelFont(14);
         using var white = new SolidBrush(Color.White);
         using var muted = new SolidBrush(Color.FromArgb(180, 194, 214));
         using var blue = new SolidBrush(Color.FromArgb(59, 130, 246));
@@ -1323,13 +1323,22 @@ internal static class VrDashboardRenderer
         graphics.DrawString(text, font, brush, bounds, format);
     }
 
+    /// <summary>
+    /// Creates a font whose em size is in the dashboard texture's coordinate
+    /// space. Every dashboard rectangle and hit target is expressed in pixels;
+    /// using GDI+'s default point unit made the text grow with the host DPI
+    /// while the controls stayed fixed, which caused the overlap visible in VR.
+    /// </summary>
+    internal static Font CreateFixedPixelFont(float pixels, FontStyle style = FontStyle.Regular) =>
+        new("Segoe UI", pixels, style, GraphicsUnit.Pixel);
+
     private sealed class DashboardFonts : IDisposable
     {
-        public Font Title { get; } = new("Segoe UI", 38, FontStyle.Bold);
-        public Font Subtitle { get; } = new("Segoe UI", 18);
-        public Font Heading { get; } = new("Segoe UI", 20, FontStyle.Bold);
-        public Font Body { get; } = new("Segoe UI", 17);
-        public Font Small { get; } = new("Segoe UI", 14);
+        public Font Title { get; } = CreateFixedPixelFont(38, FontStyle.Bold);
+        public Font Subtitle { get; } = CreateFixedPixelFont(18);
+        public Font Heading { get; } = CreateFixedPixelFont(20, FontStyle.Bold);
+        public Font Body { get; } = CreateFixedPixelFont(17);
+        public Font Small { get; } = CreateFixedPixelFont(14);
 
         public void Dispose()
         {

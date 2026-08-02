@@ -14,6 +14,7 @@ internal static class TraySelfTests
         TestWorkerCrashFallsBackToGenericWordingWithoutADllName();
         TestWorkerCrashOnNonDllExceptionNamesTheException();
         TestDashboardBottomBarLayout();
+        TestDashboardFontsUseFixedPixels();
         TestSettingsPageLayoutRectangles();
         TestRenamedDataDirectoryMigration();
         TestOverlayTransformComposition();
@@ -495,6 +496,19 @@ internal static class TraySelfTests
                 Directory.Delete(root, recursive: true);
             }
         }
+    }
+
+    /// <summary>
+    /// Dashboard geometry is fixed in texture pixels. Font points are DPI
+    /// relative, so accidentally reverting to the default unit makes text
+    /// overflow the same controls on a high-DPI host.
+    /// </summary>
+    private static void TestDashboardFontsUseFixedPixels()
+    {
+        using var font = VrDashboardRenderer.CreateFixedPixelFont(17);
+        Assert(
+            font.Unit == System.Drawing.GraphicsUnit.Pixel && font.Size == 17,
+            "Dashboard text was not created in fixed texture pixels.");
     }
 
     private static void TestDashboardBottomBarLayout()
