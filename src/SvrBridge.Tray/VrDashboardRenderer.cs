@@ -359,6 +359,7 @@ internal static class VrDashboardRenderer
 
             DrawGazeCalibration(graphics, fonts, brushes, settings, gazeCalibrationInProgress);
             DrawResetPlacement(graphics, fonts, brushes, settings);
+            DrawGazeFade(graphics, fonts, brushes, settings);
         });
     }
 
@@ -475,12 +476,10 @@ internal static class VrDashboardRenderer
         DashboardBrushes brushes,
         VrSettingsSnapshot settings)
     {
-        var placement = settings.ChatPlacement;
         // Always drawn live. A recovery control that greys itself out based on
         // this page's own copy of the settings is a control that looks broken
         // exactly when the wearer most needs it - after a drag this page may
         // not have heard about yet.
-        var moved = !placement.Equals(OverlayPlacement.Default);
         var bounds = VrDashboardLayout.ResetPlacement;
         DrawRoundedRectangle(graphics, brushes.Card, bounds, 14);
         DrawCenteredText(
@@ -489,20 +488,18 @@ internal static class VrDashboardRenderer
             fonts.Body,
             brushes.White,
             bounds);
-        graphics.DrawString(
-            moved
-                ? "Moved by hand. Grab the handle with the laser to move it again."
-                : "At its default position.",
+        var autoHide = VrDashboardLayout.ChatAutoHideToggle;
+        DrawRoundedRectangle(
+            graphics,
+            settings.ChatAutoHideEnabled ? brushes.Green : brushes.Disabled,
+            autoHide,
+            14);
+        DrawCenteredText(
+            graphics,
+            settings.ChatAutoHideEnabled ? "Auto-hide away: On" : "Auto-hide away: Off",
             fonts.Body,
-            brushes.Muted,
-            bounds.Right + 20,
-            bounds.Top + 4);
-        graphics.DrawString(
-            "Grow on gaze",
-            fonts.Body,
-            brushes.Muted,
-            bounds.Right + 20,
-            bounds.Top + 44);
+            brushes.White,
+            autoHide);
 
         var toggle = VrDashboardLayout.GazeScaleToggle;
         DrawRoundedRectangle(
@@ -514,6 +511,27 @@ internal static class VrDashboardRenderer
             graphics,
             settings.ChatGazeScaleEnabled ? "On" : "Off",
             fonts.Heading,
+            brushes.White,
+            toggle);
+    }
+
+    /// <summary>The fade-only counterpart of the grow-on-gaze toggle.</summary>
+    private static void DrawGazeFade(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        VrSettingsSnapshot settings)
+    {
+        var toggle = VrDashboardLayout.GazeFadeToggle;
+        DrawRoundedRectangle(
+            graphics,
+            settings.ChatGazeFadeEnabled ? brushes.Green : brushes.Disabled,
+            toggle,
+            14);
+        DrawCenteredText(
+            graphics,
+            settings.ChatGazeFadeEnabled ? "Fade in on gaze: On" : "Fade in on gaze: Off",
+            fonts.Body,
             brushes.White,
             toggle);
     }

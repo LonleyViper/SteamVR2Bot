@@ -412,6 +412,10 @@ internal sealed partial class OpenVrWorkerSession : IOpenVrSession
         startInfo.ArgumentList.Add(((int)config.GazeSensitivity).ToString());
         startInfo.ArgumentList.Add("--chat-gaze-scale");
         startInfo.ArgumentList.Add(config.ChatGazeScaleEnabled.ToString());
+        startInfo.ArgumentList.Add("--chat-gaze-fade");
+        startInfo.ArgumentList.Add(config.ChatGazeFadeEnabled.ToString());
+        startInfo.ArgumentList.Add("--chat-auto-hide");
+        startInfo.ArgumentList.Add(config.ChatAutoHideEnabled.ToString());
         startInfo.ArgumentList.Add("--chat-gaze-reference");
         startInfo.ArgumentList.Add(OpenVrWorker.SerialiseGazeReference(config.ChatGazeReference));
         startInfo.ArgumentList.Add("--notification-opacity");
@@ -755,6 +759,9 @@ internal static class OpenVrWorker
                 GetArgumentValue(args, "--gaze-sensitivity"),
                 GazeSensitivity.Normal);
             var chatGazeScaleEnabled = ParseBoolArgument(GetArgumentValue(args, "--chat-gaze-scale"));
+            var chatGazeFadeEnabled = ParseBoolArgument(GetArgumentValue(args, "--chat-gaze-fade"));
+            var chatAutoHideEnabled = ParseBoolArgument(
+                GetArgumentValue(args, "--chat-auto-hide") ?? "true");
             var chatGazeReference = ParseGazeReferenceArgument(
                 GetArgumentValue(args, "--chat-gaze-reference"));
             var notificationsEnabled = ParseBoolArgument(GetArgumentValue(args, "--notifications-enabled"));
@@ -876,6 +883,8 @@ internal static class OpenVrWorker
                     chatSizeScale,
                     gazeSensitivity,
                     chatGazeScaleEnabled,
+                    chatGazeFadeEnabled,
+                    chatAutoHideEnabled,
                     chatGazeReference,
                     OnChatPlacementDragged,
                     OnChatGazeCalibrated,
@@ -919,6 +928,8 @@ internal static class OpenVrWorker
                 chatSizeScale,
                 gazeSensitivity,
                 chatGazeScaleEnabled,
+                chatGazeFadeEnabled,
+                chatAutoHideEnabled,
                 chatGazeReference,
                 notificationsEnabled,
                 notificationOverride.SavedDefault,
@@ -1055,6 +1066,8 @@ internal static class OpenVrWorker
                 chatSizeScale = newSettings.ChatSizeScale;
                 gazeSensitivity = newSettings.GazeSensitivity;
                 chatGazeScaleEnabled = newSettings.ChatGazeScaleEnabled;
+                chatGazeFadeEnabled = newSettings.ChatGazeFadeEnabled;
+                chatAutoHideEnabled = newSettings.ChatAutoHideEnabled;
                 chatGazeReference = newSettings.ChatGazeReference.IsUsable
                     ? newSettings.ChatGazeReference
                     : GazeReference.None;
@@ -1097,6 +1110,8 @@ internal static class OpenVrWorker
                 chatOverlay?.SetSizeScale(chatSizeScale);
                 chatOverlay?.SetGazeSensitivity(gazeSensitivity);
                 chatOverlay?.SetGazeScaleEnabled(chatGazeScaleEnabled);
+                chatOverlay?.SetGazeFadeEnabled(chatGazeFadeEnabled);
+                chatOverlay?.SetAutoHideEnabled(chatAutoHideEnabled);
                 chatOverlay?.SetGazeReference(chatGazeReference);
                 notificationOverlay?.SetOpacity(notificationOpacity);
                 notificationOverlay?.SetSizeScale(notificationSizeScale);
@@ -1131,6 +1146,15 @@ internal static class OpenVrWorker
             }
 
             _ = Task.Run(() => ReadCommandsAsync(commands.Writer));
+
+            // A saved enabled chat setting is expected to put a real, painted
+            // panel in VR immediately. Previously this only happened after
+            // the first incoming chat payload, leaving an enabled-but-blank
+            // setting and making gaze calibration impossible to judge.
+            if (chatEnabled)
+            {
+                EnsureChatOverlay();
+            }
 
             var snapshot = openVr.Poll();
             var setup = openVr.GetControllerSetup();
@@ -1422,6 +1446,22 @@ internal static class OpenVrWorker
                                     }
 
                                     EnsureChatOverlay();
+                                    // Calibration is a request to adjust the
+                                    // gaze fade, so it must not silently
+                                    // complete while the feature that makes
+                                    // that fade visible is off. The default
+                                    // remains off for ordinary startup; this
+                                    // only changes it after the wearer
+                                    // explicitly presses Calibrate.
+                                    if (!chatGazeScaleEnabled)
+                                    {
+                                        chatGazeScaleEnabled = true;
+                                        chatOverlay?.SetGazeScaleEnabled(true);
+                                        Emit(new OpenVrWorkerMessage(
+                                            "log",
+                                            Message: "Grow on gaze was enabled for calibration."));
+                                    }
+
                                     return chatOverlay?.StartGazeCalibration(Environment.TickCount64) == true;
                                 },
                                 message => Emit(

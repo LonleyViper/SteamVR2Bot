@@ -146,12 +146,22 @@ the **Chat** tab has a reset if you put it somewhere unreachable.
 **Grow on gaze** is off by default. Turned on, the window grows and brightens
 when you look at it.
 
+**Fade in on gaze** is a separate option. It fades chat from transparent to its
+configured opacity when you look at it, and can be used on its own if you want
+the panel to keep a fixed size.
+
+**Auto-hide away** is on by default. It hides chat if its face is turned away
+from you or it has been placed more than about two metres from your head. Turn
+it off in the desktop Chat window settings or the VR Chat tab if you want chat
+to remain visible regardless of the controller's position.
+
 If the fixed gaze choices do not match where you naturally look, open the VR
 dashboard's **Chat** tab and choose **Calibrate gaze fade**. Look directly at
 the chat window for three seconds; SteamVR2Bot saves that head-relative point
 as the centre of the gaze fade, while the Relaxed, Normal and Tight choices
 still set how far away from that calibrated point the window fades. Re-run the
-calibration after moving the chat window or changing its anchor.
+calibration after moving the chat window or changing its anchor. Starting
+calibration turns on **Grow on gaze** so the result is immediately visible.
 
 > Chat needs at least one enabled trigger in Streamer.bot bound to
 > `Twitch > Chat Message`, even though SteamVR2Bot subscribes to the event

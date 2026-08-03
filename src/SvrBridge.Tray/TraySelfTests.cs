@@ -29,11 +29,13 @@ internal static class TraySelfTests
         TestWpfRenderThreadStartsAndShutsDownCleanly();
         TestNotificationPixelFormatConversion();
         TestChatRingBufferEviction();
+        TestChatStartupMessageMakesTheFirstPaintVisible();
         TestChatRepaintThrottleCoalescesBurst();
         TestDashboardRepaintCoordinatorCoalescesBurst();
         TestChatGazeHysteresisNoOscillationAtBoundary();
         TestGazeReferenceCalibrationUsesHeadRelativeDirection();
         TestGazeCalibrationOverridesHiddenSurfaceUntilCompletion();
+        TestGazeFadeTargetsTransparencyIndependentlyOfSize();
         TestGazeScaleAnimationConvergesAndStopsIssuingCalls();
         TestChatRenderWrapsLongUnbrokenString();
         TestChatRenderHandlesEmptyUsernameAndColour();
@@ -121,6 +123,8 @@ internal static class TraySelfTests
                 GazeSensitivity = SvrBridge.Core.GazeSensitivity.Tight,
                 // Non-default, so a dropped field cannot pass by accident.
                 ChatGazeScaleEnabled = true,
+                ChatGazeFadeEnabled = true,
+                ChatAutoHideEnabled = false,
                 ChatGazeReference = new SvrBridge.Core.GazeReference(0.15f, -0.1f, 0.9836158f),
                 NotificationOpacity = 0.7,
                 NotificationSizeScale = 0.6,
@@ -163,6 +167,8 @@ internal static class TraySelfTests
                 && actual.ChatSizeScale == expected.ChatSizeScale
                 && actual.GazeSensitivity == expected.GazeSensitivity
                 && actual.ChatGazeScaleEnabled == expected.ChatGazeScaleEnabled
+                && actual.ChatGazeFadeEnabled == expected.ChatGazeFadeEnabled
+                && actual.ChatAutoHideEnabled == expected.ChatAutoHideEnabled
                 && actual.ChatGazeReference == expected.ChatGazeReference
                 && actual.NotificationOpacity == expected.NotificationOpacity
                 && actual.NotificationSizeScale == expected.NotificationSizeScale,
@@ -244,6 +250,8 @@ internal static class TraySelfTests
                 upgraded.ChatOpacity == 0.95
                 && upgraded.ChatSizeScale == 1.0
                 && upgraded.GazeSensitivity == SvrBridge.Core.GazeSensitivity.Normal
+                && !upgraded.ChatGazeFadeEnabled
+                && upgraded.ChatAutoHideEnabled
                 && upgraded.NotificationOpacity == 1.0
                 && upgraded.NotificationSizeScale == 1.0,
                 "A settings file written before Phase 4b did not default to today's hardcoded appearance.");
@@ -673,7 +681,9 @@ internal static class TraySelfTests
             .. VrDashboardLayout.NotificationAnchorHand,
             .. VrDashboardLayout.GazeSensitivity,
             VrDashboardLayout.ResetPlacement,
+            VrDashboardLayout.ChatAutoHideToggle,
             VrDashboardLayout.GazeScaleToggle,
+            VrDashboardLayout.GazeFadeToggle,
             VrDashboardLayout.PositionNotificationsHitTarget,
             VrDashboardLayout.ResetNotificationPlacement
         ];
@@ -709,12 +719,21 @@ internal static class TraySelfTests
             && VrDashboardLayout.NotificationSlidersY == VrDashboardLayout.ChatSlidersY,
             "The Chat and Notifications pages' first two rows drifted apart even though each now starts fresh below its own tab strip.");
 
-        // The reset button and the grow-on-gaze toggle share the bottom row,
+        // The reset button and the two chat-visibility toggles share the bottom row,
         // so a Y-band dispatch alone cannot tell them apart - they must not
         // overlap along X either, exactly like the surface rows above.
         Assert(
             !VrDashboardLayout.ResetPlacement.IntersectsWith(VrDashboardLayout.GazeScaleToggle),
             "The placement reset and the grow-on-gaze toggle overlap.");
+        Assert(
+            !VrDashboardLayout.ResetPlacement.IntersectsWith(VrDashboardLayout.ChatAutoHideToggle)
+            && !VrDashboardLayout.ChatAutoHideToggle.IntersectsWith(VrDashboardLayout.GazeScaleToggle),
+            "The chat visibility controls overlap on the bottom settings row.");
+        Assert(
+            VrDashboardLayout.GazeFadeToggle.Top
+            >= VrDashboardLayout.ResetPlacement.Bottom
+            && !VrDashboardLayout.GazeFadeToggle.IntersectsWith(VrDashboardLayout.GazeScaleToggle),
+            "The fade-on-gaze control overlaps the preceding chat settings row.");
         Assert(
             VrDashboardLayout.GazeScaleToggle.Left == VrDashboardLayout.ChatToggle.Left
             && VrDashboardLayout.GazeScaleToggle.Width == VrDashboardLayout.ChatToggle.Width,
@@ -2249,6 +2268,10 @@ internal static class TraySelfTests
             // Deliberately true: the default is false, so a field dropped in
             // transit would still round-trip if this matched the default.
             true,
+            // Deliberately true: the persisted default is false.
+            true,
+            // Deliberately false: the persisted default is true.
+            false,
             new SvrBridge.Core.GazeReference(0.1f, 0.1f, 0.9899495f),
             true,
             SvrBridge.Core.OverlayAnchor.Head,
@@ -2280,6 +2303,8 @@ internal static class TraySelfTests
             received!.ChatAnchor.Equals(settings.ChatAnchor)
             && received.GazeSensitivity == settings.GazeSensitivity
             && received.ChatGazeScaleEnabled
+            && received.ChatGazeFadeEnabled
+            && !received.ChatAutoHideEnabled
             && received.ChatGazeReference == settings.ChatGazeReference,
             "The rest of the VR settings snapshot did not survive the worker message channel.");
         Assert(
@@ -2327,6 +2352,8 @@ internal static class TraySelfTests
             1.44,
             SvrBridge.Core.GazeSensitivity.Tight,
             true,
+            true,
+            false,
             new SvrBridge.Core.GazeReference(0.2f, 0.1f, 0.9746794f),
             true,
             new SvrBridge.Core.OverlayAnchor(SvrBridge.Core.OverlayAnchorMode.Controller, SvrBridge.Core.OverlayAnchorHand.Right),
@@ -2346,6 +2373,8 @@ internal static class TraySelfTests
         Assert(updated.GazeSensitivity == SvrBridge.Core.GazeSensitivity.Tight, "GazeSensitivity was not merged.");
         Assert(updated.ChatGazeReference == snapshot.ChatGazeReference, "ChatGazeReference was not merged.");
         Assert(updated.ChatGazeScaleEnabled, "ChatGazeScaleEnabled was not merged.");
+        Assert(updated.ChatGazeFadeEnabled, "ChatGazeFadeEnabled was not merged.");
+        Assert(!updated.ChatAutoHideEnabled, "ChatAutoHideEnabled was not merged.");
         Assert(updated.NotificationsEnabled, "NotificationsEnabled was not merged.");
         Assert(
             updated.NotificationAnchorMode == SvrBridge.Core.OverlayAnchorMode.Controller,
@@ -2444,9 +2473,11 @@ internal static class TraySelfTests
                 baseline with
                 {
                     ChatAnchorMode = SvrBridge.Core.OverlayAnchorMode.Head,
-                    GazeSensitivity = SvrBridge.Core.GazeSensitivity.Tight
+                    GazeSensitivity = SvrBridge.Core.GazeSensitivity.Tight,
+                    ChatGazeFadeEnabled = true,
+                    ChatAutoHideEnabled = false
                 }),
-            "Changing anchor mode or gaze sensitivity required a restart.");
+            "Changing anchor mode, gaze sensitivity, gaze fade, or auto-hide required a restart.");
         Assert(
             TrayApplicationContext.ReconcileChatGazeReference(
                 baseline,
@@ -3092,6 +3123,21 @@ internal static class TraySelfTests
     }
 
     /// <summary>
+    /// The chat overlay paints this local message before it is shown. A real
+    /// chat payload once happened to be the first texture upload, which made
+    /// an enabled window look absent until someone typed in chat.
+    /// </summary>
+    private static void TestChatStartupMessageMakesTheFirstPaintVisible()
+    {
+        var message = ChatOverlay.CreateStartupMessage();
+        Assert(
+            message.Target == SvrBridge.Core.StreamerBotEventTarget.Chat
+            && message.User == "SteamVR2Bot"
+            && message.Text == "Chat window ready.",
+            "The chat startup message no longer provides a normal chat payload for the first paint.");
+    }
+
+    /// <summary>
     /// Simulates the exact flow <c>ChatOverlay.Tick</c> uses: check the
     /// throttle once per append, as a caller polling once per 10 ms tick
     /// would. A burst of ten appends inside the throttle window must produce
@@ -3257,6 +3303,41 @@ internal static class TraySelfTests
             !ChatOverlay.ShouldShowSurface(hidden: true, autoVisible: true, calibratingGaze: false)
             && !ChatOverlay.ShouldShowSurface(hidden: false, autoVisible: false, calibratingGaze: false),
             "Normal hidden and automatic-visibility gates changed outside calibration.");
+    }
+
+    /// <summary>
+    /// Fade is intentionally independent from size. The fixed-size variant is
+    /// useful when a wearer wants chat to appear only when looked at but does
+    /// not want the text to shift as it comes in.
+    /// </summary>
+    private static void TestGazeFadeTargetsTransparencyIndependentlyOfSize()
+    {
+        const float smallAlpha = 0.35f;
+        const float largeAlpha = 0.95f;
+        Assert(
+            ChatOverlay.ResolveGazeAlpha(
+                isGazing: false,
+                grown: true,
+                gazeFadeEnabled: true,
+                smallAlpha: smallAlpha,
+                largeAlpha: largeAlpha) == 0f,
+            "Fade-on-gaze left a fixed-size, off-gaze chat panel visible.");
+        Assert(
+            ChatOverlay.ResolveGazeAlpha(
+                isGazing: true,
+                grown: true,
+                gazeFadeEnabled: true,
+                smallAlpha: smallAlpha,
+                largeAlpha: largeAlpha) == largeAlpha,
+            "Fade-on-gaze did not restore the configured full alpha while gazing.");
+        Assert(
+            ChatOverlay.ResolveGazeAlpha(
+                isGazing: false,
+                grown: false,
+                gazeFadeEnabled: false,
+                smallAlpha: smallAlpha,
+                largeAlpha: largeAlpha) == smallAlpha,
+            "Disabling gaze fade changed the existing faint off-gaze alpha.");
     }
 
     /// <summary>

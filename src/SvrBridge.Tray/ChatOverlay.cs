@@ -127,6 +127,22 @@ internal sealed class ChatOverlay : IDisposable
     private bool _gazeScaleEnabled = true;
 
     /// <summary>
+    /// Whether the panel becomes fully transparent outside the gaze cone. It
+    /// is deliberately independent from <see cref="_gazeScaleEnabled"/> so
+    /// a wearer may fade a fixed-size panel in without any size motion.
+    /// </summary>
+    private bool _gazeFadeEnabled;
+
+    /// <summary>
+    /// Whether the chat panel should disappear when its physical placement is
+    /// turned away from the wearer or too far from their head. This is
+    /// separate from gaze-scale: a wearer can keep a fixed-size chat panel
+    /// while still asking it to get out of the way when their controller is
+    /// lowered or rotated away.
+    /// </summary>
+    private bool _autoHideEnabled = true;
+
+    /// <summary>
     /// False when this SteamVR version refused to set a mouse scale on a
     /// regular overlay - see <see cref="TryCreate"/>. The window then behaves
     /// exactly as it did before this phase: readable, gaze-scaled, and not
@@ -183,7 +199,7 @@ internal sealed class ChatOverlay : IDisposable
 
     private bool _hidden;
     private bool _shown = true;
-    private readonly GazeScaleAnimation _gazeAnimation = new(SmallWidthMeters, SmallAlpha);
+    private readonly GazeScaleAnimation _gazeAnimation;
     private long? _lastAnimateMs;
     private bool _disposed;
 
@@ -195,6 +211,8 @@ internal sealed class ChatOverlay : IDisposable
         OverlayAnchorTracker anchorTracker,
         ChatGazeHysteresis gaze,
         OverlayPlacement placement,
+        float initialWidth,
+        float initialAlpha,
         Action<OverlayPlacement> placementChanged,
         Action<GazeReference> gazeReferenceChanged,
         Action<string> log)
@@ -219,16 +237,18 @@ internal sealed class ChatOverlay : IDisposable
         _anchorTracker = anchorTracker;
         _gaze = gaze;
         _placement = placement;
+        _gazeAnimation = new GazeScaleAnimation(initialWidth, initialAlpha);
         _placementChanged = placementChanged;
         _gazeReferenceChanged = gazeReferenceChanged;
         _log = log;
     }
 
     /// <summary>
-    /// Creates the surface and shows it immediately, small and faint, at
-    /// <paramref name="defaultAnchor"/>. Returns null when this SteamVR
-    /// version has no overlay interface, which is not worth failing the
-    /// worker over.
+    /// Creates the surface and shows it immediately at
+    /// <paramref name="defaultAnchor"/>. Its initial size and alpha honour
+    /// the gaze settings so fade-on-gaze does not flash a visible panel before
+    /// the first worker tick. Returns null when this SteamVR version has no
+    /// overlay interface, which is not worth failing the worker over.
     /// </summary>
     public static ChatOverlay? TryCreate(
         OpenVrInput openVr,
@@ -239,6 +259,8 @@ internal sealed class ChatOverlay : IDisposable
         double sizeScale,
         GazeSensitivity gazeSensitivity,
         bool gazeScaleEnabled,
+        bool gazeFadeEnabled,
+        bool autoHideEnabled,
         GazeReference gazeReference,
         Action<OverlayPlacement> placementChanged,
         Action<GazeReference> gazeReferenceChanged,
@@ -255,9 +277,18 @@ internal sealed class ChatOverlay : IDisposable
         IVrPanelRenderer<ChatContent>? renderer = null;
         try
         {
-            surface.SetWidthInMeters(SmallWidthMeters * (float)sizeScale);
+            var resolvedOpacity = (float)Math.Clamp(opacity, 0.2, 1.0);
+            var resolvedSizeScale = (float)Math.Clamp(sizeScale, 0.5, 2.0);
+            var initialGrown = !gazeScaleEnabled;
+            var initialWidth = (initialGrown ? LargeWidthMeters : SmallWidthMeters) * resolvedSizeScale;
+            var initialAlpha = gazeFadeEnabled
+                ? 0f
+                : initialGrown
+                    ? resolvedOpacity
+                    : resolvedOpacity * (SmallAlpha / LargeAlpha);
+            surface.SetWidthInMeters(initialWidth);
             surface.SetCurvature(0.05f);
-            surface.SetAlpha(SmallAlpha * (float)(opacity / LargeAlpha));
+            surface.SetAlpha(initialAlpha);
             surface.SetSortOrder(0);
             // Set once, at creation, and in the panel's own pixels: it is what
             // makes a laser event's x/y directly comparable to the rectangles
@@ -295,6 +326,8 @@ internal sealed class ChatOverlay : IDisposable
                 anchorTracker,
                 ChatGazeHysteresis.Create(gazeSensitivity),
                 placement,
+                initialWidth,
+                initialAlpha,
                 placementChanged,
                 gazeReferenceChanged,
                 log)
@@ -303,9 +336,18 @@ internal sealed class ChatOverlay : IDisposable
                 _sizeScale = sizeScale,
                 _gazeSensitivity = gazeSensitivity,
                 _gazeScaleEnabled = gazeScaleEnabled,
+                _gazeFadeEnabled = gazeFadeEnabled,
+                _autoHideEnabled = autoHideEnabled,
                 _gazeReference = gazeReference.IsUsable ? gazeReference : GazeReference.None,
                 _laserInputAvailable = laserInput
             };
+            // SteamVR shows an overlay without a texture as a blank surface
+            // (and some runtimes do not visibly present it until their first
+            // texture upload). Seed and paint an app-local line before Show,
+            // so an enabled chat window is immediately discoverable and can
+            // be used as the target for gaze calibration.
+            overlay.Enqueue(CreateStartupMessage());
+            overlay.RepaintIfOwed(Environment.TickCount64);
             surface.Show();
             log($"The chat window is on. {DescribePlacement(defaultAnchor)}");
             return overlay;
@@ -456,6 +498,22 @@ internal sealed class ChatOverlay : IDisposable
     /// </summary>
     public void SetGazeScaleEnabled(bool enabled) => _gazeScaleEnabled = enabled;
 
+    /// <summary>Turns the gaze-controlled alpha fade on or off without changing panel size.</summary>
+    public void SetGazeFadeEnabled(bool enabled) => _gazeFadeEnabled = enabled;
+
+    /// <summary>
+    /// Changes the automatic angle/distance visibility gate live. Disabling
+    /// it immediately restores a panel previously hidden by that gate.
+    /// </summary>
+    public void SetAutoHideEnabled(bool enabled)
+    {
+        _autoHideEnabled = enabled;
+        if (!enabled)
+        {
+            _visibility.ForceVisible();
+        }
+    }
+
     /// <summary>
     /// <summary>
     /// Developer-only: switches this surface between the default
@@ -508,6 +566,7 @@ internal sealed class ChatOverlay : IDisposable
         // never advances, and the dashboard is stranded on “Calibrating…”.
         var autoVisible = dragging
                           || calibratingGaze
+                          || !_autoHideEnabled
                           || _visibility.Update(view.FacingDot, view.DistanceMeters);
         LogVisibilityChange(autoVisible, view);
 
@@ -559,6 +618,19 @@ internal sealed class ChatOverlay : IDisposable
     /// </summary>
     internal static bool ShouldShowSurface(bool hidden, bool autoVisible, bool calibratingGaze) =>
         calibratingGaze || (!hidden && autoVisible);
+
+    /// <summary>
+    /// The local first line is deliberately a normal chat payload so the
+    /// usual renderer, texture uploader and repaint throttle exercise the
+    /// exact path real messages use.
+    /// </summary>
+    internal static StreamerBotEventPayload CreateStartupMessage() => new()
+    {
+        Target = StreamerBotEventTarget.Chat,
+        User = "SteamVR2Bot",
+        Colour = "#8EC5FF",
+        Text = "Chat window ready."
+    };
 
     /// <summary>
     /// Where the panel stands relative to the wearer's head, from live poses.
@@ -641,7 +713,7 @@ internal sealed class ChatOverlay : IDisposable
         var smallAlpha = largeAlpha * (SmallAlpha / LargeAlpha);
         var sizeScale = (float)_sizeScale;
         var targetWidth = (grown ? LargeWidthMeters : SmallWidthMeters) * sizeScale;
-        var targetAlpha = grown ? largeAlpha : smallAlpha;
+        var targetAlpha = ResolveGazeAlpha(isGazing, grown, _gazeFadeEnabled, smallAlpha, largeAlpha);
 
         // Exponential ease towards the target rather than an instant jump,
         // so the transition reads as smooth motion - required by the manual
@@ -658,6 +730,19 @@ internal sealed class ChatOverlay : IDisposable
         _surface.SetWidthInMeters(_gazeAnimation.Width);
         _surface.SetAlpha(_gazeAnimation.Alpha);
     }
+
+    /// <summary>
+    /// Computes the alpha target independently from the size target: when
+    /// fading is enabled, the panel is transparent outside gaze even if size
+    /// growth is disabled and its width therefore remains large.
+    /// </summary>
+    internal static float ResolveGazeAlpha(
+        bool isGazing,
+        bool grown,
+        bool gazeFadeEnabled,
+        float smallAlpha,
+        float largeAlpha) =>
+        gazeFadeEnabled && !isGazing ? 0f : grown ? largeAlpha : smallAlpha;
 
     private void AdvanceGazeCalibration(GazeReference currentGazeDirection, long nowMs)
     {

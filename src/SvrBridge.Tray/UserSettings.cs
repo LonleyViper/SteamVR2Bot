@@ -111,6 +111,20 @@ internal sealed record UserSettings
     /// </summary>
     public bool ChatGazeScaleEnabled { get; init; }
 
+    /// <summary>
+    /// Makes chat fade from transparent to its configured opacity when it is
+    /// gazed at. Independent from size growth and off by default so existing
+    /// windows retain their current always-visible alpha.
+    /// </summary>
+    public bool ChatGazeFadeEnabled { get; init; }
+
+    /// <summary>
+    /// Keeps the chat panel out of the way when it is turned away or too far
+    /// from the wearer's head. Defaults to the behaviour that shipped before
+    /// this became configurable.
+    /// </summary>
+    public bool ChatAutoHideEnabled { get; init; } = true;
+
     /// <summary>Optional wearer-calibrated centre for the chat gaze cone; the invalid default keeps the original direct-to-panel behaviour.</summary>
     public GazeReference ChatGazeReference { get; init; } = GazeReference.None;
 
@@ -311,6 +325,8 @@ internal sealed record UserSettings
             ChatSizeScale = ChatSizeScale,
             GazeSensitivity = GazeSensitivity,
             ChatGazeScaleEnabled = ChatGazeScaleEnabled,
+            ChatGazeFadeEnabled = ChatGazeFadeEnabled,
+            ChatAutoHideEnabled = ChatAutoHideEnabled,
             ChatGazeReference = ChatGazeReference,
             NotificationOpacity = NotificationOpacity,
             NotificationSizeScale = NotificationSizeScale,
@@ -386,6 +402,8 @@ internal sealed class UserSettingsStore
             ChatSizeScale = settings.ChatSizeScale,
             GazeSensitivity = settings.GazeSensitivity,
             ChatGazeScaleEnabled = settings.ChatGazeScaleEnabled,
+            ChatGazeFadeEnabled = settings.ChatGazeFadeEnabled,
+            ChatAutoHideEnabled = settings.ChatAutoHideEnabled,
             ChatGazeReference = settings.ChatGazeReference,
             NotificationOpacity = settings.NotificationOpacity,
             NotificationSizeScale = settings.NotificationSizeScale,
@@ -491,6 +509,8 @@ internal sealed class UserSettingsStore
                 ChatSizeScale = saved.ChatSizeScale,
                 GazeSensitivity = saved.GazeSensitivity,
                 ChatGazeScaleEnabled = saved.ChatGazeScaleEnabled,
+                ChatGazeFadeEnabled = saved.ChatGazeFadeEnabled,
+                ChatAutoHideEnabled = saved.ChatAutoHideEnabled,
                 ChatGazeReference = saved.ChatGazeReference.IsUsable
                     ? saved.ChatGazeReference
                     : GazeReference.None,
@@ -620,6 +640,8 @@ internal sealed class UserSettingsStore
         public double ChatSizeScale { get; init; } = 1.0;
         public GazeSensitivity GazeSensitivity { get; init; } = GazeSensitivity.Normal;
         public bool ChatGazeScaleEnabled { get; init; }
+        public bool ChatGazeFadeEnabled { get; init; }
+        public bool ChatAutoHideEnabled { get; init; } = true;
         public GazeReference ChatGazeReference { get; init; } = GazeReference.None;
         public double NotificationOpacity { get; init; } = 1.0;
         public double NotificationSizeScale { get; init; } = 1.0;

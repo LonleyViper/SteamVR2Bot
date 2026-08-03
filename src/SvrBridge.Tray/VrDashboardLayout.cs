@@ -115,6 +115,13 @@ internal static class VrDashboardLayout
 
     public const int ResetPlacementY = 650;
 
+    /// <summary>
+    /// A dedicated final Chat-settings row for the independent alpha fade.
+    /// The settings pages have no bottom bar, so this stays clear of every
+    /// existing control while remaining inside the 900px dashboard canvas.
+    /// </summary>
+    public const int GazeFadeY = 750;
+
     public static readonly Rectangle GazeCalibration =
         new(60, GazeCalibrationY, 560, SettingsRowHeight);
 
@@ -141,6 +148,14 @@ internal static class VrDashboardLayout
     /// </summary>
     public static readonly Rectangle GazeScaleToggle =
         new(1090, ResetPlacementY, 250, SettingsRowHeight);
+
+    /// <summary>Turns the chat panel's head-relative angle/distance hide gate on or off.</summary>
+    public static readonly Rectangle ChatAutoHideToggle =
+        new(650, ResetPlacementY, 380, SettingsRowHeight);
+
+    /// <summary>Turns transparent-to-opaque gaze fade on or off.</summary>
+    public static readonly Rectangle GazeFadeToggle =
+        new(1090, GazeFadeY, 250, SettingsRowHeight);
 
     /// <summary>On/off toggle for the chat window.</summary>
     public static readonly Rectangle ChatToggle = new(1090, ChatControlsY, 250, SettingsRowHeight);

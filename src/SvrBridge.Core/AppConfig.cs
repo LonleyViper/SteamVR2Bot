@@ -65,6 +65,20 @@ public sealed class AppConfig
     /// </summary>
     public bool ChatGazeScaleEnabled { get; init; }
 
+    /// <summary>
+    /// Whether chat fades fully in only while it is being gazed at. Kept
+    /// independent of <see cref="ChatGazeScaleEnabled"/> so a wearer can use
+    /// either effect, both, or neither. Defaults off to preserve prior alpha.
+    /// </summary>
+    public bool ChatGazeFadeEnabled { get; init; }
+
+    /// <summary>
+    /// Whether chat hides itself when its face is turned away from the wearer
+    /// or it has been placed too far from their head. Defaults to the
+    /// existing Phase 5 behaviour so upgrading changes nothing.
+    /// </summary>
+    public bool ChatAutoHideEnabled { get; init; } = true;
+
     /// <summary>A wearer-calibrated centre for the chat gaze cone; <see cref="GazeReference.None"/> keeps the original direct-to-panel behaviour.</summary>
     public GazeReference ChatGazeReference { get; init; } = GazeReference.None;
 

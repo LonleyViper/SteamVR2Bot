@@ -36,6 +36,8 @@ internal sealed class MainForm : Form
     private readonly TrackBar _chatSizeScale = new();
     private readonly ComboBox _gazeSensitivity = new();
     private readonly CheckBox _chatGazeScale = new();
+    private readonly CheckBox _chatGazeFade = new();
+    private readonly CheckBox _chatAutoHide = new();
     private readonly TrackBar _notificationOpacity = new();
     private readonly TrackBar _notificationSizeScale = new();
 
@@ -170,6 +172,8 @@ internal sealed class MainForm : Form
             ChatSizeScale = SizeScaleFromSlider(_chatSizeScale),
             GazeSensitivity = (GazeSensitivity)Math.Clamp(_gazeSensitivity.SelectedIndex, 0, 2),
             ChatGazeScaleEnabled = _chatGazeScale.Checked,
+            ChatGazeFadeEnabled = _chatGazeFade.Checked,
+            ChatAutoHideEnabled = _chatAutoHide.Checked,
             ChatGazeReference = _chatGazeReference,
             NotificationOpacity = OpacityFromSlider(_notificationOpacity),
             NotificationSizeScale = SizeScaleFromSlider(_notificationSizeScale),
@@ -239,6 +243,8 @@ internal sealed class MainForm : Form
             ApplySizeScaleToSlider(_chatSizeScale, settings.ChatSizeScale);
             _gazeSensitivity.SelectedIndex = (int)settings.GazeSensitivity;
             _chatGazeScale.Checked = settings.ChatGazeScaleEnabled;
+            _chatGazeFade.Checked = settings.ChatGazeFadeEnabled;
+            _chatAutoHide.Checked = settings.ChatAutoHideEnabled;
             ApplyOpacityToSlider(_notificationOpacity, settings.NotificationOpacity);
             ApplySizeScaleToSlider(_notificationSizeScale, settings.NotificationSizeScale);
             _notificationPlacement = settings.NotificationPlacement;
@@ -802,6 +808,14 @@ internal sealed class MainForm : Form
         _chatGazeScale.AutoSize = true;
         _chatGazeScale.CheckedChanged += (_, _) => NotifySettingsChanged();
 
+        _chatGazeFade.Text = "Fade chat in only when you look at it";
+        _chatGazeFade.AutoSize = true;
+        _chatGazeFade.CheckedChanged += (_, _) => NotifySettingsChanged();
+
+        _chatAutoHide.Text = "Hide chat when it is turned away or too far from your head";
+        _chatAutoHide.AutoSize = true;
+        _chatAutoHide.CheckedChanged += (_, _) => NotifySettingsChanged();
+
         return Section(
             "Chat window",
             "Your Twitch chat appears in a window on your wrist - no Streamer.bot action needed. "
@@ -811,7 +825,9 @@ internal sealed class MainForm : Form
             SliderRow("Opacity:", _chatOpacity),
             SliderRow("Size:", _chatSizeScale),
             SettingRow("Gaze sensitivity:", _gazeSensitivity),
-            Indented(_chatGazeScale));
+            Indented(_chatGazeScale),
+            Indented(_chatGazeFade),
+            Indented(_chatAutoHide));
     }
 
     /// <summary>Controller status and the SteamVR repair/binding buttons.</summary>

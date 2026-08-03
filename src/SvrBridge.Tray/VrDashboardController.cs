@@ -818,6 +818,16 @@ internal sealed class VrDashboardController : IDisposable
             return;
         }
 
+        if (IsWithinRow(y, VrDashboardLayout.GazeFadeY, VrDashboardLayout.SettingsRowHeight))
+        {
+            var toggle = VrDashboardLayout.GazeFadeToggle;
+            if (x >= toggle.Left && x <= toggle.Right)
+            {
+                _settings = _settings with { ChatGazeFadeEnabled = !_settings.ChatGazeFadeEnabled };
+                ApplySettingsChange();
+            }
+        }
+
     }
 
     private void HandleNotificationSettingsClick(float x, float y)
@@ -885,6 +895,14 @@ internal sealed class VrDashboardController : IDisposable
         if (x >= toggle.Left && x <= toggle.Right)
         {
             _settings = _settings with { ChatGazeScaleEnabled = !_settings.ChatGazeScaleEnabled };
+            ApplySettingsChange();
+            return;
+        }
+
+        var autoHideToggle = VrDashboardLayout.ChatAutoHideToggle;
+        if (x >= autoHideToggle.Left && x <= autoHideToggle.Right)
+        {
+            _settings = _settings with { ChatAutoHideEnabled = !_settings.ChatAutoHideEnabled };
             ApplySettingsChange();
             return;
         }
