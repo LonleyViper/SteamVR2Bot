@@ -442,7 +442,7 @@ internal static class VrDashboardRenderer
             bounds.Top + 4);
         graphics.DrawString(
             positioningEnabled
-                ? "Point at the frame, pull the trigger anywhere on it, and drag."
+                ? "The sample frame is active. Close the dashboard, drag it, then release to save."
                 : "Show a draggable sample frame to set the position.",
             fonts.Body,
             brushes.Muted,
@@ -457,7 +457,7 @@ internal static class VrDashboardRenderer
             14);
         DrawCenteredText(
             graphics,
-            positioningEnabled ? "On" : "Off",
+            positioningEnabled ? "Finish placing" : "Place notifications",
             fonts.Heading,
             brushes.White,
             toggle);

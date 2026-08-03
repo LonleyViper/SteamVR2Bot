@@ -159,6 +159,15 @@ internal static class VrDashboardLayout
         new(1090, NotificationPositioningY, 250, SettingsRowHeight);
 
     /// <summary>
+    /// The forgiving laser hit target for <see cref="PositionNotificationsToggle"/>.
+    /// The action's explanatory text occupies the otherwise-empty space beside
+    /// the visual button, so treating that space as part of the same action
+    /// prevents a near miss from looking like an anchor or preview failure.
+    /// </summary>
+    public static readonly Rectangle PositionNotificationsHitTarget =
+        new(1030, NotificationPositioningY, 370, SettingsRowHeight);
+
+    /// <summary>
     /// Puts the notification panel's hand-dragged offset back to its
     /// hardware-proven default - the Notifications-page counterpart of
     /// <see cref="ResetPlacement"/>, and for the identical reason: a frame

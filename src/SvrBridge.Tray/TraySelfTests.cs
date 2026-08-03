@@ -638,6 +638,16 @@ internal static class TraySelfTests
                 VrDashboardLayout.NotificationToggle),
             "The notifications controls row overlaps itself.");
 
+        // The placement action's prose is immediately beside its visual
+        // button. Its laser hit target deliberately includes that otherwise
+        // empty space, so a near miss does not look like the preview failed
+        // to appear. It must still remain clear of the reset action.
+        Assert(
+            VrDashboardLayout.PositionNotificationsHitTarget.Contains(1385, 456)
+            && !VrDashboardLayout.PositionNotificationsHitTarget.IntersectsWith(
+                VrDashboardLayout.ResetNotificationPlacement),
+            "The notification placement action does not have a forgiving, isolated hit target.");
+
         // The opacity and size sliders share a row the same way.
         Assert(
             !VrDashboardLayout.ChatOpacityTrack.IntersectsWith(VrDashboardLayout.ChatSizeTrack),
@@ -663,7 +673,9 @@ internal static class TraySelfTests
             .. VrDashboardLayout.NotificationAnchorHand,
             .. VrDashboardLayout.GazeSensitivity,
             VrDashboardLayout.ResetPlacement,
-            VrDashboardLayout.GazeScaleToggle
+            VrDashboardLayout.GazeScaleToggle,
+            VrDashboardLayout.PositionNotificationsHitTarget,
+            VrDashboardLayout.ResetNotificationPlacement
         ];
         foreach (var control in allControls)
         {

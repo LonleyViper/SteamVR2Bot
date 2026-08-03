@@ -850,7 +850,7 @@ internal sealed class VrDashboardController : IDisposable
     /// </summary>
     private void HandleNotificationPositioningClick(float x)
     {
-        var toggle = VrDashboardLayout.PositionNotificationsToggle;
+        var toggle = VrDashboardLayout.PositionNotificationsHitTarget;
         if (x >= toggle.Left && x <= toggle.Right)
         {
             _positioningNotifications = !_positioningNotifications;

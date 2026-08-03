@@ -239,10 +239,13 @@ slider under Notifications.
 ### Positioning
 
 The VR dashboard has a tab per surface — **Shortcuts**, **Chat**,
-**Notifications**. On **Notifications**, turn on **Position notifications** to
-pin a permanent dummy frame you can grab with the laser and place exactly where
-you want alerts to appear. Turning it off, leaving the tab, or restarting all
-keep the placement, and a reset button puts it back.
+**Notifications**. Select the anchor you want first, then choose **Place
+notifications**. It pins a permanent dummy frame you can grab with the laser
+and place exactly where you want alerts to appear. Close the SteamVR dashboard
+without changing SteamVR2Bot tabs, point at the frame, hold the trigger while
+moving it, then release to save. The button becomes **Finish placing**; use it
+only to dismiss the frame after you are done. Leaving the tab or restarting
+also keeps the placement, and a reset button puts it back.
 
 ## Controller inputs
 
