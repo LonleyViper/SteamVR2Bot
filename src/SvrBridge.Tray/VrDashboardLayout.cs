@@ -125,6 +125,10 @@ internal static class VrDashboardLayout
     public static readonly Rectangle GazeCalibration =
         new(60, GazeCalibrationY, 560, SettingsRowHeight);
 
+    /// <summary>Opens the compact Chat Appearance subpage, keeping the main page readable.</summary>
+    public static readonly Rectangle ChatAppearanceOpen =
+        new(60, GazeFadeY, 920, SettingsRowHeight);
+
     /// <summary>
     /// Puts the chat window's hand-dragged offset back to the placement Phase
     /// 1/3 proved on hardware.
@@ -156,6 +160,28 @@ internal static class VrDashboardLayout
     /// <summary>Turns transparent-to-opaque gaze fade on or off.</summary>
     public static readonly Rectangle GazeFadeToggle =
         new(1090, GazeFadeY, 250, SettingsRowHeight);
+
+    // --- Compact Chat Appearance subpage ---
+    public const int ChatAppearancePresetsY = 260;
+    public const int ChatAppearanceSlidersY = 400;
+    public const int ChatAppearanceBackY = 610;
+
+    /// <summary>Default, Retrowave, Matrix - the appearance page's one-tap starting points.</summary>
+    public static readonly Rectangle[] ChatAppearancePresets =
+    [
+        new(60, ChatAppearancePresetsY, 400, SettingsRowHeight),
+        new(500, ChatAppearancePresetsY, 400, SettingsRowHeight),
+        new(940, ChatAppearancePresetsY, 400, SettingsRowHeight)
+    ];
+
+    public static readonly Rectangle ChatGlowIntensityTrack =
+        new(60, ChatAppearanceSlidersY, 580, SettingsSliderRowHeight);
+
+    public static readonly Rectangle ChatGlowSizeTrack =
+        new(760, ChatAppearanceSlidersY, 580, SettingsSliderRowHeight);
+
+    public static readonly Rectangle ChatAppearanceBack =
+        new(60, ChatAppearanceBackY, 320, SettingsRowHeight);
 
     /// <summary>On/off toggle for the chat window.</summary>
     public static readonly Rectangle ChatToggle = new(1090, ChatControlsY, 250, SettingsRowHeight);

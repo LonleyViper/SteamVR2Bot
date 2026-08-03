@@ -58,6 +58,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
 
     private readonly WpfRenderThread _renderThread;
     private readonly ChatImageCache? _chatImages;
+    private readonly LocalBackgroundImageCache _backgroundImages = new();
     private bool _disposed;
 
     /// <param name="chatImages">
@@ -75,12 +76,16 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     public RenderedPanel Render(ChatContent content)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return _renderThread.Invoke(() => RenderOnDispatcherThread(content, _chatImages));
+        return _renderThread.Invoke(() => RenderOnDispatcherThread(content, _chatImages, _backgroundImages));
     }
 
-    private static RenderedPanel RenderOnDispatcherThread(ChatContent content, ChatImageCache? chatImages)
+    private static RenderedPanel RenderOnDispatcherThread(
+        ChatContent content,
+        ChatImageCache? chatImages,
+        LocalBackgroundImageCache backgroundImages)
     {
-        var panel = BuildPanel(content, chatImages);
+        var appearance = (content.Appearance ?? ChatAppearanceSettings.Default).Sanitised();
+        var panel = BuildPanel(content, chatImages, appearance, backgroundImages.TryGet(appearance.SafeBackgroundImagePath));
         var pixels = WpfOverlayPixelPipeline.RenderToRgba(panel, PanelWidth, PanelHeight);
         return new RenderedPanel(pixels, PanelWidth, PanelHeight);
     }
@@ -91,14 +96,23 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     /// string wraps onto multiple lines instead of silently overflowing the
     /// panel width.
     /// </summary>
-    internal static Border BuildPanel(ChatContent content, ChatImageCache? chatImages = null)
+    internal static Border BuildPanel(
+        ChatContent content,
+        ChatImageCache? chatImages = null,
+        ChatAppearanceSettings? appearance = null,
+        BitmapSource? backgroundImage = null)
     {
+        var safeAppearance = (appearance ?? content.Appearance ?? ChatAppearanceSettings.Default).Sanitised();
         // The texture is wider than the visible card so the move tab can live
         // outside it. The symmetric gutters keep the card centred at the
         // existing overlay placement. Controls are positioned from
         // ChatOverlayLayout, whose rectangles are in the same panel pixels
         // SteamVR reports mouse events in.
         var grid = new Grid { Width = PanelWidth, Height = PanelHeight };
+        foreach (var halo in BuildGlowHalos(safeAppearance))
+        {
+            grid.Children.Add(halo);
+        }
         grid.Children.Add(
             new Border
             {
@@ -111,10 +125,10 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
                     ChatOverlayLayout.ChatCardBounds.Top,
                     0,
                     0),
-                Background = new SolidColorBrush(BackgroundColor),
+                Background = new SolidColorBrush(ParseColour(safeAppearance.SafeBackgroundHex, BackgroundColor)),
                 ClipToBounds = true,
                 Padding = new Thickness(0),
-                Child = BuildWorkspaceCard(content, chatImages)
+                Child = BuildWorkspaceCard(content, chatImages, safeAppearance, backgroundImage)
             });
         foreach (var index in new[]
                  {
@@ -122,11 +136,11 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
                      ChatOverlayLayout.EventsTabIndex
                  })
         {
-            grid.Children.Add(BuildControl(index, content));
+            grid.Children.Add(BuildControl(index, content, safeAppearance));
         }
         if (content.MoveHandleVisible)
         {
-            grid.Children.Add(BuildControl(ChatOverlayLayout.MoveHandleIndex, content));
+            grid.Children.Add(BuildControl(ChatOverlayLayout.MoveHandleIndex, content, safeAppearance));
         }
 
         return new Border
@@ -144,7 +158,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     /// panel exists to keep. The highlight is keyed on the hovered index and
     /// nothing else, so it can never light up a control the laser would miss.
     /// </summary>
-    private static UIElement BuildControl(int index, ChatContent content)
+    private static UIElement BuildControl(int index, ChatContent content, ChatAppearanceSettings appearance)
     {
         var bounds = ChatOverlayLayout.Buttons[index];
         var isMove = index == ChatOverlayLayout.MoveHandleIndex;
@@ -160,10 +174,10 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             CornerRadius = new CornerRadius(12),
             Background = new SolidColorBrush(
                 isMove && index == content.HoveredButtonIndex
-                    ? HandleHoverColor
+                    ? WithOpacity(ParseColour(appearance.SafeAccentHex, HandleHoverColor), 235)
                     : isActiveTab
-                        ? WpfColor.FromArgb(190, 59, 130, 246)
-                        : HandleColor),
+                        ? WithOpacity(ParseColour(appearance.SafeAccentHex, WpfColor.FromRgb(59, 130, 246)), 190)
+                        : WithOpacity(ParseColour(appearance.SafeAccentHex, HandleColor), 90)),
             Padding = isMove ? new Thickness(bounds.Width * 0.2) : new Thickness(0),
             Child = isMove
                 ? new System.Windows.Shapes.Path
@@ -178,7 +192,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
                     FontFamily = new WpfFontFamily("Segoe UI"),
                     FontSize = 20,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = new SolidColorBrush(WpfColor.FromRgb(245, 250, 255)),
+                    Foreground = new SolidColorBrush(ParseColour(appearance.SafeTextHex, WpfColor.FromRgb(245, 250, 255))),
                     HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
                     VerticalAlignment = VerticalAlignment.Center,
                     TextAlignment = TextAlignment.Center
@@ -186,14 +200,19 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
         };
     }
 
-    private static UIElement BuildWorkspaceCard(ChatContent content, ChatImageCache? chatImages)
+    private static UIElement BuildWorkspaceCard(
+        ChatContent content,
+        ChatImageCache? chatImages,
+        ChatAppearanceSettings appearance,
+        BitmapSource? backgroundImage)
     {
         var entries = content.Entries;
         var body = content.ActiveTab == ChatWorkspaceTab.Events
-            ? BuildEventTextBlock(entries ?? [])
+            ? BuildEventTextBlock(entries ?? [], appearance)
             : BuildTextBlock(
                 entries is null ? content.Messages : entries.Select(entry => entry.Payload).ToArray(),
-                chatImages);
+                chatImages,
+                appearance);
         FitWorkspaceTextToBounds(body);
         body.Width = ChatOverlayLayout.ContentBounds.Width;
         body.Height = ChatOverlayLayout.ContentBounds.Height;
@@ -205,6 +224,14 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             0,
             0);
         var card = new Grid();
+        if (backgroundImage is not null && appearance.SafeBackgroundImageOpacity > 0)
+        {
+            card.Children.Add(new Border
+            {
+                Background = new ImageBrush(backgroundImage) { Stretch = Stretch.UniformToFill, Opacity = appearance.SafeBackgroundImageOpacity },
+                IsHitTestVisible = false
+            });
+        }
         card.Children.Add(body);
 
         // This is deliberately visual-only: controller scroll events remain
@@ -214,10 +241,10 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
         var thumb = ChatOverlayLayout.ScrollbarThumbBounds(content.ActiveEntryCount, content.ScrollFraction);
         card.Children.Add(BuildScrollbarPart(
             track,
-            WpfColor.FromArgb(74, 155, 187, 215)));
+            WithOpacity(ParseColour(appearance.SafeAccentHex, WpfColor.FromRgb(155, 187, 215)), 74)));
         card.Children.Add(BuildScrollbarPart(
             thumb,
-            WpfColor.FromArgb(210, 195, 224, 245)));
+            WithOpacity(ParseColour(appearance.SafeAccentHex, WpfColor.FromRgb(195, 224, 245)), 210)));
         return card;
     }
 
@@ -281,18 +308,18 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             IsHitTestVisible = false
         };
 
-    private static TextBlock BuildEventTextBlock(IReadOnlyList<ChatWorkspaceEntry> entries)
+    private static TextBlock BuildEventTextBlock(IReadOnlyList<ChatWorkspaceEntry> entries, ChatAppearanceSettings appearance)
     {
         var textBlock = new TextBlock
         {
             FontFamily = new WpfFontFamily("Segoe UI"),
             FontSize = 18,
             TextWrapping = TextWrapping.Wrap,
-            Foreground = new SolidColorBrush(BodyColor)
+            Foreground = new SolidColorBrush(ParseColour(appearance.SafeTextHex, BodyColor))
         };
         if (entries.Count == 0)
         {
-            textBlock.Inlines.Add(new Run("No events received this session yet.") { Foreground = new SolidColorBrush(BadgeColor) });
+            textBlock.Inlines.Add(new Run("No events received this session yet.") { Foreground = new SolidColorBrush(WithOpacity(ParseColour(appearance.SafeAccentHex, BadgeColor), BadgeColor.A)) });
             return textBlock;
         }
 
@@ -302,13 +329,13 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             var payload = entry.Payload;
             var title = string.IsNullOrWhiteSpace(payload.Title) ? "Event" : payload.Title;
             var source = string.IsNullOrWhiteSpace(payload.Source) ? "Streamer.bot" : payload.Source;
-            textBlock.Inlines.Add(new Run($"{entry.ReceivedAt.LocalDateTime:HH:mm}  ") { Foreground = new SolidColorBrush(BadgeColor) });
-            textBlock.Inlines.Add(new Run(title) { FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(BodyColor) });
+            textBlock.Inlines.Add(new Run($"{entry.ReceivedAt.LocalDateTime:HH:mm}  ") { Foreground = new SolidColorBrush(WithOpacity(ParseColour(appearance.SafeAccentHex, BadgeColor), BadgeColor.A)) });
+            textBlock.Inlines.Add(new Run(title) { FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(ParseColour(appearance.SafeTextHex, BodyColor)) });
             if (!string.IsNullOrWhiteSpace(payload.Text))
             {
-                textBlock.Inlines.Add(new Run($" — {payload.Text}") { Foreground = new SolidColorBrush(BodyColor) });
+                textBlock.Inlines.Add(new Run($" — {payload.Text}") { Foreground = new SolidColorBrush(ParseColour(appearance.SafeTextHex, BodyColor)) });
             }
-            textBlock.Inlines.Add(new Run($"  [{source}]") { Foreground = new SolidColorBrush(BadgeColor) });
+            textBlock.Inlines.Add(new Run($"  [{source}]") { Foreground = new SolidColorBrush(WithOpacity(ParseColour(appearance.SafeAccentHex, BadgeColor), BadgeColor.A)) });
         }
 
         return textBlock;
@@ -316,7 +343,8 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
 
     internal static TextBlock BuildTextBlock(
         IReadOnlyList<StreamerBotEventPayload> messages,
-        ChatImageCache? chatImages = null)
+        ChatImageCache? chatImages = null,
+        ChatAppearanceSettings? appearance = null)
     {
         var textBlock = new TextBlock
         {
@@ -332,7 +360,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
 
         foreach (var message in messages)
         {
-            AppendMessage(textBlock.Inlines, message, chatImages);
+            AppendMessage(textBlock.Inlines, message, chatImages, (appearance ?? ChatAppearanceSettings.Default).Sanitised());
         }
 
         return textBlock;
@@ -341,7 +369,8 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     private static void AppendMessage(
         InlineCollection inlines,
         StreamerBotEventPayload message,
-        ChatImageCache? chatImages)
+        ChatImageCache? chatImages,
+        ChatAppearanceSettings appearance)
     {
         if (inlines.Count > 0)
         {
@@ -357,10 +386,11 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
                 FontWeight = FontWeights.Bold
             });
 
-        AppendBadge(inlines, message, chatImages);
+        AppendBadge(inlines, message, chatImages, appearance);
 
-        inlines.Add(new Run(": ") { Foreground = new SolidColorBrush(BodyColor) });
-        AppendBodyText(inlines, message, chatImages);
+        var textColour = ParseColour(appearance.SafeTextHex, BodyColor);
+        inlines.Add(new Run(": ") { Foreground = new SolidColorBrush(textColour) });
+        AppendBodyText(inlines, message, chatImages, textColour);
     }
 
     /// <summary>
@@ -374,7 +404,8 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     private static void AppendBadge(
         InlineCollection inlines,
         StreamerBotEventPayload message,
-        ChatImageCache? chatImages)
+        ChatImageCache? chatImages,
+        ChatAppearanceSettings appearance)
     {
         var badges = message.Badges.Count > 0
             ? message.Badges
@@ -384,7 +415,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
 
         foreach (var badge in badges)
         {
-            AppendOneBadge(inlines, badge, chatImages);
+            AppendOneBadge(inlines, badge, chatImages, appearance);
         }
     }
 
@@ -397,14 +428,18 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     /// reasons the emote text fallback exists: no cache supplied, image
     /// still downloading, or no image URL at all for this badge.
     /// </summary>
-    private static void AppendOneBadge(InlineCollection inlines, ChatBadge badge, ChatImageCache? chatImages)
+    private static void AppendOneBadge(
+        InlineCollection inlines,
+        ChatBadge badge,
+        ChatImageCache? chatImages,
+        ChatAppearanceSettings appearance)
     {
         if (badge.ImageUrl.Length > 0
             && chatImages is not null
             && chatImages.TryGetByUrl(badge.ImageUrl, out var badgeImage)
             && badgeImage is not null)
         {
-            inlines.Add(new Run(" ") { Foreground = new SolidColorBrush(BodyColor) });
+            inlines.Add(new Run(" ") { Foreground = new SolidColorBrush(ParseColour(appearance.SafeTextHex, BodyColor)) });
             inlines.Add(
                 new InlineUIContainer(BuildInlineImage(badgeImage, BadgeImageHeight))
                 {
@@ -413,7 +448,10 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             return;
         }
 
-        inlines.Add(new Run($" [{badge.Label}]") { Foreground = new SolidColorBrush(BadgeColor) });
+        inlines.Add(new Run($" [{badge.Label}]")
+        {
+            Foreground = new SolidColorBrush(WithOpacity(ParseColour(appearance.SafeAccentHex, BadgeColor), BadgeColor.A))
+        });
     }
 
     /// <summary>
@@ -433,11 +471,12 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     private static void AppendBodyText(
         InlineCollection inlines,
         StreamerBotEventPayload message,
-        ChatImageCache? chatImages)
+        ChatImageCache? chatImages,
+        WpfColor textColour)
     {
         if (message.Emotes.Count > 0)
         {
-            AppendSpannedEmotes(inlines, message.Text, message.Emotes, chatImages);
+            AppendSpannedEmotes(inlines, message.Text, message.Emotes, chatImages, textColour);
             return;
         }
 
@@ -445,7 +484,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
         var emoteNames = message.EmoteNames;
         if (emoteNames.Count == 0)
         {
-            inlines.Add(new Run(text) { Foreground = new SolidColorBrush(BodyColor) });
+            inlines.Add(new Run(text) { Foreground = new SolidColorBrush(textColour) });
             return;
         }
 
@@ -467,7 +506,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
                     });
                 if (trailingSpace.Length > 0)
                 {
-                    inlines.Add(new Run(trailingSpace) { Foreground = new SolidColorBrush(BodyColor) });
+                    inlines.Add(new Run(trailingSpace) { Foreground = new SolidColorBrush(textColour) });
                 }
 
                 continue;
@@ -478,7 +517,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             inlines.Add(
                 new Run(display)
                 {
-                    Foreground = new SolidColorBrush(isEmote ? EmoteColor : BodyColor),
+                    Foreground = new SolidColorBrush(isEmote ? EmoteColor : textColour),
                     FontStyle = isEmote ? FontStyles.Italic : FontStyles.Normal,
                     FontWeight = isEmote ? FontWeights.SemiBold : FontWeights.Normal
                 });
@@ -489,7 +528,8 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
         InlineCollection inlines,
         string text,
         IReadOnlyList<ChatEmote> emotes,
-        ChatImageCache? chatImages)
+        ChatImageCache? chatImages,
+        WpfColor textColour)
     {
         var cursor = 0;
         foreach (var emote in emotes.OrderBy(emote => emote.StartIndex).ThenBy(emote => emote.EndIndex))
@@ -501,7 +541,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
 
             if (emote.StartIndex > cursor)
             {
-                inlines.Add(new Run(text[cursor..emote.StartIndex]) { Foreground = new SolidColorBrush(BodyColor) });
+                inlines.Add(new Run(text[cursor..emote.StartIndex]) { Foreground = new SolidColorBrush(textColour) });
             }
 
             BitmapImage? image = null;
@@ -532,7 +572,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
 
         if (cursor < text.Length)
         {
-            inlines.Add(new Run(text[cursor..]) { Foreground = new SolidColorBrush(BodyColor) });
+            inlines.Add(new Run(text[cursor..]) { Foreground = new SolidColorBrush(textColour) });
         }
     }
 
@@ -543,6 +583,96 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             Height = height,
             Stretch = Stretch.Uniform
         };
+
+    /// <summary>
+    /// WPF's DropShadowEffect is omitted by the raw WPF-to-RGBA pipeline on
+    /// some machines, so draw the zero-offset halo into the texture itself.
+    /// The four nested, low-alpha borders create a soft falloff while staying
+    /// entirely inside the transparent gutter reserved by ChatOverlayLayout.
+    /// </summary>
+    private static IEnumerable<Border> BuildGlowHalos(ChatAppearanceSettings appearance)
+    {
+        if (appearance.SafeGlowOpacity <= 0 || appearance.SafeGlowSizePixels <= 0)
+        {
+            yield break;
+        }
+
+        const int layerCount = 4;
+        var colour = ParseColour(appearance.SafeGlowHex, WpfColor.FromRgb(59, 130, 246));
+        for (var layer = layerCount; layer >= 1; layer--)
+        {
+            var spread = Math.Max(1, appearance.SafeGlowSizePixels * layer / layerCount);
+            var opacity = appearance.SafeGlowOpacity * (0.08 + ((layerCount - layer) * 0.07));
+            yield return new Border
+            {
+                Width = ChatOverlayLayout.ChatCardWidth + (spread * 2),
+                Height = ChatOverlayLayout.ChatCardHeight + (spread * 2),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(
+                    ChatOverlayLayout.ChatCardBounds.Left - spread,
+                    ChatOverlayLayout.ChatCardBounds.Top - spread,
+                    0,
+                    0),
+                CornerRadius = new CornerRadius(18 + spread),
+                Background = new SolidColorBrush(
+                    WithOpacity(colour, (byte)Math.Clamp(Math.Round(opacity * byte.MaxValue), 0, byte.MaxValue))),
+                IsHitTestVisible = false
+            };
+        }
+    }
+
+    private static WpfColor ParseColour(string value, WpfColor fallback) =>
+        WpfColourParsing.TryParse(value) ?? fallback;
+
+    private static WpfColor WithOpacity(WpfColor colour, byte opacity) =>
+        WpfColor.FromArgb(opacity, colour.R, colour.G, colour.B);
+
+    /// <summary>
+    /// The renderer owns this cache on its WPF dispatcher thread. It touches
+    /// the filesystem only when the configured path changes; an unreadable
+    /// image is remembered as null until that path changes, so a bad file can
+    /// never make normal chat repaint work expensive or fail the overlay.
+    /// </summary>
+    private sealed class LocalBackgroundImageCache
+    {
+        private string _path = "\0";
+        private BitmapSource? _image;
+
+        public BitmapSource? TryGet(string path)
+        {
+            path ??= "";
+            if (string.Equals(path, _path, StringComparison.Ordinal))
+            {
+                return _image;
+            }
+
+            _path = path;
+            _image = null;
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                return null;
+            }
+
+            try
+            {
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.UriSource = new Uri(path, UriKind.Absolute);
+                image.EndInit();
+                image.Freeze();
+                _image = image;
+            }
+            catch (Exception)
+            {
+                // Local decoration must degrade to the proven solid card.
+                _image = null;
+            }
+
+            return _image;
+        }
+    }
 
     public void Dispose()
     {

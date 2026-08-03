@@ -128,6 +128,28 @@ internal sealed record UserSettings
     /// <summary>Optional wearer-calibrated centre for the chat gaze cone; the invalid default keeps the original direct-to-panel behaviour.</summary>
     public GazeReference ChatGazeReference { get; init; } = GazeReference.None;
 
+    // Chat appearance defaults are the renderer's pre-existing values. Keep
+    // individual persisted fields consistent with notification appearance,
+    // while exposing one value object to every runtime caller.
+    public string ChatBackgroundColour { get; init; } = ChatAppearanceSettings.Default.BackgroundHex;
+    public string ChatTextColour { get; init; } = ChatAppearanceSettings.Default.TextHex;
+    public string ChatAccentColour { get; init; } = ChatAppearanceSettings.Default.AccentHex;
+    public string ChatGlowColour { get; init; } = ChatAppearanceSettings.Default.GlowHex;
+    public double ChatGlowOpacity { get; init; }
+    public int ChatGlowSizePixels { get; init; }
+    public string ChatBackgroundImagePath { get; init; } = "";
+    public double ChatBackgroundImageOpacity { get; init; }
+
+    public ChatAppearanceSettings ChatAppearance => new ChatAppearanceSettings(
+        ChatBackgroundColour,
+        ChatTextColour,
+        ChatAccentColour,
+        ChatGlowColour,
+        ChatGlowOpacity,
+        ChatGlowSizePixels,
+        ChatBackgroundImagePath,
+        ChatBackgroundImageOpacity).Sanitised();
+
     /// <summary>
     /// The notification panel's peak alpha while holding, 0.2-1.0. Defaults
     /// to 1.0 - the value <see cref="NotificationOverlay"/> hardcoded before
@@ -328,6 +350,7 @@ internal sealed record UserSettings
             ChatGazeFadeEnabled = ChatGazeFadeEnabled,
             ChatAutoHideEnabled = ChatAutoHideEnabled,
             ChatGazeReference = ChatGazeReference,
+            ChatAppearance = ChatAppearance,
             NotificationOpacity = NotificationOpacity,
             NotificationSizeScale = NotificationSizeScale,
             NotificationPlacement = NotificationPlacement,
@@ -405,6 +428,14 @@ internal sealed class UserSettingsStore
             ChatGazeFadeEnabled = settings.ChatGazeFadeEnabled,
             ChatAutoHideEnabled = settings.ChatAutoHideEnabled,
             ChatGazeReference = settings.ChatGazeReference,
+            ChatBackgroundColour = settings.ChatAppearance.SafeBackgroundHex,
+            ChatTextColour = settings.ChatAppearance.SafeTextHex,
+            ChatAccentColour = settings.ChatAppearance.SafeAccentHex,
+            ChatGlowColour = settings.ChatAppearance.SafeGlowHex,
+            ChatGlowOpacity = settings.ChatAppearance.SafeGlowOpacity,
+            ChatGlowSizePixels = settings.ChatAppearance.SafeGlowSizePixels,
+            ChatBackgroundImagePath = settings.ChatAppearance.SafeBackgroundImagePath,
+            ChatBackgroundImageOpacity = settings.ChatAppearance.SafeBackgroundImageOpacity,
             NotificationOpacity = settings.NotificationOpacity,
             NotificationSizeScale = settings.NotificationSizeScale,
             NotificationPlacement = settings.NotificationPlacement,
@@ -514,6 +545,17 @@ internal sealed class UserSettingsStore
                 ChatGazeReference = saved.ChatGazeReference.IsUsable
                     ? saved.ChatGazeReference
                     : GazeReference.None,
+                // Missing fields load as the exact pre-appearance renderer
+                // defaults. A corrupt value is contained by the value object's
+                // Safe* accessors before it can reach the worker.
+                ChatBackgroundColour = saved.ChatBackgroundColour,
+                ChatTextColour = saved.ChatTextColour,
+                ChatAccentColour = saved.ChatAccentColour,
+                ChatGlowColour = saved.ChatGlowColour,
+                ChatGlowOpacity = saved.ChatGlowOpacity,
+                ChatGlowSizePixels = saved.ChatGlowSizePixels,
+                ChatBackgroundImagePath = saved.ChatBackgroundImagePath,
+                ChatBackgroundImageOpacity = saved.ChatBackgroundImageOpacity,
                 NotificationOpacity = saved.NotificationOpacity,
                 NotificationSizeScale = saved.NotificationSizeScale,
                 // Absent from every settings file written before Phase 7,
@@ -643,6 +685,14 @@ internal sealed class UserSettingsStore
         public bool ChatGazeFadeEnabled { get; init; }
         public bool ChatAutoHideEnabled { get; init; } = true;
         public GazeReference ChatGazeReference { get; init; } = GazeReference.None;
+        public string ChatBackgroundColour { get; init; } = ChatAppearanceSettings.Default.BackgroundHex;
+        public string ChatTextColour { get; init; } = ChatAppearanceSettings.Default.TextHex;
+        public string ChatAccentColour { get; init; } = ChatAppearanceSettings.Default.AccentHex;
+        public string ChatGlowColour { get; init; } = ChatAppearanceSettings.Default.GlowHex;
+        public double ChatGlowOpacity { get; init; }
+        public int ChatGlowSizePixels { get; init; }
+        public string ChatBackgroundImagePath { get; init; } = "";
+        public double ChatBackgroundImageOpacity { get; init; }
         public double NotificationOpacity { get; init; } = 1.0;
         public double NotificationSizeScale { get; init; } = 1.0;
         public OverlayPlacement NotificationPlacement { get; init; } = OverlayPlacement.Default;

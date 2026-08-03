@@ -54,7 +54,8 @@ public readonly record struct ChatContent(
     SvrBridge.Core.ChatWorkspaceTab ActiveTab = SvrBridge.Core.ChatWorkspaceTab.Chat,
     IReadOnlyList<SvrBridge.Core.ChatWorkspaceEntry>? Entries = null,
     int ActiveEntryCount = 0,
-    double ScrollFraction = 0);
+    double ScrollFraction = 0,
+    SvrBridge.Core.ChatAppearanceSettings? Appearance = null);
 
 /// <summary>One rendered texture, straight-alpha RGBA, ready for SteamVR.</summary>
 public sealed record RenderedPanel(byte[] Rgba, int Width, int Height);

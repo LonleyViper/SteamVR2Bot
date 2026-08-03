@@ -189,6 +189,8 @@ internal sealed class ChatOverlay : IDisposable
     // had, rather than being its own setting - see SetOpacity/SetSizeScale.
     private double _opacity = LargeAlpha;
     private double _sizeScale = 1.0;
+    private ChatAppearanceSettings _appearance = ChatAppearanceSettings.Default;
+    private long _appearanceVersion;
 
     private readonly OverlayTextureUploader _uploader;
 
@@ -280,6 +282,7 @@ internal sealed class ChatOverlay : IDisposable
         bool gazeFadeEnabled,
         bool autoHideEnabled,
         GazeReference gazeReference,
+        ChatAppearanceSettings appearance,
         Action<OverlayPlacement> placementChanged,
         Action<GazeReference> gazeReferenceChanged,
         Action<string> log)
@@ -358,6 +361,7 @@ internal sealed class ChatOverlay : IDisposable
                 _gazeScaleEnabled = gazeScaleEnabled,
                 _gazeFadeEnabled = gazeFadeEnabled,
                 _autoHideEnabled = autoHideEnabled,
+                _appearance = appearance.Sanitised(),
                 _gazeReference = gazeReference.IsUsable ? gazeReference : GazeReference.None,
                 _laserInputAvailable = laserInput
             };
@@ -524,6 +528,19 @@ internal sealed class ChatOverlay : IDisposable
 
     /// <summary>Sets the width multiplier, 0.5-2.0 - a VR or desktop settings change.</summary>
     public void SetSizeScale(double sizeScale) => _sizeScale = Math.Clamp(sizeScale, 0.5, 2.0);
+
+    /// <summary>Applies one complete appearance bundle and schedules one throttled repaint.</summary>
+    public void ApplyAppearance(ChatAppearanceSettings appearance)
+    {
+        var safe = appearance.Sanitised();
+        if (_appearance == safe)
+        {
+            return;
+        }
+
+        _appearance = safe;
+        _appearanceVersion++;
+    }
 
     /// <summary>
     /// Rebuilds the gaze detector with a new sensitivity - a VR or desktop
@@ -1283,7 +1300,7 @@ internal sealed class ChatOverlay : IDisposable
         // without a second, separate throttle. Not a real hash, just enough
         // separation that the two counters cannot cancel each other out at
         // any version either is realistically going to reach.
-        var combinedVersion = ((long)workspaceVersion << 20) ^ _chatImages.Version;
+        var combinedVersion = HashCode.Combine(workspaceVersion, _chatImages.Version, _appearanceVersion);
 
         // A hover change is its own reason to repaint, deliberately not folded
         // into the message-version throttle above. Sweeping the laser across
@@ -1306,7 +1323,8 @@ internal sealed class ChatOverlay : IDisposable
                 _viewport.ActiveTab,
                 visibleEntries,
                 activeEntryCount,
-                _viewport.ScrollFraction(snapshot)));
+                _viewport.ScrollFraction(snapshot),
+                _appearance));
         _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
         _repaintThrottle.MarkPainted(combinedVersion, nowMs);
     }

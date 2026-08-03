@@ -424,6 +424,8 @@ internal sealed partial class OpenVrWorkerSession : IOpenVrSession
         startInfo.ArgumentList.Add(config.ChatAutoHideEnabled.ToString());
         startInfo.ArgumentList.Add("--chat-gaze-reference");
         startInfo.ArgumentList.Add(OpenVrWorker.SerialiseGazeReference(config.ChatGazeReference));
+        startInfo.ArgumentList.Add("--chat-appearance");
+        startInfo.ArgumentList.Add(JsonSerializer.Serialize(config.ChatAppearance));
         startInfo.ArgumentList.Add("--notification-opacity");
         startInfo.ArgumentList.Add(config.NotificationOpacity.ToString(CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add("--notification-size-scale");
@@ -770,6 +772,8 @@ internal static class OpenVrWorker
                 GetArgumentValue(args, "--chat-auto-hide") ?? "true");
             var chatGazeReference = ParseGazeReferenceArgument(
                 GetArgumentValue(args, "--chat-gaze-reference"));
+            var chatAppearance =
+                ParseChatAppearanceArgument(GetArgumentValue(args, "--chat-appearance"));
             var notificationsEnabled = ParseBoolArgument(GetArgumentValue(args, "--notifications-enabled"));
             var notificationOpacity = ParseDoubleArgument(GetArgumentValue(args, "--notification-opacity"), 1.0);
             var notificationSizeScale =
@@ -896,6 +900,7 @@ internal static class OpenVrWorker
                     chatGazeFadeEnabled,
                     chatAutoHideEnabled,
                     chatGazeReference,
+                    chatAppearance,
                     OnChatPlacementDragged,
                     OnChatGazeCalibrated,
                     message => Emit(new OpenVrWorkerMessage("log", Message: message)));
@@ -943,6 +948,7 @@ internal static class OpenVrWorker
                 chatGazeFadeEnabled,
                 chatAutoHideEnabled,
                 chatGazeReference,
+                chatAppearance,
                 notificationsEnabled,
                 notificationOverride.SavedDefault,
                 notificationOpacity,
@@ -1083,6 +1089,7 @@ internal static class OpenVrWorker
                 chatGazeReference = newSettings.ChatGazeReference.IsUsable
                     ? newSettings.ChatGazeReference
                     : GazeReference.None;
+                chatAppearance = newSettings.ChatAppearance.Sanitised();
                 notificationOpacity = newSettings.NotificationOpacity;
                 notificationSizeScale = newSettings.NotificationSizeScale;
                 // Normally unchanged - the settings page's only control for
@@ -1125,6 +1132,7 @@ internal static class OpenVrWorker
                 chatOverlay?.SetGazeFadeEnabled(chatGazeFadeEnabled);
                 chatOverlay?.SetAutoHideEnabled(chatAutoHideEnabled);
                 chatOverlay?.SetGazeReference(chatGazeReference);
+                chatOverlay?.ApplyAppearance(chatAppearance);
                 notificationOverlay?.SetOpacity(notificationOpacity);
                 notificationOverlay?.SetSizeScale(notificationSizeScale);
                 notificationOverlay?.ApplyAppearance(notificationAppearance);
@@ -1736,6 +1744,24 @@ internal static class OpenVrWorker
         catch (JsonException)
         {
             return NotificationAppearanceSettings.Default;
+        }
+    }
+
+    private static ChatAppearanceSettings ParseChatAppearanceArgument(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return ChatAppearanceSettings.Default;
+        }
+
+        try
+        {
+            return (JsonSerializer.Deserialize<ChatAppearanceSettings>(raw)
+                    ?? ChatAppearanceSettings.Default).Sanitised();
+        }
+        catch (JsonException)
+        {
+            return ChatAppearanceSettings.Default;
         }
     }
 

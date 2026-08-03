@@ -53,6 +53,7 @@ public sealed record VrSettingsSnapshot(
     bool ChatGazeFadeEnabled,
     bool ChatAutoHideEnabled,
     GazeReference ChatGazeReference,
+    ChatAppearanceSettings ChatAppearance,
     bool NotificationsEnabled,
     OverlayAnchor NotificationAnchor,
     double NotificationOpacity,

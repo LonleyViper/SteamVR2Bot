@@ -14,18 +14,22 @@ internal static class WpfColourParsing
 {
     public static WpfColor? TryParse(string hex)
     {
-        if (hex.Length != 7 || hex[0] != '#')
+        if ((hex.Length is not (7 or 9)) || hex[0] != '#')
         {
             return null;
         }
 
-        if (!byte.TryParse(hex.AsSpan(1, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var r)
-            || !byte.TryParse(hex.AsSpan(3, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var g)
-            || !byte.TryParse(hex.AsSpan(5, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var b))
+        var hasAlpha = hex.Length == 9;
+        var offset = hasAlpha ? 3 : 1;
+        var alpha = byte.MaxValue;
+        if ((hasAlpha && !byte.TryParse(hex.AsSpan(1, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out alpha))
+            || !byte.TryParse(hex.AsSpan(offset, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var r)
+            || !byte.TryParse(hex.AsSpan(offset + 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var g)
+            || !byte.TryParse(hex.AsSpan(offset + 4, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var b))
         {
             return null;
         }
 
-        return WpfColor.FromRgb(r, g, b);
+        return WpfColor.FromArgb(alpha, r, g, b);
     }
 }

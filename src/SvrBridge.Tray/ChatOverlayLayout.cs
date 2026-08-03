@@ -39,11 +39,13 @@ internal static class ChatOverlayLayout
     /// <summary>The full texture size, and therefore the overlay's mouse scale.</summary>
     public const int PanelWidth = ChatCardWidth + (GutterWidth * 2);
 
-    // The card stays at its established 512×768 size. Transparent space above
-    // and below makes the workspace controls chrome, not chat content.
-    public const int TopControlAreaHeight = 72;
+    // The card stays at its established 512×768 size. The original 72px tab
+    // chrome plus a symmetric 48px glow gutter leave enough transparent space
+    // for the largest supported soft halo without moving the card in VR.
+    public const int GlowGutterHeight = SvrBridge.Core.ChatAppearanceSettings.MaximumGlowSizePixels;
+    public const int TopControlAreaHeight = 72 + GlowGutterHeight;
     /// <summary>The card plus the external tab area.</summary>
-    public const int PanelHeight = TopControlAreaHeight + ChatCardHeight;
+    public const int PanelHeight = TopControlAreaHeight + ChatCardHeight + GlowGutterHeight;
 
     /// <summary>The answer <see cref="IndexAt"/> gives when the pointer is over no control at all.</summary>
     public const int NoButton = -1;
@@ -83,8 +85,8 @@ internal static class ChatOverlayLayout
     // Tabs sit in transparent chrome above the card. Scrolling uses the
     // controller's discrete SteamVR scroll event, so no paging controls cover
     // or surround the chat text. The Phase 1 move tab stays external right.
-    public static readonly Rectangle ChatTabBounds = new(ChatCardBounds.Left + 18, 14, 150, 48);
-    public static readonly Rectangle EventsTabBounds = new(ChatCardBounds.Left + 176, 14, 150, 48);
+    public static readonly Rectangle ChatTabBounds = new(ChatCardBounds.Left + 18, 14 + GlowGutterHeight, 150, 48);
+    public static readonly Rectangle EventsTabBounds = new(ChatCardBounds.Left + 176, 14 + GlowGutterHeight, 150, 48);
 
     /// <summary>The text viewport between the tab strip and paging controls.</summary>
     public static readonly Rectangle ContentBounds = new(

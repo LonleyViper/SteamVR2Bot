@@ -150,7 +150,7 @@ internal sealed class VrDashboardController : IDisposable
         // five wizard sub-pages never render a tab strip, and this band is
         // already dead space for every one of them, so checking it
         // unconditionally here cannot change their behaviour.
-        if ((_page is DashboardPage.List or DashboardPage.ChatSettings or DashboardPage.NotificationSettings)
+        if ((_page is DashboardPage.List or DashboardPage.ChatSettings or DashboardPage.ChatAppearance or DashboardPage.NotificationSettings)
             && y >= VrDashboardLayout.TabStripY
             && y < VrDashboardLayout.TabStripY + VrDashboardLayout.TabStripHeight)
         {
@@ -180,6 +180,9 @@ internal sealed class VrDashboardController : IDisposable
                 break;
             case DashboardPage.ChatSettings:
                 HandleChatSettingsClick(x, y);
+                break;
+            case DashboardPage.ChatAppearance:
+                HandleChatAppearanceClick(x, y);
                 break;
             case DashboardPage.NotificationSettings:
                 HandleNotificationSettingsClick(x, y);
@@ -727,6 +730,11 @@ internal sealed class VrDashboardController : IDisposable
                 _settings,
                 _chatGazeCalibrationInProgress));
 
+    private void ShowChatAppearance() =>
+        ShowPage(
+            DashboardPage.ChatAppearance,
+            () => VrDashboardRenderer.RenderChatAppearance(_settings));
+
     private void ShowNotificationSettings() =>
         ShowPage(
             DashboardPage.NotificationSettings,
@@ -756,6 +764,10 @@ internal sealed class VrDashboardController : IDisposable
         if (_page == DashboardPage.ChatSettings)
         {
             ShowChatSettings();
+        }
+        else if (_page == DashboardPage.ChatAppearance)
+        {
+            ShowChatAppearance();
         }
         else if (_page == DashboardPage.NotificationSettings)
         {
@@ -796,17 +808,21 @@ internal sealed class VrDashboardController : IDisposable
 
         if (IsWithinRow(y, VrDashboardLayout.GazeCalibrationY, VrDashboardLayout.SettingsRowHeight))
         {
-            if (_chatGazeCalibrationInProgress
-                || x < VrDashboardLayout.GazeCalibration.Left
-                || x > VrDashboardLayout.GazeCalibration.Right)
+            if (x >= VrDashboardLayout.GazeCalibration.Left
+                && x <= VrDashboardLayout.GazeCalibration.Right)
             {
-                return;
-            }
+                if (_chatGazeCalibrationInProgress)
+                {
+                    return;
+                }
 
-            _chatGazeCalibrationInProgress = _startChatGazeCalibration();
-            if (_chatGazeCalibrationInProgress)
-            {
-                ShowChatSettings();
+                _chatGazeCalibrationInProgress = _startChatGazeCalibration();
+                if (_chatGazeCalibrationInProgress)
+                {
+                    ShowChatSettings();
+                }
+
+                return;
             }
 
             return;
@@ -820,6 +836,13 @@ internal sealed class VrDashboardController : IDisposable
 
         if (IsWithinRow(y, VrDashboardLayout.GazeFadeY, VrDashboardLayout.SettingsRowHeight))
         {
+            if (x >= VrDashboardLayout.ChatAppearanceOpen.Left
+                && x <= VrDashboardLayout.ChatAppearanceOpen.Right)
+            {
+                ShowChatAppearance();
+                return;
+            }
+
             var toggle = VrDashboardLayout.GazeFadeToggle;
             if (x >= toggle.Left && x <= toggle.Right)
             {
@@ -828,6 +851,70 @@ internal sealed class VrDashboardController : IDisposable
             }
         }
 
+    }
+
+    private void HandleChatAppearanceClick(float x, float y)
+    {
+        if (VrDashboardLayout.ChatAppearanceBack.Contains((int)x, (int)y))
+        {
+            ShowChatSettings();
+            return;
+        }
+
+        if (IsWithinRow(y, VrDashboardLayout.ChatAppearancePresetsY, VrDashboardLayout.SettingsRowHeight))
+        {
+            for (var index = 0; index < VrDashboardLayout.ChatAppearancePresets.Length; index++)
+            {
+                var preset = VrDashboardLayout.ChatAppearancePresets[index];
+                if (x >= preset.Left && x <= preset.Right)
+                {
+                    _settings = _settings with
+                    {
+                        ChatAppearance = ChatAppearanceSettings.ForPreset((ChatAppearancePreset)index)
+                    };
+                    ApplySettingsChange();
+                    return;
+                }
+            }
+        }
+
+        if (IsWithinRow(y, VrDashboardLayout.ChatAppearanceSlidersY, VrDashboardLayout.SettingsSliderRowHeight))
+        {
+            if (x >= VrDashboardLayout.ChatGlowIntensityTrack.Left
+                && x <= VrDashboardLayout.ChatGlowIntensityTrack.Right)
+            {
+                var ratio = Math.Clamp(
+                    (x - VrDashboardLayout.ChatGlowIntensityTrack.Left) /
+                    (float)VrDashboardLayout.ChatGlowIntensityTrack.Width,
+                    0,
+                    1);
+                _settings = _settings with
+                {
+                    ChatAppearance = _settings.ChatAppearance with { GlowOpacity = ratio }
+                };
+                ApplySettingsChange();
+                return;
+            }
+
+            if (x >= VrDashboardLayout.ChatGlowSizeTrack.Left
+                && x <= VrDashboardLayout.ChatGlowSizeTrack.Right)
+            {
+                var ratio = Math.Clamp(
+                    (x - VrDashboardLayout.ChatGlowSizeTrack.Left) /
+                    (float)VrDashboardLayout.ChatGlowSizeTrack.Width,
+                    0,
+                    1);
+                _settings = _settings with
+                {
+                    ChatAppearance = _settings.ChatAppearance with
+                    {
+                        GlowSizePixels = (int)Math.Round(
+                            ratio * ChatAppearanceSettings.MaximumGlowSizePixels)
+                    }
+                };
+                ApplySettingsChange();
+            }
+        }
     }
 
     private void HandleNotificationSettingsClick(float x, float y)
@@ -1046,6 +1133,10 @@ internal sealed class VrDashboardController : IDisposable
         {
             ShowChatSettings();
         }
+        else if (_page == DashboardPage.ChatAppearance)
+        {
+            ShowChatAppearance();
+        }
         else
         {
             ShowNotificationSettings();
@@ -1176,6 +1267,9 @@ internal sealed class VrDashboardController : IDisposable
             case DashboardPage.ChatSettings:
                 ShowChatSettings();
                 break;
+            case DashboardPage.ChatAppearance:
+                ShowChatAppearance();
+                break;
             case DashboardPage.NotificationSettings:
                 ShowNotificationSettings();
                 break;
@@ -1206,6 +1300,9 @@ internal sealed class VrDashboardController : IDisposable
         /// plan, following that same reasoning.
         /// </summary>
         ChatSettings,
+
+        /// <summary>The compact Chat appearance subpage, reachable only from Chat settings.</summary>
+        ChatAppearance,
 
         /// <summary>The Notifications tab's own page - see <see cref="ChatSettings"/>.</summary>
         NotificationSettings

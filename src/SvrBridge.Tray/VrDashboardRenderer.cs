@@ -359,7 +359,54 @@ internal static class VrDashboardRenderer
 
             DrawGazeCalibration(graphics, fonts, brushes, settings, gazeCalibrationInProgress);
             DrawResetPlacement(graphics, fonts, brushes, settings);
+            DrawChatAppearanceEntry(graphics, fonts, brushes);
             DrawGazeFade(graphics, fonts, brushes, settings);
+        });
+    }
+
+    /// <summary>A deliberately sparse companion page for presets and live glow tuning.</summary>
+    public static RenderedPanel RenderChatAppearance(VrSettingsSnapshot settings)
+    {
+        return RenderSimplePage((graphics, fonts, brushes) =>
+        {
+            DrawTabStrip(graphics, fonts.Body, brushes.White, brushes.Blue, brushes.Card, activeIndex: 1);
+            graphics.DrawString("Chat appearance", fonts.Title, brushes.White, 60, 145);
+            graphics.DrawString(
+                "Choose a look, then tune its glow. Colours and images stay on the desktop.",
+                fonts.Body,
+                brushes.Muted,
+                60,
+                205);
+            var presetIndex = settings.ChatAppearance == ChatAppearanceSettings.Default ? 0
+                : settings.ChatAppearance == ChatAppearanceSettings.Retrowave ? 1
+                : settings.ChatAppearance == ChatAppearanceSettings.Matrix ? 2
+                : -1;
+            DrawSegmented(
+                graphics,
+                fonts,
+                brushes,
+                VrDashboardLayout.ChatAppearancePresets,
+                ["Default", "Retrowave", "Matrix"],
+                presetIndex,
+                enabled: true);
+            DrawSlider(
+                graphics,
+                fonts,
+                brushes,
+                VrDashboardLayout.ChatGlowIntensityTrack,
+                "Glow intensity",
+                $"{Math.Round(settings.ChatAppearance.SafeGlowOpacity * 100)}%",
+                (float)settings.ChatAppearance.SafeGlowOpacity);
+            DrawSlider(
+                graphics,
+                fonts,
+                brushes,
+                VrDashboardLayout.ChatGlowSizeTrack,
+                "Glow size",
+                $"{settings.ChatAppearance.SafeGlowSizePixels}px",
+                settings.ChatAppearance.SafeGlowSizePixels / (float)ChatAppearanceSettings.MaximumGlowSizePixels);
+            DrawRoundedRectangle(graphics, brushes.Card, VrDashboardLayout.ChatAppearanceBack, 14);
+            DrawCenteredText(graphics, "Back to chat settings", fonts.Body, brushes.White, VrDashboardLayout.ChatAppearanceBack);
         });
     }
 
@@ -534,6 +581,16 @@ internal static class VrDashboardRenderer
             fonts.Body,
             brushes.White,
             toggle);
+    }
+
+    private static void DrawChatAppearanceEntry(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes)
+    {
+        var bounds = VrDashboardLayout.ChatAppearanceOpen;
+        DrawRoundedRectangle(graphics, brushes.Card, bounds, 14);
+        DrawCenteredText(graphics, "Chat appearance…", fonts.Body, brushes.White, bounds);
     }
 
     public static RenderedPanel RenderTolerancePicker(ChordMode mode, int valueMs)

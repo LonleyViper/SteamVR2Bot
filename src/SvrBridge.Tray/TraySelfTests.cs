@@ -16,6 +16,11 @@ internal static class TraySelfTests
         TestDashboardBottomBarLayout();
         TestDashboardFontsUseFixedPixels();
         TestSettingsPageLayoutRectangles();
+        TestChatAppearanceDefaultsAndSanitisation();
+        TestChatAppearanceOlderSettingsMigration();
+        TestChatAppearancePresetsAreEditable();
+        TestChatAppearanceMissingImageFallsBackSafely();
+        TestChatGlowKeepsCardBoundsStable();
         TestRenamedDataDirectoryMigration();
         TestOverlayTransformComposition();
         TestOverlayHandleRoundTrip();
@@ -614,7 +619,8 @@ internal static class TraySelfTests
             ("chat anchor hand", VrDashboardLayout.ChatAnchorHand),
             ("notification anchor mode", VrDashboardLayout.NotificationAnchorMode),
             ("notification anchor hand", VrDashboardLayout.NotificationAnchorHand),
-            ("gaze sensitivity", VrDashboardLayout.GazeSensitivity)
+            ("gaze sensitivity", VrDashboardLayout.GazeSensitivity),
+            ("chat appearance presets", VrDashboardLayout.ChatAppearancePresets)
         };
 
         foreach (var (name, row) in segmentedRows)
@@ -693,6 +699,11 @@ internal static class TraySelfTests
             VrDashboardLayout.ChatAutoHideToggle,
             VrDashboardLayout.GazeScaleToggle,
             VrDashboardLayout.GazeFadeToggle,
+            VrDashboardLayout.ChatAppearanceOpen,
+            VrDashboardLayout.ChatGlowIntensityTrack,
+            VrDashboardLayout.ChatGlowSizeTrack,
+            .. VrDashboardLayout.ChatAppearancePresets,
+            VrDashboardLayout.ChatAppearanceBack,
             VrDashboardLayout.PositionNotificationsHitTarget,
             VrDashboardLayout.ResetNotificationPlacement
         ];
@@ -741,8 +752,13 @@ internal static class TraySelfTests
         Assert(
             VrDashboardLayout.GazeFadeToggle.Top
             >= VrDashboardLayout.ResetPlacement.Bottom
-            && !VrDashboardLayout.GazeFadeToggle.IntersectsWith(VrDashboardLayout.GazeScaleToggle),
-            "The fade-on-gaze control overlaps the preceding chat settings row.");
+            && !VrDashboardLayout.GazeFadeToggle.IntersectsWith(VrDashboardLayout.GazeScaleToggle)
+            && !VrDashboardLayout.GazeFadeToggle.IntersectsWith(VrDashboardLayout.ChatAppearanceOpen),
+            "The fade-on-gaze and appearance-entry controls overlap.");
+        Assert(
+            VrDashboardLayout.ChatAppearancePresets.All(preset => preset.Top > VrDashboardLayout.TabStripY + VrDashboardLayout.TabStripHeight)
+            && !VrDashboardLayout.ChatGlowIntensityTrack.IntersectsWith(VrDashboardLayout.ChatGlowSizeTrack),
+            "The compact Chat Appearance page has overlapping controls.");
         Assert(
             VrDashboardLayout.GazeScaleToggle.Left == VrDashboardLayout.ChatToggle.Left
             && VrDashboardLayout.GazeScaleToggle.Width == VrDashboardLayout.ChatToggle.Width,
@@ -755,6 +771,137 @@ internal static class TraySelfTests
         Assert(
             lastListRowBottom < VrDashboardLayout.BarY,
             "The shortcut list's last row now overlaps the bottom bar.");
+    }
+
+    private static void TestChatAppearanceDefaultsAndSanitisation()
+    {
+        var defaults = SvrBridge.Core.ChatAppearanceSettings.Default;
+        Assert(
+            defaults.SafeBackgroundHex == "#E6121824"
+            && defaults.SafeTextHex == "#E1E6F0"
+            && defaults.SafeGlowOpacity == 0
+            && defaults.SafeGlowSizePixels == 0
+            && defaults.SafeBackgroundImagePath.Length == 0,
+            "The chat appearance default no longer reproduces the pre-upgrade card.");
+
+        var corrupt = (defaults with
+        {
+            BackgroundHex = "not-a-colour",
+            TextHex = "#XYZ",
+            GlowOpacity = double.NaN,
+            GlowSizePixels = 99999,
+            BackgroundImageOpacity = double.PositiveInfinity
+        }).Sanitised();
+        Assert(
+            corrupt.BackgroundHex == defaults.BackgroundHex
+            && corrupt.TextHex == defaults.TextHex
+            && corrupt.SafeGlowOpacity == 0
+            && corrupt.SafeGlowSizePixels == SvrBridge.Core.ChatAppearanceSettings.MaximumGlowSizePixels
+            && corrupt.SafeBackgroundImageOpacity == 0,
+            "Corrupt chat appearance values were not safely sanitised.");
+    }
+
+    private static void TestChatAppearancePresetsAreEditable()
+    {
+        var retrowave = SvrBridge.Core.ChatAppearanceSettings.ForPreset(SvrBridge.Core.ChatAppearancePreset.Retrowave);
+        var matrix = SvrBridge.Core.ChatAppearanceSettings.ForPreset(SvrBridge.Core.ChatAppearancePreset.Matrix);
+        var edited = retrowave with { GlowOpacity = 0.25 };
+        Assert(
+            retrowave.Sanitised() == retrowave && matrix.Sanitised() == matrix
+            && retrowave.SafeGlowOpacity > 0 && matrix.SafeGlowOpacity > 0
+            && edited.GlowOpacity == 0.25,
+            "A chat appearance preset is not a valid editable value object.");
+    }
+
+    private static void TestChatAppearanceOlderSettingsMigration()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"svr-chat-appearance-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            // Deliberately no Phase 3 appearance fields: this is the JSON
+            // shape an already-installed user has before upgrading.
+            File.WriteAllText(
+                Path.Combine(directory, "settings.json"),
+                "{\"streamerBotAddress\":\"ws://127.0.0.1:8080/1\"}");
+            var loaded = new UserSettingsStore(directory, Path.Combine(directory, "none.json")).Load();
+            Assert(
+                loaded.ChatAppearance == SvrBridge.Core.ChatAppearanceSettings.Default,
+                "An older settings JSON did not load the exact existing chat appearance.");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static void TestChatAppearanceMissingImageFallsBackSafely()
+    {
+        using var renderer = new WpfChatRenderer();
+        var appearance = SvrBridge.Core.ChatAppearanceSettings.Default with
+        {
+            BackgroundImagePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".png"),
+            BackgroundImageOpacity = 1
+        };
+        var result = renderer.Render(new ChatContent([ChatMessageFor("background fallback")], Appearance: appearance));
+        var malformed = Path.Combine(Path.GetTempPath(), $"svr-chat-background-{Guid.NewGuid():N}.png");
+        var lockedPath = Path.Combine(Path.GetTempPath(), $"svr-chat-background-{Guid.NewGuid():N}.png");
+        File.WriteAllText(malformed, "this is not an image");
+        File.WriteAllText(lockedPath, "unreadable image test");
+        try
+        {
+            result = renderer.Render(new ChatContent(
+                [ChatMessageFor("malformed background fallback")],
+                Appearance: appearance with { BackgroundImagePath = malformed }));
+            using (var locked = new FileStream(lockedPath, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                result = renderer.Render(new ChatContent(
+                    [ChatMessageFor("locked background fallback")],
+                    Appearance: appearance with { BackgroundImagePath = lockedPath }));
+            }
+        }
+        finally
+        {
+            File.Delete(malformed);
+            File.Delete(lockedPath);
+        }
+        Assert(
+            result.Width == WpfChatRenderer.PanelWidth && result.Height == WpfChatRenderer.PanelHeight,
+            "A missing, malformed, or unreadable chat background image prevented normal solid-card rendering.");
+    }
+
+    private static void TestChatGlowKeepsCardBoundsStable()
+    {
+        using var thread = new WpfRenderThread("self-test chat glow layout");
+        thread.Invoke(() =>
+        {
+            var panel = WpfChatRenderer.BuildPanel(new ChatContent(
+                [],
+                Appearance: SvrBridge.Core.ChatAppearanceSettings.Retrowave));
+            var grid = (System.Windows.Controls.Grid)panel.Child;
+            var card = grid.Children
+                .OfType<System.Windows.Controls.Border>()
+                .Single(border => border.Width == ChatOverlayLayout.ChatCardWidth
+                                  && border.Height == ChatOverlayLayout.ChatCardHeight);
+            Assert(
+                card.Width == ChatOverlayLayout.ChatCardWidth
+                && card.Height == ChatOverlayLayout.ChatCardHeight
+                && card.Margin.Left == ChatOverlayLayout.ChatCardBounds.Left
+                && card.Margin.Top == ChatOverlayLayout.ChatCardBounds.Top
+                && grid.Children.OfType<System.Windows.Controls.Border>().Count() >= 5,
+                "Enabling chat glow changed the card bounds or omitted its card-only halo.");
+            return true;
+        });
+
+        using var renderer = new WpfChatRenderer();
+        var rendered = renderer.Render(new ChatContent(
+            [],
+            Appearance: SvrBridge.Core.ChatAppearanceSettings.Retrowave));
+        var x = ChatOverlayLayout.ChatCardBounds.Left - 8;
+        var y = ChatOverlayLayout.ChatCardBounds.Top + (ChatOverlayLayout.ChatCardHeight / 2);
+        var alpha = rendered.Rgba[((y * rendered.Width) + x) * 4 + 3];
+        Assert(alpha > 0,
+            "A non-zero glow did not paint any colour into the transparent gutter.");
     }
 
     private static void TestVrScrollLimiter()
@@ -2427,14 +2574,19 @@ internal static class TraySelfTests
             0.8,
             1.2,
             SvrBridge.Core.GazeSensitivity.Tight,
-            // Deliberately true: the default is false, so a field dropped in
-            // transit would still round-trip if this matched the default.
             true,
-            // Deliberately true: the persisted default is false.
             true,
-            // Deliberately false: the persisted default is true.
             false,
             new SvrBridge.Core.GazeReference(0.1f, 0.1f, 0.9899495f),
+            new SvrBridge.Core.ChatAppearanceSettings(
+                "#102030",
+                "#F0E0D0",
+                "#AABBCC",
+                "#CC00FF",
+                0.7,
+                36,
+                "C:\\chat.png",
+                0.4),
             true,
             SvrBridge.Core.OverlayAnchor.Head,
             0.7,
@@ -2467,7 +2619,8 @@ internal static class TraySelfTests
             && received.ChatGazeScaleEnabled
             && received.ChatGazeFadeEnabled
             && !received.ChatAutoHideEnabled
-            && received.ChatGazeReference == settings.ChatGazeReference,
+            && received.ChatGazeReference == settings.ChatGazeReference
+            && received.ChatAppearance == settings.ChatAppearance,
             "The rest of the VR settings snapshot did not survive the worker message channel.");
         Assert(
             received.NotificationPlacement.Equals(placement)
@@ -2517,6 +2670,8 @@ internal static class TraySelfTests
             true,
             false,
             new SvrBridge.Core.GazeReference(0.2f, 0.1f, 0.9746794f),
+            new SvrBridge.Core.ChatAppearanceSettings(
+                "#010203", "#F1F2F3", "#0F8A4B", "#22FF77", 0.6, 20, "C:\\merge.png", 0.5),
             true,
             new SvrBridge.Core.OverlayAnchor(SvrBridge.Core.OverlayAnchorMode.Controller, SvrBridge.Core.OverlayAnchorHand.Right),
             0.71,
@@ -2537,6 +2692,8 @@ internal static class TraySelfTests
         Assert(updated.ChatGazeScaleEnabled, "ChatGazeScaleEnabled was not merged.");
         Assert(updated.ChatGazeFadeEnabled, "ChatGazeFadeEnabled was not merged.");
         Assert(!updated.ChatAutoHideEnabled, "ChatAutoHideEnabled was not merged.");
+        Assert(updated.ChatAppearance == snapshot.ChatAppearance,
+            "ChatAppearance was not merged, so a VR appearance edit would revert on worker recovery.");
         Assert(updated.NotificationsEnabled, "NotificationsEnabled was not merged.");
         Assert(
             updated.NotificationAnchorMode == SvrBridge.Core.OverlayAnchorMode.Controller,
@@ -2629,6 +2786,11 @@ internal static class TraySelfTests
                 baseline,
                 baseline with { ChatOpacity = 0.6, ChatSizeScale = 1.4 }),
             "Changing opacity/size required a restart.");
+        Assert(
+            !TrayApplicationContext.RequiresRuntimeRestart(
+                baseline,
+                baseline with { ChatGlowOpacity = 0.7, ChatGlowSizePixels = 32 }),
+            "Changing chat appearance required a restart.");
         Assert(
             !TrayApplicationContext.RequiresRuntimeRestart(
                 baseline,

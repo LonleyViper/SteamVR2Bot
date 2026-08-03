@@ -94,6 +94,9 @@ public sealed class AppConfig
     /// <summary>Everything §B3/§B4/§B5 of the Phase 7 plan added - baked in at spawn like every other appearance field above.</summary>
     public NotificationAppearanceSettings NotificationAppearance { get; init; } = NotificationAppearanceSettings.Default;
 
+    /// <summary>Saved chat-workspace appearance, baked into a new worker and hot-applied thereafter.</summary>
+    public ChatAppearanceSettings ChatAppearance { get; init; } = ChatAppearanceSettings.Default;
+
     public static AppConfig Load(string path)
     {
         if (!File.Exists(path))

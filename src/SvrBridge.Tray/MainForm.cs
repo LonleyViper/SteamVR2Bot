@@ -38,6 +38,21 @@ internal sealed class MainForm : Form
     private readonly CheckBox _chatGazeScale = new();
     private readonly CheckBox _chatGazeFade = new();
     private readonly CheckBox _chatAutoHide = new();
+    private readonly ComboBox _chatAppearancePreset = new();
+    private readonly TextBox _chatBackgroundColour = new();
+    private readonly TextBox _chatTextColour = new();
+    private readonly TextBox _chatAccentColour = new();
+    private readonly TextBox _chatGlowColour = new();
+    private readonly Button _pickChatBackgroundColour = new();
+    private readonly Button _pickChatTextColour = new();
+    private readonly Button _pickChatAccentColour = new();
+    private readonly Button _pickChatGlowColour = new();
+    private readonly TrackBar _chatGlowOpacity = new();
+    private readonly NumericUpDown _chatGlowSize = new();
+    private readonly TextBox _chatBackgroundImagePath = new();
+    private readonly Button _browseChatBackgroundImage = new();
+    private readonly Button _clearChatBackgroundImage = new();
+    private readonly TrackBar _chatBackgroundImageOpacity = new();
     private readonly TrackBar _notificationOpacity = new();
     private readonly TrackBar _notificationSizeScale = new();
 
@@ -175,6 +190,14 @@ internal sealed class MainForm : Form
             ChatGazeFadeEnabled = _chatGazeFade.Checked,
             ChatAutoHideEnabled = _chatAutoHide.Checked,
             ChatGazeReference = _chatGazeReference,
+            ChatBackgroundColour = _chatBackgroundColour.Text.Trim(),
+            ChatTextColour = _chatTextColour.Text.Trim(),
+            ChatAccentColour = _chatAccentColour.Text.Trim(),
+            ChatGlowColour = _chatGlowColour.Text.Trim(),
+            ChatGlowOpacity = _chatGlowOpacity.Value / 100.0,
+            ChatGlowSizePixels = (int)_chatGlowSize.Value,
+            ChatBackgroundImagePath = _chatBackgroundImagePath.Text.Trim(),
+            ChatBackgroundImageOpacity = _chatBackgroundImageOpacity.Value / 100.0,
             NotificationOpacity = OpacityFromSlider(_notificationOpacity),
             NotificationSizeScale = SizeScaleFromSlider(_notificationSizeScale),
             NotificationPlacement = _notificationPlacement,
@@ -245,6 +268,7 @@ internal sealed class MainForm : Form
             _chatGazeScale.Checked = settings.ChatGazeScaleEnabled;
             _chatGazeFade.Checked = settings.ChatGazeFadeEnabled;
             _chatAutoHide.Checked = settings.ChatAutoHideEnabled;
+            ApplyChatAppearance(settings.ChatAppearance);
             ApplyOpacityToSlider(_notificationOpacity, settings.NotificationOpacity);
             ApplySizeScaleToSlider(_notificationSizeScale, settings.NotificationSizeScale);
             _notificationPlacement = settings.NotificationPlacement;
@@ -474,10 +498,10 @@ internal sealed class MainForm : Form
     private static Color? TryParseHexColour(string hex)
     {
         var trimmed = hex.Trim();
-        if (trimmed.Length != 7
+        if (trimmed.Length is not (7 or 9)
             || trimmed[0] != '#'
             || !int.TryParse(
-                trimmed.AsSpan(1),
+                trimmed.AsSpan(trimmed.Length == 9 ? 3 : 1),
                 NumberStyles.HexNumber,
                 CultureInfo.InvariantCulture,
                 out var value))
@@ -684,6 +708,7 @@ internal sealed class MainForm : Form
         panel.Controls.Add(NotificationAppearanceSection());
         panel.Controls.Add(NotificationEventsSection());
         panel.Controls.Add(ChatSection());
+        panel.Controls.Add(ChatAppearanceSection());
         panel.Controls.Add(ControllerSection());
 
         panel.Controls.Add(new Label
@@ -828,6 +853,80 @@ internal sealed class MainForm : Form
             Indented(_chatGazeScale),
             Indented(_chatGazeFade),
             Indented(_chatAutoHide));
+    }
+
+    /// <summary>Editable desktop controls for the one chat appearance value object.</summary>
+    private Control ChatAppearanceSection()
+    {
+        _chatAppearancePreset.DropDownStyle = ComboBoxStyle.DropDownList;
+        _chatAppearancePreset.Items.AddRange(["Default", "Retrowave", "Matrix"]);
+        _chatAppearancePreset.Width = 130;
+        _chatAppearancePreset.SelectedIndexChanged += (_, _) =>
+        {
+            if (!_applyingSettings && _chatAppearancePreset.SelectedIndex >= 0)
+            {
+                ApplyChatAppearance(ChatAppearanceSettings.ForPreset(
+                    (ChatAppearancePreset)_chatAppearancePreset.SelectedIndex));
+                NotifySettingsChanged();
+            }
+        };
+
+        _chatGlowOpacity.Minimum = _chatBackgroundImageOpacity.Minimum = 0;
+        _chatGlowOpacity.Maximum = _chatBackgroundImageOpacity.Maximum = 100;
+        _chatGlowOpacity.TickFrequency = _chatBackgroundImageOpacity.TickFrequency = 10;
+        _chatGlowOpacity.Width = _chatBackgroundImageOpacity.Width = 260;
+        _chatGlowOpacity.ValueChanged += (_, _) => NotifySettingsChanged();
+        _chatBackgroundImageOpacity.ValueChanged += (_, _) => NotifySettingsChanged();
+
+        _chatGlowSize.Minimum = ChatAppearanceSettings.MinimumGlowSizePixels;
+        _chatGlowSize.Maximum = ChatAppearanceSettings.MaximumGlowSizePixels;
+        _chatGlowSize.Width = 80;
+        _chatGlowSize.ValueChanged += (_, _) => NotifySettingsChanged();
+
+        _chatBackgroundImagePath.Width = 340;
+        _chatBackgroundImagePath.TextChanged += (_, _) => NotifySettingsChanged();
+        ConfigureButton(_browseChatBackgroundImage, "Browse…", false);
+        _browseChatBackgroundImage.Click += (_, _) =>
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Filter = "Image files (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp",
+                Title = "Choose a chat background image"
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK)
+            {
+                _chatBackgroundImagePath.Text = dialog.FileName;
+            }
+        };
+        ConfigureButton(_clearChatBackgroundImage, "Clear", false);
+        _clearChatBackgroundImage.Click += (_, _) => _chatBackgroundImagePath.Text = "";
+
+        return Section(
+            "Chat appearance",
+            "Presets are ordinary starting points. Colour and image changes apply to the chat workspace live.",
+            SettingRow("Preset:", _chatAppearancePreset),
+            ColourRow("Background colour:", _chatBackgroundColour, _pickChatBackgroundColour),
+            ColourRow("Text colour:", _chatTextColour, _pickChatTextColour),
+            ColourRow("Accent colour:", _chatAccentColour, _pickChatAccentColour),
+            ColourRow("Glow colour:", _chatGlowColour, _pickChatGlowColour),
+            SettingRow("Glow intensity:", _chatGlowOpacity),
+            SettingRow("Glow size (pixels):", _chatGlowSize),
+            SettingRow("Background image:", _chatBackgroundImagePath, _browseChatBackgroundImage, _clearChatBackgroundImage),
+            SettingRow("Image opacity:", _chatBackgroundImageOpacity));
+    }
+
+    private void ApplyChatAppearance(ChatAppearanceSettings appearance)
+    {
+        var safe = appearance.Sanitised();
+        _chatBackgroundColour.Text = safe.SafeBackgroundHex;
+        _chatTextColour.Text = safe.SafeTextHex;
+        _chatAccentColour.Text = safe.SafeAccentHex;
+        _chatGlowColour.Text = safe.SafeGlowHex;
+        _chatGlowOpacity.Value = (int)Math.Round(safe.SafeGlowOpacity * 100);
+        _chatGlowSize.Value = safe.SafeGlowSizePixels;
+        _chatBackgroundImagePath.Text = safe.SafeBackgroundImagePath;
+        _chatBackgroundImageOpacity.Value = (int)Math.Round(safe.SafeBackgroundImageOpacity * 100);
+        _chatAppearancePreset.SelectedIndex = safe == ChatAppearanceSettings.Default ? 0 : -1;
     }
 
     /// <summary>Controller status and the SteamVR repair/binding buttons.</summary>
@@ -1104,7 +1203,7 @@ internal sealed class MainForm : Form
     private Control ColourRow(string label, TextBox hexBox, Button pickButton)
     {
         hexBox.Width = 90;
-        hexBox.PlaceholderText = "#RRGGBB";
+        hexBox.PlaceholderText = "#RRGGBB or #AARRGGBB";
         hexBox.TextChanged += (_, _) => NotifySettingsChanged();
         ConfigureButton(pickButton, "Pick…", false);
         pickButton.Click += (_, _) => PickColour(hexBox);
