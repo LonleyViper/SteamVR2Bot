@@ -135,11 +135,12 @@ setup**. Everything below applies live — no restart, and no Save button.
 
 ### Chat on your wrist
 
-Turn on **Show chat messages on your wrist**. Your Twitch chat appears in a
+Turn on **Show chat messages on your wrist**. Your Twitch and YouTube chat appear in a
 window anchored to a controller or to your head, with real emote and badge
-images. Point the laser at its handle and drag to place it anywhere in full six
-degrees of freedom; the placement is saved per anchor mode, and the VR
-dashboard's **Chat** tab has a reset if you put it somewhere unreachable.
+images. To move it, open the VR dashboard's **Chat** tab, turn on **Move chat
+window**, then drag its handle; turn the mode off when finished. Reading or
+growing chat never captures game controller input. The placement is saved per
+anchor mode, and the same tab has a reset if you put it somewhere unreachable.
 
 **Grow on gaze** is off by default. Turned on, the window grows and brightens
 when you look at it.
@@ -450,7 +451,7 @@ them without retaining them.
   chat, and notifications alike. This is a property of the platform, not a
   bug in SteamVR2Bot. If overlays appear in the SteamVR display mirror but not
   in the headset, that is what is happening.
-- **Chat requires at least one enabled trigger in Streamer.bot bound to
+- **Twitch chat requires at least one enabled trigger in Streamer.bot bound to
   `Twitch > Chat Message`, even though SteamVR2Bot subscribes to that event
   directly and needs no relay action of its own.** Streamer.bot's own chat
   pipeline only appears to forward `Twitch.ChatMessage` over its WebSocket API

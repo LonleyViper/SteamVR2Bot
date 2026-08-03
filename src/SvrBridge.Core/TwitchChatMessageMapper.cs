@@ -115,7 +115,8 @@ public static class TwitchChatMessageMapper
             BadgeImageUrl = badges.Count > 0 ? badges[0].ImageUrl : "",
             Badges = badges,
             Text = text,
-            EmoteNames = ReadEmoteNames(record)
+            EmoteNames = ReadEmoteNames(record),
+            Emotes = ReadEmotes(record, text)
         };
         rejection = "";
         return true;
@@ -135,6 +136,50 @@ public static class TwitchChatMessageMapper
         AppendEmoteNames(record, "emotes", names);
         AppendEmoteNames(record, "cheerEmotes", names);
         return names;
+    }
+
+    /// <summary>
+    /// Keeps Streamer.bot's ranges and ready image URLs when they are present.
+    /// The name-only list above remains for older event shapes and hand-authored
+    /// payloads, but it cannot render a cheer whose visible token includes a
+    /// bits suffix not present in the emote catalog.
+    /// </summary>
+    private static IReadOnlyList<ChatEmote> ReadEmotes(JsonElement record, string text)
+    {
+        var emotes = new List<ChatEmote>();
+        AppendEmotes(record, "emotes", text, emotes);
+        AppendEmotes(record, "cheerEmotes", text, emotes);
+        return emotes;
+    }
+
+    private static void AppendEmotes(
+        JsonElement record,
+        string propertyName,
+        string text,
+        List<ChatEmote> result)
+    {
+        if (!record.TryGetProperty(propertyName, out var emotes) || emotes.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (var emote in emotes.EnumerateArray())
+        {
+            var name = ReadString(emote, "name");
+            if (name.Length == 0
+                || !emote.TryGetProperty("startIndex", out var startValue)
+                || !startValue.TryGetInt32(out var startIndex)
+                || !emote.TryGetProperty("endIndex", out var endValue)
+                || !endValue.TryGetInt32(out var endIndex)
+                || startIndex < 0
+                || endIndex < startIndex
+                || endIndex >= text.Length)
+            {
+                continue;
+            }
+
+            result.Add(new ChatEmote(name, startIndex, endIndex, ReadString(emote, "imageUrl")));
+        }
     }
 
     private static void AppendEmoteNames(JsonElement record, string propertyName, List<string> names)

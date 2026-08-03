@@ -104,6 +104,7 @@ internal sealed class ChatOverlay : IDisposable
     private uint? _dragPointerDeviceIndex;
     private bool _inputEnabled;
     private bool _isGazing;
+    private bool _positioning;
 
     /// <summary>
     /// Hides the window when it is turned away from the wearer or has been
@@ -460,6 +461,31 @@ internal sealed class ChatOverlay : IDisposable
     public void SetGazeScaleEnabled(bool enabled) => _gazeScaleEnabled = enabled;
 
     /// <summary>
+    /// Enables the transient move mode from the Chat settings tab. Ordinary
+    /// reading, including gaze enlargement, must never enable SteamVR's
+    /// system-wide laser mode and steal a running game's controller input.
+    /// </summary>
+    public void SetPositioningEnabled(bool enabled)
+    {
+        if (_disposed || _positioning == enabled)
+        {
+            return;
+        }
+
+        _positioning = enabled;
+        if (!enabled)
+        {
+            CancelDrag("chat positioning was turned off");
+        }
+
+        SetInputEnabled(ShouldEnableLaserInput(_positioning, _laserInputAvailable, _inputProbeExpiresAtMs is not null));
+        _input.SetGazing(_positioning && _laserInputAvailable);
+        _log(enabled
+            ? "Chat positioning is on. Point at the move handle and drag the window; turn it off when finished."
+            : "Chat positioning is off. Game controller input is no longer captured by chat.");
+    }
+
+    /// <summary>
     /// Developer-only: switches this surface between the default
     /// <c>SetOverlayRaw</c> path and the persistent-texture path - see
     /// <see cref="OverlayTextureUploader.TexturePathEnabled"/>. Off by
@@ -549,9 +575,8 @@ internal sealed class ChatOverlay : IDisposable
         }
 
         AnimateGaze(view, currentGazeDirection, nowMs);
-        // After the gaze update and before the repaint: the gaze state gates
-        // whether input is accepted at all, and a hover change this produces
-        // has to reach the screen on this same tick to feel responsive.
+        // After the gaze update and before the repaint: moving the panel is an
+        // explicit mode, never an incidental side effect of reading it.
         UpdateLaserInput(openVr);
         RepaintIfOwed(nowMs);
     }
@@ -703,14 +728,8 @@ internal sealed class ChatOverlay : IDisposable
 
     /// <summary>
     /// Reconciles whether this overlay accepts the laser, drains whatever it
-    /// received, and advances a drag in progress.
-    /// <para>
-    /// Input is on only while the window is gazed at, per §B2 - the stricter
-    /// of the two options that section offers, chosen even though the laser
-    /// probe showed a running game keeps its trigger either way. Ignoring
-    /// events while not gazed at would have been enough; not asking for them
-    /// costs nothing extra and leaves nothing to be wrong about later.
-    /// </para>
+    /// received, and advances a drag in progress. Input is on only for the
+    /// explicit positioning mode or the time-bounded developer probe.
     /// <para>
     /// The developer probe overrides the gate while it runs, which is the
     /// whole point of it: it exists to answer what an always-on input method
@@ -729,9 +748,12 @@ internal sealed class ChatOverlay : IDisposable
     /// </summary>
     private void UpdateLaserInput(OpenVrInput openVr)
     {
-        var wantInput = (_isGazing && _laserInputAvailable) || _inputProbeExpiresAtMs is not null;
+        var wantInput = ShouldEnableLaserInput(
+            _positioning,
+            _laserInputAvailable,
+            _inputProbeExpiresAtMs is not null);
         SetInputEnabled(wantInput);
-        _input.SetGazing(_isGazing && _laserInputAvailable);
+        _input.SetGazing(_positioning && _laserInputAvailable);
 
         // Drained even when input is off, so a queue that filled just before
         // gaze was lost cannot be replayed against the panel later. The router
@@ -758,6 +780,12 @@ internal sealed class ChatOverlay : IDisposable
 
         AdvanceDrag(openVr);
     }
+
+    internal static bool ShouldEnableLaserInput(
+        bool positioningEnabled,
+        bool laserInputAvailable,
+        bool inputProbeRunning) =>
+        laserInputAvailable && (positioningEnabled || inputProbeRunning);
 
     private void HandleLaserEvents(OpenVrInput openVr)
     {
@@ -1035,10 +1063,7 @@ internal sealed class ChatOverlay : IDisposable
         }
 
         _inputProbeExpiresAtMs = null;
-        // Not an unconditional off: since Phase 5 gaze also asks for input,
-        // and ending the probe must not take a grab away from a wearer who is
-        // looking straight at the window.
-        SetInputEnabled(_isGazing);
+        SetInputEnabled(ShouldEnableLaserInput(_positioning, _laserInputAvailable, inputProbeRunning: false));
         _log(expired
             ? "Laser input probe OFF for the chat window - the timer ran out, as designed."
             : "Laser input probe OFF for the chat window.");

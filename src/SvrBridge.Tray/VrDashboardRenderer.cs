@@ -306,7 +306,10 @@ internal static class VrDashboardRenderer
     /// the Phase 4b plan for the controls themselves). No bottom bar: every
     /// change here applies and saves automatically, the same as the desktop.
     /// </summary>
-    public static RenderedPanel RenderChatSettings(VrSettingsSnapshot settings, bool gazeCalibrationInProgress)
+    public static RenderedPanel RenderChatSettings(
+        VrSettingsSnapshot settings,
+        bool gazeCalibrationInProgress,
+        bool positioningEnabled = false)
     {
         return RenderSimplePage((graphics, fonts, brushes) =>
         {
@@ -357,7 +360,31 @@ internal static class VrDashboardRenderer
 
             DrawGazeCalibration(graphics, fonts, brushes, settings, gazeCalibrationInProgress);
             DrawResetPlacement(graphics, fonts, brushes, settings);
+            DrawChatPositioning(graphics, fonts, brushes, positioningEnabled);
         });
+    }
+
+    private static void DrawChatPositioning(
+        Graphics graphics,
+        DashboardFonts fonts,
+        DashboardBrushes brushes,
+        bool positioningEnabled)
+    {
+        var bounds = new Rectangle(60, VrDashboardLayout.ChatPositioningY, 980, VrDashboardLayout.SettingsRowHeight);
+        DrawRoundedRectangle(graphics, brushes.Card, bounds, 14);
+        DrawCenteredText(graphics, "Move chat window", fonts.Body, brushes.White, bounds);
+        graphics.DrawString(
+            positioningEnabled
+                ? "Laser input is active only while moving chat. Drag the handle, then switch this off."
+                : "Turn on only to drag chat. Reading or growing chat never captures game controls.",
+            fonts.Body,
+            brushes.Muted,
+            bounds.Left + 20,
+            bounds.Top + 52);
+
+        var toggle = VrDashboardLayout.PositionChatToggle;
+        DrawRoundedRectangle(graphics, positioningEnabled ? brushes.Green : brushes.Disabled, toggle, 14);
+        DrawCenteredText(graphics, positioningEnabled ? "On" : "Off", fonts.Heading, brushes.White, toggle);
     }
 
     /// <summary>

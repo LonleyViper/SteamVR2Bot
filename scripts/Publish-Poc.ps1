@@ -64,6 +64,14 @@ try {
     $version = "build-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 }
 
+# A package made from a dirty worktree must never overwrite an archive named
+# after a clean commit. Besides being misleading to a tester, that loses the
+# only straightforward way to tell which source produced a reported result.
+$dirtyState = git -C $repoRoot status --porcelain 2>$null
+if (-not [string]::IsNullOrWhiteSpace(($dirtyState -join ""))) {
+    $version = "$version-dirty-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+}
+
 $zipPath = Join-Path $repoRoot "artifacts\SteamVR2Bot-$version-windows-x64.zip"
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force

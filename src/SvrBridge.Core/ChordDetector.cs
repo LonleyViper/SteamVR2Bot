@@ -26,6 +26,13 @@ public sealed class ChordDetector
         _waitingForRelease = requireReleaseBeforeArmed;
     }
 
+    /// <summary>
+    /// True while a hot-reloaded shortcut is deliberately ignoring held
+    /// controls until the player releases them. This prevents a shortcut
+    /// from firing solely because its configuration changed mid-press.
+    /// </summary>
+    public bool IsWaitingForRelease => _waitingForRelease;
+
     public bool Update(bool buttonOne, bool buttonTwo, long nowMs)
     {
         if (_waitingForRelease)

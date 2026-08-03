@@ -860,6 +860,12 @@ internal static class OpenVrWorker
                 notificationOverlay?.SetPositioningEnabled(enabled);
             }
 
+            void SetChatPositioningEnabled(bool enabled)
+            {
+                EnsureChatOverlay();
+                chatOverlay?.SetPositioningEnabled(enabled);
+            }
+
             void EnsureChatOverlay()
             {
                 if (chatOverlay is not null)
@@ -1410,6 +1416,7 @@ internal static class OpenVrWorker
                                         "shortcutDeleted",
                                         ShortcutDeletedId: shortcutId)),
                                 settings => ApplyVrSettingsChange(settings),
+                                SetChatPositioningEnabled,
                                 SetNotificationPositioningEnabled,
                                 () =>
                                 {

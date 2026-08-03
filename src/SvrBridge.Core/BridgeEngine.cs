@@ -565,6 +565,7 @@ public sealed class BridgeEngine
             var detectors = shortcuts.ToDictionary(
                 shortcut => shortcut.Id,
                 shortcut => new ChordDetector(shortcut.Gesture));
+            var longPressAttempts = new Dictionary<string, LongPressAttempt>();
             var stopwatch = Stopwatch.StartNew();
             var bindingRefresh = Stopwatch.StartNew();
             var previous = new InputSnapshot(false, false);
@@ -637,15 +638,30 @@ public sealed class BridgeEngine
                         shortcut => new ChordDetector(
                             shortcut.Gesture,
                             requireReleaseBeforeArmed: true));
+                    longPressAttempts.Clear();
                     SetReadyStatus(currentSetup, shortcuts);
                 }
 
                 foreach (var shortcut in shortcuts)
                 {
-                    if (detectors[shortcut.Id].Update(
-                            shortcut.SafetyInput.IsPressed(snapshot),
-                            shortcut.ActionInput.IsPressed(snapshot),
-                            stopwatch.ElapsedMilliseconds))
+                    var detector = detectors[shortcut.Id];
+                    var safetyPressed = shortcut.SafetyInput.IsPressed(snapshot);
+                    var actionPressed = shortcut.ActionInput.IsPressed(snapshot);
+                    var nowMs = stopwatch.ElapsedMilliseconds;
+                    var fired = detector.Update(
+                        safetyPressed,
+                        actionPressed,
+                        nowMs);
+
+                    TraceLongPressAttempt(
+                        shortcut,
+                        detector,
+                        safetyPressed,
+                        fired,
+                        nowMs,
+                        longPressAttempts);
+
+                    if (fired)
                     {
                         await DeliverActionAsync(
                             streamerBot,
@@ -868,6 +884,72 @@ public sealed class BridgeEngine
                 break;
         }
     }
+
+    private void TraceLongPressAttempt(
+        ShortcutConfig shortcut,
+        ChordDetector detector,
+        bool safetyPressed,
+        bool fired,
+        long nowMs,
+        Dictionary<string, LongPressAttempt> attempts)
+    {
+        if (shortcut.Gesture.Mode != ChordMode.LongPress
+            || detector.IsWaitingForRelease)
+        {
+            return;
+        }
+
+        if (safetyPressed)
+        {
+            if (!attempts.ContainsKey(shortcut.Id))
+            {
+                attempts[shortcut.Id] = new LongPressAttempt(nowMs, false);
+                var required = FriendlyDuration(shortcut.Gesture.HoldMs);
+                Log(
+                    "shortcut.hold_started",
+                    "Hold started for '" + shortcut.Name + "': keep " +
+                    shortcut.SafetyInput.FriendlyName + " held for " + required + ".");
+                SetStatus(
+                    BridgeState.Ready,
+                    "Hold started",
+                    "Keep holding " + shortcut.SafetyInput.FriendlyName +
+                    " for " + required + ".");
+            }
+
+            if (fired && attempts.TryGetValue(shortcut.Id, out var startedAttempt))
+            {
+                attempts[shortcut.Id] = startedAttempt with { Fired = true };
+            }
+
+            return;
+        }
+
+        if (!attempts.Remove(shortcut.Id, out var attempt) || attempt.Fired)
+        {
+            return;
+        }
+
+        var heldFor = Math.Max(0, nowMs - attempt.StartedAtMs);
+        var heldDuration = FriendlyDuration((int)heldFor);
+        var requiredDuration = FriendlyDuration(shortcut.Gesture.HoldMs);
+        Log(
+            "shortcut.hold_cancelled",
+            "Hold cancelled for '" + shortcut.Name + "' after " + heldDuration + "; " +
+            shortcut.SafetyInput.FriendlyName + " needs " + requiredDuration + ".");
+        SetStatus(
+            BridgeState.Ready,
+            "Hold not long enough",
+            shortcut.SafetyInput.FriendlyName + " was held for " + heldDuration +
+            "; hold it for " + requiredDuration + ".");
+    }
+
+    private static string FriendlyDuration(int milliseconds) =>
+        milliseconds % 1000 == 0
+            ? (milliseconds / 1000).ToString() + " second" +
+              (milliseconds == 1000 ? string.Empty : "s")
+            : (milliseconds / 1000d).ToString("0.#") + " seconds";
+
+    private sealed record LongPressAttempt(long StartedAtMs, bool Fired);
 
     private void ReplaceRuntimeShortcuts(
         IReadOnlyList<ShortcutConfig> shortcuts)

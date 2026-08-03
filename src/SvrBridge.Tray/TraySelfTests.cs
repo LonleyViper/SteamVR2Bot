@@ -41,6 +41,7 @@ internal static class TraySelfTests
         TestChatImageCacheFetchesDecodesAndCaches();
         TestChatImageCacheRetriesAfterAFailedFetch();
         TestChatRenderEmbedsCachedEmoteImage();
+        TestChatRenderEmbedsEventSuppliedEmoteImage();
         TestChatRenderEmbedsCachedBadgeImage();
         TestChatRenderEmbedsMultipleBadges();
         TestChatRingBufferThreadSafeConcurrentAccess();
@@ -55,6 +56,7 @@ internal static class TraySelfTests
         TestChatHandleHitTestMatchesTheDrawnRectangle();
         TestChatHoverRepaintsOncePerRectangleCrossed();
         TestChatInputIsRejectedOutsideTheGazedState();
+        TestChatLaserInputRequiresExplicitPositioning();
         TestOnlyTheHandleStartsAndEndsAGrab();
         TestHandPlacedOffsetClearsAStreamerBotOverride();
         TestSurfaceOverrideStateAppliesAndResetsControlCommands();
@@ -660,7 +662,8 @@ internal static class TraySelfTests
             .. VrDashboardLayout.NotificationAnchorHand,
             .. VrDashboardLayout.GazeSensitivity,
             VrDashboardLayout.ResetPlacement,
-            VrDashboardLayout.GazeScaleToggle
+            VrDashboardLayout.GazeScaleToggle,
+            VrDashboardLayout.PositionChatToggle
         ];
         foreach (var control in allControls)
         {
@@ -704,6 +707,9 @@ internal static class TraySelfTests
             VrDashboardLayout.GazeScaleToggle.Left == VrDashboardLayout.ChatToggle.Left
             && VrDashboardLayout.GazeScaleToggle.Width == VrDashboardLayout.ChatToggle.Width,
             "The grow-on-gaze toggle is not aligned with the column of on/off toggles above it.");
+        Assert(
+            VrDashboardLayout.PositionChatToggle.Top >= VrDashboardLayout.ResetPlacement.Bottom,
+            "The explicit chat move control overlaps the reset/grow row above it.");
 
         // The List page's row count dropped from 6 to 5 to make room for the
         // tab strip - its last row must still clear the bottom bar.
@@ -1961,6 +1967,28 @@ internal static class TraySelfTests
         Assert(
             fresh.EnabledKeys.Count == 0,
             "A picker built from a catalog alone enabled something by itself.");
+    }
+
+    private static void TestChatLaserInputRequiresExplicitPositioning()
+    {
+        Assert(
+            !ChatOverlay.ShouldEnableLaserInput(
+                positioningEnabled: false,
+                laserInputAvailable: true,
+                inputProbeRunning: false),
+            "Reading a gazed-at chat window still enabled SteamVR's global laser mode.");
+        Assert(
+            ChatOverlay.ShouldEnableLaserInput(
+                positioningEnabled: true,
+                laserInputAvailable: true,
+                inputProbeRunning: false),
+            "Explicit chat positioning did not enable laser input.");
+        Assert(
+            ChatOverlay.ShouldEnableLaserInput(
+                positioningEnabled: false,
+                laserInputAvailable: true,
+                inputProbeRunning: true),
+            "The time-bounded laser diagnostic probe did not enable input.");
     }
 
     private static void TestNotificationEventPickerScalesRowsForLargeText()
@@ -3534,6 +3562,34 @@ internal static class TraySelfTests
             "A recognised emote token with an already-cached image was not embedded as an image.");
     }
 
+    private static void TestChatRenderEmbedsEventSuppliedEmoteImage()
+    {
+        using var httpClient = new HttpClient(
+            new StubHttpMessageHandler((_, _) =>
+                Task.FromResult(
+                    new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent(OnePixelPngBytes)
+                    })));
+        using var cache = new ChatImageCache(httpClient);
+        const string imageUrl = "https://example.invalid/ripcheer.gif";
+        cache.TryGetByUrl(imageUrl, out _);
+        Assert(
+            WaitForCondition(() => cache.TryGetByUrl(imageUrl, out _), TimeSpan.FromSeconds(5)),
+            "The event-supplied cheer image was not cached.");
+
+        using var thread = new WpfRenderThread("self-test spanned chat emote image");
+        var message = ChatMessageFor(
+            "RIPCheer45 thanks",
+            emotes: [new SvrBridge.Core.ChatEmote("RIPCheer", 0, 9, imageUrl)]);
+        var containerCount = thread.Invoke(() =>
+            WpfChatRenderer.BuildTextBlock([message], cache)
+                .Inlines.OfType<System.Windows.Documents.InlineUIContainer>().Count());
+        Assert(
+            containerCount == 1,
+            "A cheer whose visible token differs from its catalog name did not render from its event image URL.");
+    }
+
     /// <summary>
     /// A badge with an already-cached image must render as that image, not
     /// the bracketed text label - and a badge with no image URL at all (or
@@ -3677,7 +3733,8 @@ internal static class TraySelfTests
         string colour = "",
         string badge = "",
         string badgeImageUrl = "",
-        IReadOnlyList<string>? emoteNames = null) =>
+        IReadOnlyList<string>? emoteNames = null,
+        IReadOnlyList<SvrBridge.Core.ChatEmote>? emotes = null) =>
         new()
         {
             Target = SvrBridge.Core.StreamerBotEventTarget.Chat,
@@ -3686,7 +3743,8 @@ internal static class TraySelfTests
             Badge = badge,
             BadgeImageUrl = badgeImageUrl,
             Text = text,
-            EmoteNames = emoteNames ?? []
+            EmoteNames = emoteNames ?? [],
+            Emotes = emotes ?? []
         };
 
     /// <summary>

@@ -31,6 +31,7 @@ internal static class SelfTests
         TestAuthenticationHash();
         TestStreamerBotEventPayload();
         TestTwitchChatMessageMapper();
+        TestYouTubeChatMessageMapper();
         TestTwitchEmoteCatalog();
         TestStreamerBotEventTemplateResolvesDottedPaths();
         TestStreamerBotEventCatalogParsesGetEventsResponse();
@@ -759,11 +760,17 @@ internal static class SelfTests
             },
             requireReleaseBeforeArmed: true);
         Assert(
+            hotReloaded.IsWaitingForRelease,
+            "A hot-reloaded detector did not report that it was waiting for release.");
+        Assert(
             !hotReloaded.Update(true, true, 100),
             "A held input fired immediately after a hot reload.");
         Assert(
             !hotReloaded.Update(false, false, 150),
             "Release after a hot reload fired.");
+        Assert(
+            !hotReloaded.IsWaitingForRelease,
+            "A released hot-reloaded detector did not arm.");
         Assert(
             hotReloaded.Update(true, true, 200),
             "Hot-reloaded input did not arm after release.");
@@ -975,7 +982,8 @@ internal static class SelfTests
             && newer.Badge == "Mod"
             && newer.BadgeImageUrl == "https://a.test/mod.png"
             && newer.Text == "hello from the newer shape Kappa"
-            && newer.EmoteNames.SequenceEqual(["Kappa"]),
+            && newer.EmoteNames.SequenceEqual(["Kappa"])
+            && newer.Emotes.SequenceEqual([new ChatEmote("Kappa", 25, 29, "")]),
             "The newer top-level-user Twitch.ChatMessage shape did not map correctly.");
         // The bug this covers: an earlier version picked one badge from four
         // hardcoded categories and silently dropped everything else,
@@ -1015,6 +1023,24 @@ internal static class SelfTests
             && older.EmoteNames.SequenceEqual(["PogChamp", "Cheer100"]),
             "The older message-wrapped Twitch.ChatMessage shape did not map its badge image, "
             + "emotes and cheer emotes correctly.");
+
+        var cheer = MapTwitchChatMessage(
+            """
+            {
+              "text": "RIPCheer45 thanks",
+              "cheerEmotes": [
+                {
+                  "name": "RIPCheer",
+                  "startIndex": 0,
+                  "endIndex": 9,
+                  "imageUrl": "https://a.test/ripcheer.gif"
+                }
+              ]
+            }
+            """);
+        Assert(
+            cheer.Emotes.SequenceEqual([new ChatEmote("RIPCheer", 0, 9, "https://a.test/ripcheer.gif")]),
+            "A dynamic cheer lost its exact visible range or event-supplied image URL.");
 
         // No badges array at all, but the older shape's own subscriber flag
         // is true - the fallback in ReadBadge, not the badge-name scan.
@@ -1345,6 +1371,38 @@ internal static class SelfTests
             "StreamerBotEventDescriptor.FriendlyName did not include a readable source and event name.");
     }
 
+    private static void TestYouTubeChatMessageMapper()
+    {
+        var message = MapYouTubeChatMessage(
+            """
+            {
+              "user": { "display": "YouTubeViewer" },
+              "message": "Hello :chillwdog:!",
+              "emotes": [
+                {
+                  "name": ":chillwdog:",
+                  "startIndex": 6,
+                  "endIndex": 16,
+                  "imageUrl": "https://a.test/chillwdog.png"
+                }
+              ]
+            }
+            """);
+        Assert(
+            message is { Target: StreamerBotEventTarget.Chat, User: "YouTubeViewer", Text: "Hello :chillwdog:!" }
+            && message.EmoteNames.SequenceEqual([":chillwdog:"])
+            && message.Emotes.SequenceEqual([new ChatEmote(":chillwdog:", 6, 16, "https://a.test/chillwdog.png")]),
+            "A YouTube.Message payload did not map its user, text and emote range correctly.");
+
+        var fallback = MapYouTubeChatMessage("""{"name":"Viewer","text":"fallback text"}""");
+        Assert(
+            fallback is { User: "Viewer", Text: "fallback text" },
+            "A YouTube.Message payload did not fall back to its top-level text and user fields.");
+        Assert(
+            !YouTubeChatMessageMapper.TryMap(JsonDocument.Parse("{}").RootElement, out _, out _),
+            "A YouTube.Message payload with no usable text was accepted.");
+    }
+
     /// <summary>
     /// The picker's whole defence against the freeze that got two earlier
     /// designs rejected: the result set is filtered as data and capped before
@@ -1606,6 +1664,15 @@ internal static class SelfTests
         return payload!;
     }
 
+    private static StreamerBotEventPayload MapYouTubeChatMessage(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        Assert(
+            YouTubeChatMessageMapper.TryMap(document.RootElement, out var payload, out var rejection),
+            $"A YouTube chat message expected to map was rejected: {rejection}.");
+        return payload!;
+    }
+
     /// <summary>
     /// Proves the receive pump keeps its two destinations apart, and survives
     /// the payloads a hand-written Streamer.bot action really produces.
@@ -1724,6 +1791,20 @@ internal static class SelfTests
             && third.Payload.Colour == "#123456"
             && third.Payload.Text == "raw twitch chat message",
             "A live Twitch.ChatMessage frame was not routed through the mapper to the event channel.");
+        await SendYouTubeChatMessageEventAsync(
+            socket,
+            new
+            {
+                user = new { display = "YouTubeViewer" },
+                message = "raw youtube chat message"
+            },
+            timeout.Token);
+        var fourth = await stream.Events.ReadAsync(timeout.Token);
+        Assert(
+            fourth.Payload.Target == StreamerBotEventTarget.Chat
+            && fourth.Payload.User == "YouTubeViewer"
+            && fourth.Payload.Text == "raw youtube chat message",
+            "A live YouTube.Message frame was not routed through the mapper to the event channel.");
         Assert(
             activity.Any(entry =>
                 entry.EventName == "streamerbot.event_dropped"
@@ -1865,9 +1946,13 @@ internal static class SelfTests
         Assert(
             twitch.Count(type => string.Equals(type, "Follow", StringComparison.OrdinalIgnoreCase)) == 1,
             "A duplicate/differently-cased enabled event produced more than one Subscribe entry.");
+        var youtube = subscribedEvents.GetProperty("YouTube")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
         Assert(
-            !subscribedEvents.TryGetProperty("YouTube", out _),
-            "A source with nothing enabled (YouTube) still appeared in the Subscribe request.");
+            youtube.Length == 1 && youtube[0] == "Message",
+            "YouTube.Message was not subscribed unconditionally alongside the chat feed.");
 
         // The wearer enabled Kick.Subscription and this instance's GetEvents
         // did not mention it. Dropping it would look like tidiness and behave
@@ -1979,7 +2064,7 @@ internal static class SelfTests
     /// §B2: "a GetEvents failure must not take down the feed" - now most
     /// relevant at connect time, since that is when this stream asks it to
     /// build its Subscribe list. A GetEvents failure there falls back to
-    /// exactly General.Custom and Twitch.ChatMessage, and the connection
+    /// exactly General.Custom, Twitch.ChatMessage and YouTube.Message, and the connection
     /// still succeeds and keeps delivering events.
     /// </summary>
     private static async Task TestStreamerBotEventStreamFallsBackWhenGetEventsFailsAtConnectAsync()
@@ -2011,9 +2096,15 @@ internal static class SelfTests
             .EnumerateArray()
             .Select(entry => entry.GetString())
             .ToArray();
+        var youtube = subscribedEvents.GetProperty("YouTube")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
         Assert(
-            general.Length == 1 && general[0] == "Custom" && twitch.Length == 1 && twitch[0] == "ChatMessage",
-            "A GetEvents failure at connect did not fall back to exactly General.Custom and Twitch.ChatMessage.");
+            general.Length == 1 && general[0] == "Custom"
+            && twitch.Length == 1 && twitch[0] == "ChatMessage"
+            && youtube.Length == 1 && youtube[0] == "Message",
+            "A GetEvents failure at connect did not fall back to the three direct chat subscriptions.");
 
         await SendCustomEventAsync(
             socket,
@@ -2220,7 +2311,7 @@ internal static class SelfTests
         // Per §B2's revised design, the stream asks GetEvents before it ever
         // subscribes - answered with an empty catalog here, so every test
         // using this helper keeps asserting the exact same fallback shape
-        // (General.Custom + Twitch.ChatMessage only) it always has.
+        // (General.Custom + Twitch.ChatMessage + YouTube.Message) it always has.
         using var getEvents = await ReceiveJsonAsync(socket, cancellationToken);
         Assert(
             getEvents.RootElement.GetProperty("request").GetString() == "GetEvents",
@@ -2256,6 +2347,14 @@ internal static class SelfTests
         Assert(
             subscribedTwitch.Length == 1 && subscribedTwitch[0] == "ChatMessage",
             "The event stream did not subscribe to Twitch.ChatMessage alongside General.Custom.");
+        var subscribedYouTube = events
+            .GetProperty("YouTube")
+            .EnumerateArray()
+            .Select(entry => entry.GetString())
+            .ToArray();
+        Assert(
+            subscribedYouTube.Length == 1 && subscribedYouTube[0] == "Message",
+            "The event stream did not subscribe to YouTube.Message alongside the direct chat feed.");
         await SendJsonAsync(
             socket,
             new { status = "ok", id = subscribe.RootElement.GetProperty("id").GetString() },
@@ -2288,6 +2387,20 @@ internal static class SelfTests
             {
                 timeStamp = DateTimeOffset.Now.ToString("O"),
                 @event = new { source = "Twitch", type = "ChatMessage" },
+                data
+            },
+            cancellationToken);
+
+    private static Task SendYouTubeChatMessageEventAsync(
+        WebSocket socket,
+        object data,
+        CancellationToken cancellationToken) =>
+        SendJsonAsync(
+            socket,
+            new
+            {
+                timeStamp = DateTimeOffset.Now.ToString("O"),
+                @event = new { source = "YouTube", type = "Message" },
                 data
             },
             cancellationToken);

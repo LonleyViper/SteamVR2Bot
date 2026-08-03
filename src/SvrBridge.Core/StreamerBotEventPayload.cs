@@ -124,6 +124,14 @@ public sealed record StreamerBotEventPayload
     public IReadOnlyList<string> EmoteNames { get; init; } = [];
 
     /// <summary>
+    /// Exact emote spans supplied by the chat event. Unlike <see cref="EmoteNames"/>,
+    /// these preserve a dynamic emote's CDN URL and the precise characters it
+    /// replaces (for example a cheer such as <c>RIPCheer45</c> whose catalog
+    /// name is only <c>RIPCheer</c>).
+    /// </summary>
+    public IReadOnlyList<ChatEmote> Emotes { get; init; } = [];
+
+    /// <summary>
     /// The image URL for <see cref="Badge"/>, when the source has one. The
     /// renderer embeds this image in place of the bracketed text label once
     /// it is cached, falling back to the label until then or if this is
@@ -493,3 +501,6 @@ public sealed record StreamerBotEventPayload
             _ => $"a {kind.ToString().ToLowerInvariant()}"
         };
 }
+
+/// <summary>An emote's exact text range and optional event-supplied image URL.</summary>
+public sealed record ChatEmote(string Name, int StartIndex, int EndIndex, string ImageUrl);

@@ -194,7 +194,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
         AppendBadge(inlines, message, chatImages);
 
         inlines.Add(new Run(": ") { Foreground = new SolidColorBrush(BodyColor) });
-        AppendBodyText(inlines, message.Text, message.EmoteNames, chatImages);
+        AppendBodyText(inlines, message, chatImages);
     }
 
     /// <summary>
@@ -266,10 +266,17 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     /// </summary>
     private static void AppendBodyText(
         InlineCollection inlines,
-        string text,
-        IReadOnlyList<string> emoteNames,
+        StreamerBotEventPayload message,
         ChatImageCache? chatImages)
     {
+        if (message.Emotes.Count > 0)
+        {
+            AppendSpannedEmotes(inlines, message.Text, message.Emotes, chatImages);
+            return;
+        }
+
+        var text = message.Text;
+        var emoteNames = message.EmoteNames;
         if (emoteNames.Count == 0)
         {
             inlines.Add(new Run(text) { Foreground = new SolidColorBrush(BodyColor) });
@@ -309,6 +316,57 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
                     FontStyle = isEmote ? FontStyles.Italic : FontStyles.Normal,
                     FontWeight = isEmote ? FontWeights.SemiBold : FontWeights.Normal
                 });
+        }
+    }
+
+    private static void AppendSpannedEmotes(
+        InlineCollection inlines,
+        string text,
+        IReadOnlyList<ChatEmote> emotes,
+        ChatImageCache? chatImages)
+    {
+        var cursor = 0;
+        foreach (var emote in emotes.OrderBy(emote => emote.StartIndex).ThenBy(emote => emote.EndIndex))
+        {
+            if (emote.StartIndex < cursor || emote.EndIndex >= text.Length)
+            {
+                continue;
+            }
+
+            if (emote.StartIndex > cursor)
+            {
+                inlines.Add(new Run(text[cursor..emote.StartIndex]) { Foreground = new SolidColorBrush(BodyColor) });
+            }
+
+            BitmapImage? image = null;
+            var imageReady = chatImages is not null
+                && (emote.ImageUrl.Length > 0
+                    ? chatImages.TryGetByUrl(emote.ImageUrl, out image)
+                    : chatImages.TryGet(emote.Name, out image))
+                && image is not null;
+            if (imageReady)
+            {
+                inlines.Add(new InlineUIContainer(BuildInlineImage(image!, EmoteImageHeight))
+                {
+                    BaselineAlignment = BaselineAlignment.Center
+                });
+            }
+            else
+            {
+                inlines.Add(new Run(text[emote.StartIndex..(emote.EndIndex + 1)])
+                {
+                    Foreground = new SolidColorBrush(EmoteColor),
+                    FontStyle = FontStyles.Italic,
+                    FontWeight = FontWeights.SemiBold
+                });
+            }
+
+            cursor = emote.EndIndex + 1;
+        }
+
+        if (cursor < text.Length)
+        {
+            inlines.Add(new Run(text[cursor..]) { Foreground = new SolidColorBrush(BodyColor) });
         }
     }
 

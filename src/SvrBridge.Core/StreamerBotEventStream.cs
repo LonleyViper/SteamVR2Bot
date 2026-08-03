@@ -26,7 +26,7 @@ public sealed record StreamerBotEvent(
 
 /// <summary>
 /// How directly-subscribed Streamer.bot events (everything beyond
-/// <c>General.Custom</c>/<c>Twitch.ChatMessage</c>) become notifications -
+/// <c>General.Custom</c>/<c>Twitch.ChatMessage</c>/<c>YouTube.Message</c>) become notifications -
 /// per §B2 of the Phase 7 plan.
 /// <para>
 /// Opt-in, not "subscribe to everything": a live headset session tried the
@@ -44,7 +44,7 @@ public sealed record StreamerBotEvent(
 /// <param name="EnabledEvents">
 /// "Source.Type" keys (<see cref="StreamerBotEventDescriptor.Key"/>) the
 /// wearer has explicitly turned on. Never includes <c>General.Custom</c> or
-/// <c>Twitch.ChatMessage</c> - those two are subscribed unconditionally and
+/// <c>Twitch.ChatMessage</c> or <c>YouTube.Message</c> - those chat events are subscribed unconditionally and
 /// have nothing to do with this list.
 /// </param>
 /// <param name="Templates">Per-event template override, keyed the same way. An event with no entry here uses <see cref="DefaultTemplate"/>.</param>
@@ -144,7 +144,7 @@ public sealed record NotificationEventSettings(
 
 /// <summary>
 /// The long-lived half of the Streamer.bot connection: it subscribes to
-/// <c>General.Custom</c> and publishes whatever arrives.
+/// <c>General.Custom</c>, Twitch chat and YouTube chat and publishes whatever arrives.
 /// <para>
 /// This is deliberately a separate type from <see cref="StreamerBotClient"/>
 /// rather than a feature added to it. That client is built fresh per delivery
@@ -725,9 +725,9 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         }
 
         // General.Custom carries a hand-authored payload already in this
-        // app's own shape; Twitch.ChatMessage carries Streamer.bot's parsed
-        // Twitch event and needs the platform-specific mapper. Anything else
-        // means Streamer.bot sent something this app never subscribed to -
+        // app's own shape; the direct chat events carry Streamer.bot's parsed
+        // platform data and need their respective mappers. Anything else means
+        // Streamer.bot sent something this app never subscribed to -
         // see BuildSubscribeEvents, which only ever asks for
         // NotificationEventSettings.EnabledEvents beyond those two.
         bool mapped;
@@ -742,6 +742,11 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
             && eventType.Equals("ChatMessage", StringComparison.OrdinalIgnoreCase))
         {
             mapped = TwitchChatMessageMapper.TryMap(data, out payload, out rejection);
+        }
+        else if (eventSource.Equals("YouTube", StringComparison.OrdinalIgnoreCase)
+            && eventType.Equals("Message", StringComparison.OrdinalIgnoreCase))
+        {
+            mapped = YouTubeChatMessageMapper.TryMap(data, out payload, out rejection);
         }
         else if (IsEnabledNotificationEvent(eventSource, eventType))
         {
@@ -799,7 +804,7 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
                 new BridgeActivity(
                     "streamerbot.events_catalog_failed",
                     $"Could not load the Streamer.bot event list at connect: {exception.Message}. "
-                    + "Falling back to General.Custom and Twitch.ChatMessage only.",
+                    + "Falling back to General.Custom, Twitch.ChatMessage and YouTube.Message only.",
                     BridgeLogLevel.Warning));
             return [];
         }
@@ -820,8 +825,8 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
     /// </para>
     /// <para>
     /// General.Custom stays the escape hatch for SB-side-filtered alerts and
-    /// notifications - see NotificationOverlay - and Twitch.ChatMessage is
-    /// the direct route added per §B6 so chat works with no relay action
+    /// notifications - see NotificationOverlay - while Twitch.ChatMessage and
+    /// YouTube.Message are direct routes so chat works with no relay action
     /// required; Streamer.bot still owns the entire platform integration
     /// either way, since this is the parsed output of its own connection,
     /// not anything raw from the platform itself.
@@ -844,7 +849,8 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         var bySource = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
         {
             ["General"] = ["Custom"],
-            ["Twitch"] = ["ChatMessage"]
+            ["Twitch"] = ["ChatMessage"],
+            ["YouTube"] = ["Message"]
         };
 
         var unreported = new List<string>();
