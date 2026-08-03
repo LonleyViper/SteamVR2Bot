@@ -27,6 +27,8 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     public const int PanelHeight = ChatOverlayLayout.PanelHeight;
     private const double Padding = 20;
     private const double FontSize = 20;
+    private const double WorkspaceMaximumFontSize = 24;
+    private const double WorkspaceMinimumFontSize = 13;
     private const double EmoteImageHeight = FontSize * 1.2;
     private const double BadgeImageHeight = FontSize * 0.9;
 
@@ -111,12 +113,20 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
                     0),
                 Background = new SolidColorBrush(BackgroundColor),
                 ClipToBounds = true,
-                Padding = new Thickness(Padding),
-                Child = BuildTextBlock(content.Messages, chatImages)
+                Padding = new Thickness(0),
+                Child = BuildWorkspaceCard(content, chatImages)
             });
+        foreach (var index in new[]
+                 {
+                     ChatOverlayLayout.ChatTabIndex,
+                     ChatOverlayLayout.EventsTabIndex
+                 })
+        {
+            grid.Children.Add(BuildControl(index, content));
+        }
         if (content.MoveHandleVisible)
         {
-            grid.Children.Add(BuildControl(ChatOverlayLayout.MoveHandleIndex, content.HoveredButtonIndex));
+            grid.Children.Add(BuildControl(ChatOverlayLayout.MoveHandleIndex, content));
         }
 
         return new Border
@@ -134,9 +144,12 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     /// panel exists to keep. The highlight is keyed on the hovered index and
     /// nothing else, so it can never light up a control the laser would miss.
     /// </summary>
-    private static UIElement BuildControl(int index, int hoveredIndex)
+    private static UIElement BuildControl(int index, ChatContent content)
     {
         var bounds = ChatOverlayLayout.Buttons[index];
+        var isMove = index == ChatOverlayLayout.MoveHandleIndex;
+        var isActiveTab = (index == ChatOverlayLayout.ChatTabIndex && content.ActiveTab == ChatWorkspaceTab.Chat)
+                          || (index == ChatOverlayLayout.EventsTabIndex && content.ActiveTab == ChatWorkspaceTab.Events);
         return new Border
         {
             Width = bounds.Width,
@@ -145,15 +158,160 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(bounds.Left, bounds.Top, 0, 0),
             CornerRadius = new CornerRadius(12),
-            Background = new SolidColorBrush(index == hoveredIndex ? HandleHoverColor : HandleColor),
-            Padding = new Thickness(bounds.Width * 0.2),
-            Child = new System.Windows.Shapes.Path
-            {
-                Data = Geometry.Parse(MoveHandleGlyph),
-                Fill = new SolidColorBrush(HandleGlyphColor),
-                Stretch = Stretch.Uniform
-            }
+            Background = new SolidColorBrush(
+                isMove && index == content.HoveredButtonIndex
+                    ? HandleHoverColor
+                    : isActiveTab
+                        ? WpfColor.FromArgb(190, 59, 130, 246)
+                        : HandleColor),
+            Padding = isMove ? new Thickness(bounds.Width * 0.2) : new Thickness(0),
+            Child = isMove
+                ? new System.Windows.Shapes.Path
+                {
+                    Data = Geometry.Parse(MoveHandleGlyph),
+                    Fill = new SolidColorBrush(HandleGlyphColor),
+                    Stretch = Stretch.Uniform
+                }
+                : new TextBlock
+                {
+                    Text = ChatOverlayLayout.LabelFor(index),
+                    FontFamily = new WpfFontFamily("Segoe UI"),
+                    FontSize = 20,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = new SolidColorBrush(WpfColor.FromRgb(245, 250, 255)),
+                    HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    TextAlignment = TextAlignment.Center
+                }
         };
+    }
+
+    private static UIElement BuildWorkspaceCard(ChatContent content, ChatImageCache? chatImages)
+    {
+        var entries = content.Entries;
+        var body = content.ActiveTab == ChatWorkspaceTab.Events
+            ? BuildEventTextBlock(entries ?? [])
+            : BuildTextBlock(
+                entries is null ? content.Messages : entries.Select(entry => entry.Payload).ToArray(),
+                chatImages);
+        FitWorkspaceTextToBounds(body);
+        body.Width = ChatOverlayLayout.ContentBounds.Width;
+        body.Height = ChatOverlayLayout.ContentBounds.Height;
+        body.HorizontalAlignment = System.Windows.HorizontalAlignment.Left;
+        body.VerticalAlignment = VerticalAlignment.Top;
+        body.Margin = new Thickness(
+            ChatOverlayLayout.ContentBounds.Left - ChatOverlayLayout.ChatCardBounds.Left,
+            ChatOverlayLayout.ContentBounds.Top - ChatOverlayLayout.ChatCardBounds.Top,
+            0,
+            0);
+        var card = new Grid();
+        card.Children.Add(body);
+
+        // This is deliberately visual-only: controller scroll events remain
+        // available anywhere over the armed panel, rather than requiring a
+        // tiny laser target on the edge of the window.
+        var track = ChatOverlayLayout.ScrollbarTrackBounds;
+        var thumb = ChatOverlayLayout.ScrollbarThumbBounds(content.ActiveEntryCount, content.ScrollFraction);
+        card.Children.Add(BuildScrollbarPart(
+            track,
+            WpfColor.FromArgb(74, 155, 187, 215)));
+        card.Children.Add(BuildScrollbarPart(
+            thumb,
+            WpfColor.FromArgb(210, 195, 224, 245)));
+        return card;
+    }
+
+    /// <summary>
+    /// Chooses the largest readable type size whose fully wrapped rows fit in
+    /// the fixed chat card. A cached emote/badge can impose a row height that
+    /// font size alone cannot reduce, so the rare remaining overflow receives
+    /// a small uniform scale as a final safety net. This keeps the entire
+    /// scrollback slice inside the card rather than clipping its newest rows.
+    /// </summary>
+    internal static void FitWorkspaceTextToBounds(TextBlock body)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+
+        var availableWidth = ChatOverlayLayout.ContentBounds.Width;
+        var availableHeight = ChatOverlayLayout.ContentBounds.Height;
+        body.Width = availableWidth;
+        body.RenderTransform = Transform.Identity;
+        body.RenderTransformOrigin = new System.Windows.Point(0, 0);
+
+        var minimum = Math.Min(WorkspaceMinimumFontSize, body.FontSize);
+        var maximum = WorkspaceMaximumFontSize;
+        for (var iteration = 0; iteration < 10; iteration++)
+        {
+            var candidate = (minimum + maximum) / 2;
+            body.FontSize = candidate;
+            body.Measure(new System.Windows.Size(availableWidth, double.PositiveInfinity));
+            if (body.DesiredSize.Height <= availableHeight)
+            {
+                minimum = candidate;
+            }
+            else
+            {
+                maximum = candidate;
+            }
+        }
+
+        body.FontSize = minimum;
+        body.Measure(new System.Windows.Size(availableWidth, double.PositiveInfinity));
+        if (body.DesiredSize.Height > availableHeight)
+        {
+            var scale = availableHeight / body.DesiredSize.Height;
+            body.RenderTransform = new ScaleTransform(scale, scale);
+        }
+    }
+
+    private static Border BuildScrollbarPart(System.Drawing.Rectangle bounds, WpfColor color) =>
+        new()
+        {
+            Width = bounds.Width,
+            Height = bounds.Height,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(
+                bounds.Left - ChatOverlayLayout.ChatCardBounds.Left,
+                bounds.Top - ChatOverlayLayout.ChatCardBounds.Top,
+                0,
+                0),
+            CornerRadius = new CornerRadius(bounds.Width / 2d),
+            Background = new SolidColorBrush(color),
+            IsHitTestVisible = false
+        };
+
+    private static TextBlock BuildEventTextBlock(IReadOnlyList<ChatWorkspaceEntry> entries)
+    {
+        var textBlock = new TextBlock
+        {
+            FontFamily = new WpfFontFamily("Segoe UI"),
+            FontSize = 18,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = new SolidColorBrush(BodyColor)
+        };
+        if (entries.Count == 0)
+        {
+            textBlock.Inlines.Add(new Run("No events received this session yet.") { Foreground = new SolidColorBrush(BadgeColor) });
+            return textBlock;
+        }
+
+        foreach (var entry in entries)
+        {
+            if (textBlock.Inlines.Count > 0) textBlock.Inlines.Add(new LineBreak());
+            var payload = entry.Payload;
+            var title = string.IsNullOrWhiteSpace(payload.Title) ? "Event" : payload.Title;
+            var source = string.IsNullOrWhiteSpace(payload.Source) ? "Streamer.bot" : payload.Source;
+            textBlock.Inlines.Add(new Run($"{entry.ReceivedAt.LocalDateTime:HH:mm}  ") { Foreground = new SolidColorBrush(BadgeColor) });
+            textBlock.Inlines.Add(new Run(title) { FontWeight = FontWeights.SemiBold, Foreground = new SolidColorBrush(BodyColor) });
+            if (!string.IsNullOrWhiteSpace(payload.Text))
+            {
+                textBlock.Inlines.Add(new Run($" — {payload.Text}") { Foreground = new SolidColorBrush(BodyColor) });
+            }
+            textBlock.Inlines.Add(new Run($"  [{source}]") { Foreground = new SolidColorBrush(BadgeColor) });
+        }
+
+        return textBlock;
     }
 
     internal static TextBlock BuildTextBlock(

@@ -50,7 +50,11 @@ public readonly record struct NotificationContent(
 public readonly record struct ChatContent(
     IReadOnlyList<SvrBridge.Core.StreamerBotEventPayload> Messages,
     int HoveredButtonIndex = ChatOverlayLayout.NoButton,
-    bool MoveHandleVisible = false);
+    bool MoveHandleVisible = false,
+    SvrBridge.Core.ChatWorkspaceTab ActiveTab = SvrBridge.Core.ChatWorkspaceTab.Chat,
+    IReadOnlyList<SvrBridge.Core.ChatWorkspaceEntry>? Entries = null,
+    int ActiveEntryCount = 0,
+    double ScrollFraction = 0);
 
 /// <summary>One rendered texture, straight-alpha RGBA, ready for SteamVR.</summary>
 public sealed record RenderedPanel(byte[] Rgba, int Width, int Height);

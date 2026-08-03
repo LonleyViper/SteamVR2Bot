@@ -39,8 +39,11 @@ internal static class ChatOverlayLayout
     /// <summary>The full texture size, and therefore the overlay's mouse scale.</summary>
     public const int PanelWidth = ChatCardWidth + (GutterWidth * 2);
 
-    /// <summary>See <see cref="ChatCardHeight"/>.</summary>
-    public const int PanelHeight = ChatCardHeight;
+    // The card stays at its established 512×768 size. Transparent space above
+    // and below makes the workspace controls chrome, not chat content.
+    public const int TopControlAreaHeight = 72;
+    /// <summary>The card plus the external tab area.</summary>
+    public const int PanelHeight = TopControlAreaHeight + ChatCardHeight;
 
     /// <summary>The answer <see cref="IndexAt"/> gives when the pointer is over no control at all.</summary>
     public const int NoButton = -1;
@@ -52,6 +55,8 @@ internal static class ChatOverlayLayout
     /// silently mean something else the first time one is inserted ahead of it.
     /// </summary>
     public const int MoveHandleIndex = 0;
+    public const int ChatTabIndex = 1;
+    public const int EventsTabIndex = 2;
 
     private const int HandleWidth = 64;
     private const int HandleHeight = 72;
@@ -61,7 +66,7 @@ internal static class ChatOverlayLayout
 
     /// <summary>The visible card's rectangle within the expanded texture.</summary>
     public static readonly Rectangle ChatCardBounds =
-        new(GutterWidth, 0, ChatCardWidth, ChatCardHeight);
+        new(GutterWidth, TopControlAreaHeight, ChatCardWidth, ChatCardHeight);
 
     /// <summary>
     /// The external move tab's rectangle. It is entirely in the right gutter,
@@ -75,18 +80,68 @@ internal static class ChatOverlayLayout
             HandleWidth,
             HandleHeight);
 
+    // Tabs sit in transparent chrome above the card. Scrolling uses the
+    // controller's discrete SteamVR scroll event, so no paging controls cover
+    // or surround the chat text. The Phase 1 move tab stays external right.
+    public static readonly Rectangle ChatTabBounds = new(ChatCardBounds.Left + 18, 14, 150, 48);
+    public static readonly Rectangle EventsTabBounds = new(ChatCardBounds.Left + 176, 14, 150, 48);
+
+    /// <summary>The text viewport between the tab strip and paging controls.</summary>
+    public static readonly Rectangle ContentBounds = new(
+        ChatCardBounds.Left + 20,
+        ChatCardBounds.Top + 20,
+        ChatCardWidth - 40,
+        ChatCardHeight - 40);
+
+    /// <summary>A passive scroll track at the card's right edge; it never intercepts laser input.</summary>
+    public static readonly Rectangle ScrollbarTrackBounds = new(
+        ChatCardBounds.Right - 16,
+        ContentBounds.Top,
+        8,
+        ContentBounds.Height);
+
+    /// <summary>
+    /// Returns the scroll indicator thumb. At the newest entries it rests at
+    /// the bottom of the track; scrolling toward older history moves it up.
+    /// </summary>
+    public static Rectangle ScrollbarThumbBounds(int entryCount, double scrollFraction)
+    {
+        var track = ScrollbarTrackBounds;
+        var thumbHeight = entryCount <= PageSize
+            ? track.Height
+            : Math.Clamp((int)Math.Round(track.Height * PageSize / (double)entryCount), 36, track.Height);
+        var travel = track.Height - thumbHeight;
+        var clampedFraction = Math.Clamp(scrollFraction, 0, 1);
+        return new Rectangle(
+            track.Left,
+            track.Bottom - thumbHeight - (int)Math.Round(travel * clampedFraction),
+            track.Width,
+            thumbHeight);
+    }
+
+    private const int PageSize = ChatWorkspaceViewport.PageSize;
+
     /// <summary>
     /// Every hit rectangle on the panel, in draw order.
     /// <para>
-    /// The move handle sits at the top of the right gutter, outside the visible card.
-    /// Transparent padding is not a control: <see cref="IndexAt"/> only
+    /// The move handle sits in the right gutter and tabs are above the card.
+    /// Remaining transparent padding is not a control: <see cref="IndexAt"/> only
     /// returns this explicit tab rectangle.
     /// </para>
     /// </summary>
     public static readonly Rectangle[] Buttons =
     [
-        MoveHandleBounds
+        MoveHandleBounds,
+        ChatTabBounds,
+        EventsTabBounds
     ];
+
+    public static string LabelFor(int index) => index switch
+    {
+        ChatTabIndex => "Chat",
+        EventsTabIndex => "Events",
+        _ => ""
+    };
 
     /// <summary>
     /// Converts the old visible-card width into the expanded texture width.
@@ -102,7 +157,7 @@ internal static class ChatOverlayLayout
 
     /// <summary>Returns the visible card height represented by a texture width.</summary>
     public static float CardHeightForOverlayWidth(float overlayWidthMeters) =>
-        overlayWidthMeters * PanelHeight / (float)PanelWidth;
+        overlayWidthMeters * ChatCardHeight / (float)PanelWidth;
 
     /// <summary>
     /// Which rectangle a panel-space point falls in, or <see cref="NoButton"/>.

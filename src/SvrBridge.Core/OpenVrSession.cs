@@ -59,6 +59,16 @@ public interface IOpenVrSession : IDisposable
     {
     }
 
+    /// <summary>Appends one parsed entry to the worker's wrist-chat workspace.</summary>
+    void AppendChatWorkspaceEntry(ChatWorkspaceTab tab, ChatWorkspaceEntry entry)
+    {
+    }
+
+    /// <summary>Rehydrates the worker from the persistent tray-host session history.</summary>
+    void RehydrateChatWorkspace(ChatWorkspaceSnapshot snapshot)
+    {
+    }
+
     /// <summary>
     /// Replaces the session's known emote name → image URL lookup. A no-op
     /// by default, for the same reason as <see cref="ShowNotification"/>.

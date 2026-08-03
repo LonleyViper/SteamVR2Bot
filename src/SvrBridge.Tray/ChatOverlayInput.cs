@@ -13,7 +13,16 @@ internal enum ChatInputOutcome
     DragBegan,
 
     /// <summary>The wearer let go. Whatever offset the drag reached is the saved one.</summary>
-    DragEnded
+    DragEnded,
+
+    /// <summary>A workspace tab was pressed.</summary>
+    WorkspaceControlActivated,
+
+    /// <summary>Scroll toward older history.</summary>
+    WorkspaceScrollOlder,
+
+    /// <summary>Scroll toward newer history.</summary>
+    WorkspaceScrollNewer
 }
 
 /// <summary>
@@ -47,6 +56,7 @@ internal enum ChatInputOutcome
 internal sealed class ChatOverlayInput
 {
     private readonly IReadOnlyList<Rectangle> _buttons;
+    private readonly bool _suppressWorkspaceHoverRepaints;
     private bool _holding;
     private bool _laserInputArmed;
     private bool _repaintOwed;
@@ -57,8 +67,12 @@ internal sealed class ChatOverlayInput
     /// injectable only so a self-test can prove the hover rules against a
     /// table with more entries than the one button this phase ships.
     /// </param>
-    public ChatOverlayInput(IReadOnlyList<Rectangle>? buttons = null) =>
+    public ChatOverlayInput(IReadOnlyList<Rectangle>? buttons = null)
+    {
         _buttons = buttons ?? ChatOverlayLayout.Buttons;
+        _suppressWorkspaceHoverRepaints = buttons is null
+            || ReferenceEquals(buttons, ChatOverlayLayout.Buttons);
+    }
 
     /// <summary>Which rectangle the pointer is currently in, or <see cref="ChatOverlayLayout.NoButton"/>.</summary>
     public int HoveredIndex { get; private set; } = ChatOverlayLayout.NoButton;
@@ -77,6 +91,9 @@ internal sealed class ChatOverlayInput
     /// <see cref="OverlayDrag"/> and can cancel independently.
     /// </summary>
     public bool IsHolding => _holding;
+
+    /// <summary>The shared-layout control activated by the last control outcome.</summary>
+    public int ActivatedControlIndex { get; private set; } = ChatOverlayLayout.NoButton;
 
     /// <summary>
     /// How many repaints the hover highlight has asked for since construction.
@@ -98,6 +115,9 @@ internal sealed class ChatOverlayInput
         _repaintOwed = false;
         return owed;
     }
+
+    /// <summary>Requests one coalesced repaint for a non-hover control action.</summary>
+    public void RequestRepaint() => _repaintOwed = true;
 
     /// <summary>
     /// Arms or disarms laser input for the panel. Disarming clears hover and
@@ -155,13 +175,27 @@ internal sealed class ChatOverlayInput
                 // path already uses the last move position for the same
                 // reason - and re-testing would also be a second chance for
                 // the highlight and the action to disagree.
-                if (HoveredIndex != ChatOverlayLayout.MoveHandleIndex)
+                if (HoveredIndex == ChatOverlayLayout.MoveHandleIndex)
                 {
-                    return ChatInputOutcome.None;
+                    _holding = true;
+                    return ChatInputOutcome.DragBegan;
                 }
 
-                _holding = true;
-                return ChatInputOutcome.DragBegan;
+                if (HoveredIndex is ChatOverlayLayout.ChatTabIndex
+                    or ChatOverlayLayout.EventsTabIndex)
+                {
+                    ActivatedControlIndex = HoveredIndex;
+                    return ChatInputOutcome.WorkspaceControlActivated;
+                }
+
+                return ChatInputOutcome.None;
+
+            case OverlayMouseEventKind.Scroll:
+                return laserEvent.ScrollY > 0f
+                    ? ChatInputOutcome.WorkspaceScrollOlder
+                    : laserEvent.ScrollY < 0f
+                        ? ChatInputOutcome.WorkspaceScrollNewer
+                        : ChatInputOutcome.None;
 
             case OverlayMouseEventKind.ButtonUp:
                 if (!_holding)
@@ -196,7 +230,16 @@ internal sealed class ChatOverlayInput
         }
 
         HoveredIndex = index;
-        _repaintOwed = true;
-        HoverRepaintCount++;
+        // SteamVR texture replacement visibly blinks. The move handle needs a
+        // hover highlight to communicate dragging, but tabs and paging labels
+        // stay stable while the laser passes over them; clicking still asks
+        // for the one repaint that changes the selected page.
+        if (!_suppressWorkspaceHoverRepaints
+            || index == ChatOverlayLayout.MoveHandleIndex
+            || HoveredIndex == ChatOverlayLayout.MoveHandleIndex)
+        {
+            _repaintOwed = true;
+            HoverRepaintCount++;
+        }
     }
 }

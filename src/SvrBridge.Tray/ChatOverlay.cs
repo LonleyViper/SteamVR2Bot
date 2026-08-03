@@ -5,9 +5,8 @@ namespace SvrBridge.Tray;
 
 /// <summary>
 /// The chat window: one persistent <see cref="VrOverlaySurface"/>, a
-/// <see cref="ChatRingBuffer"/> written by the event stream's consumption
-/// loop, and a WPF renderer that repaints at most ~10 Hz per §B2 of the chat
-/// plan.
+/// worker-local mirror of the persistent tray-host workspace history, and a
+/// WPF renderer that repaints at most ~10 Hz per §B2 of the chat plan.
 /// <para>
 /// Lives entirely inside the OpenVR worker process, ticked from the same
 /// single thread that owns every other OpenVR call - see
@@ -79,7 +78,12 @@ internal sealed class ChatOverlay : IDisposable
 
     private readonly VrOverlaySurface _surface;
     private readonly IVrPanelRenderer<ChatContent> _renderer;
-    private readonly ChatRingBuffer _messages = new();
+    // A worker-local rendering mirror. The persistent tray host owns the
+    // authoritative session history and explicitly rehydrates this mirror
+    // after worker recovery.
+    private readonly ChatWorkspaceHistory _workspaceHistory = new();
+    private readonly ChatWorkspaceViewport _viewport = new();
+    private readonly VrDashboardScrollLimiter _scrollLimiter = new();
     private readonly ChatRepaintThrottle _repaintThrottle = new();
     private readonly ChatImageCache _chatImages;
     private readonly OverlayAnchorTracker _anchorTracker;
@@ -321,6 +325,7 @@ internal sealed class ChatOverlay : IDisposable
             try
             {
                 surface.SetMouseScale(ChatOverlayLayout.PanelWidth, ChatOverlayLayout.PanelHeight);
+                surface.SetSendsDiscreteScrollEvents(true);
             }
             catch (Exception exception)
             {
@@ -404,7 +409,29 @@ internal sealed class ChatOverlay : IDisposable
             return;
         }
 
-        _messages.Append(payload);
+        AppendWorkspaceEntry(ChatWorkspaceTab.Chat, new ChatWorkspaceEntry(DateTimeOffset.Now, payload));
+    }
+
+    public void AppendWorkspaceEntry(ChatWorkspaceTab tab, ChatWorkspaceEntry entry)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _workspaceHistory.Append(tab, entry);
+        _viewport.Reconcile(_workspaceHistory.Snapshot());
+    }
+
+    public void ReplaceWorkspaceHistory(ChatWorkspaceSnapshot snapshot)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _workspaceHistory.Replace(snapshot);
+        _viewport.Reconcile(_workspaceHistory.Snapshot());
     }
 
     /// <summary>
@@ -482,7 +509,11 @@ internal sealed class ChatOverlay : IDisposable
     public void SetHidden(bool hidden) => _hidden = hidden;
 
     /// <summary>Empties the ring buffer - the effect of a <c>clear</c> control command.</summary>
-    public void ClearMessages() => _messages.Clear();
+    public void ClearMessages()
+    {
+        _workspaceHistory.Clear(ChatWorkspaceTab.Chat);
+        _viewport.Reconcile(_workspaceHistory.Snapshot());
+    }
 
     /// <summary>
     /// Sets the gazed-at alpha ceiling, 0.2-1.0 - a VR or desktop settings
@@ -898,14 +929,15 @@ internal sealed class ChatOverlay : IDisposable
 
         foreach (var laserEvent in _laserEvents)
         {
-            // SteamVR reports overlay mouse coordinates with the origin at the
-            // bottom-left; every rectangle in ChatOverlayLayout is top-left,
-            // like the texture. The dashboard applies the same flip - see
-            // OpenVrInput.TryGetDashboardInteraction.
-            var flipped = laserEvent with { Y = ChatOverlayLayout.PanelHeight - laserEvent.Y };
-            LogLaserEvent(flipped, laserEvent.DeviceIndex);
+            // SteamVR reports mouse coordinates bottom-left while scroll data
+            // is a signed delta, not a point. Flip only coordinates that are
+            // actually coordinates.
+            var panelEvent = laserEvent.Kind == OverlayMouseEventKind.Scroll
+                ? laserEvent
+                : laserEvent with { Y = ChatOverlayLayout.PanelHeight - laserEvent.Y };
+            LogLaserEvent(panelEvent, laserEvent.DeviceIndex);
 
-            switch (_input.Handle(flipped))
+            switch (_input.Handle(panelEvent))
             {
                 case ChatInputOutcome.DragBegan:
                     BeginDrag(openVr, anchor, laserEvent.DeviceIndex);
@@ -919,8 +951,55 @@ internal sealed class ChatOverlay : IDisposable
                     }
 
                     break;
+                case ChatInputOutcome.WorkspaceControlActivated:
+                    ApplyWorkspaceControl(_input.ActivatedControlIndex);
+                    break;
+                case ChatInputOutcome.WorkspaceScrollOlder:
+                    ScrollWorkspace(older: true);
+                    break;
+                case ChatInputOutcome.WorkspaceScrollNewer:
+                    ScrollWorkspace(older: false);
+                    break;
             }
         }
+    }
+
+    private void ApplyWorkspaceControl(int controlIndex)
+    {
+        switch (controlIndex)
+        {
+            case ChatOverlayLayout.ChatTabIndex:
+                _viewport.Select(ChatWorkspaceTab.Chat);
+                break;
+            case ChatOverlayLayout.EventsTabIndex:
+                _viewport.Select(ChatWorkspaceTab.Events);
+                break;
+            default:
+                return;
+        }
+
+        // Tab/viewport changes are real content changes but not message
+        // arrivals, so request the existing coalesced repaint explicitly.
+        _input.RequestRepaint();
+    }
+
+    private void ScrollWorkspace(bool older)
+    {
+        if (!_scrollLimiter.TryAccept(Environment.TickCount64))
+        {
+            return;
+        }
+
+        var snapshot = _workspaceHistory.Snapshot();
+        var changed = older
+            ? _viewport.ScrollOlder(snapshot)
+            : _viewport.ScrollNewer(snapshot);
+        if (!changed)
+        {
+            return;
+        }
+
+        _input.RequestRepaint();
     }
 
     /// <summary>
@@ -1186,7 +1265,17 @@ internal sealed class ChatOverlay : IDisposable
 
     private void RepaintIfOwed(long nowMs)
     {
-        var (snapshot, messagesVersion) = _messages.SnapshotWithVersion();
+        var snapshot = _workspaceHistory.Snapshot();
+        _viewport.Reconcile(snapshot);
+        var visibleEntries = _viewport.VisibleEntries(snapshot);
+        var activeEntryCount = _viewport.ActiveTab == ChatWorkspaceTab.Chat
+            ? snapshot.Chat.Count
+            : snapshot.Events.Count;
+        var workspaceVersion = HashCode.Combine(
+            snapshot.Version,
+            _viewport.ActiveTab,
+            _viewport.OffsetFromLatest(ChatWorkspaceTab.Chat),
+            _viewport.OffsetFromLatest(ChatWorkspaceTab.Events));
 
         // An emote image that finishes downloading after its message was
         // already painted as text must still earn a repaint, not just a new
@@ -1194,7 +1283,7 @@ internal sealed class ChatOverlay : IDisposable
         // without a second, separate throttle. Not a real hash, just enough
         // separation that the two counters cannot cancel each other out at
         // any version either is realistically going to reach.
-        var combinedVersion = (messagesVersion << 20) ^ _chatImages.Version;
+        var combinedVersion = ((long)workspaceVersion << 20) ^ _chatImages.Version;
 
         // A hover change is its own reason to repaint, deliberately not folded
         // into the message-version throttle above. Sweeping the laser across
@@ -1210,7 +1299,14 @@ internal sealed class ChatOverlay : IDisposable
         }
 
         var rendered = _renderer.Render(
-            new ChatContent(snapshot, _input.HoveredIndex, _input.IsLaserInputArmed));
+            new ChatContent(
+                visibleEntries.Select(entry => entry.Payload).ToArray(),
+                _input.HoveredIndex,
+                _input.IsLaserInputArmed,
+                _viewport.ActiveTab,
+                visibleEntries,
+                activeEntryCount,
+                _viewport.ScrollFraction(snapshot)));
         _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
         _repaintThrottle.MarkPainted(combinedVersion, nowMs);
     }

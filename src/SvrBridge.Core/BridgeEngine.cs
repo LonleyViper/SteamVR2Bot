@@ -50,6 +50,7 @@ public sealed class BridgeEngine
     public event Action<string>? ShortcutDeleted;
     public event Action<VrSettingsSnapshot>? VrSettingsChanged;
     public event Action? VrShutdownRequested;
+    public event Action? SteamVrSessionReady;
 
     public async Task RunAsync(AppConfig config, CancellationToken cancellationToken)
     {
@@ -355,6 +356,36 @@ public sealed class BridgeEngine
         }
     }
 
+    /// <summary>Forwards one host-owned workspace entry to the active OpenVR worker.</summary>
+    public bool AppendChatWorkspaceEntry(ChatWorkspaceTab tab, ChatWorkspaceEntry entry)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.AppendChatWorkspaceEntry(tab, entry);
+            return true;
+        }
+    }
+
+    /// <summary>Rehydrates the active worker from tray-host session history.</summary>
+    public bool RehydrateChatWorkspace(ChatWorkspaceSnapshot snapshot)
+    {
+        lock (_inputGate)
+        {
+            if (_currentInput is null)
+            {
+                return false;
+            }
+
+            _currentInput.RehydrateChatWorkspace(snapshot);
+            return true;
+        }
+    }
+
     /// <summary>
     /// Developer-only probe: turns the SteamVR laser pointer on for the chat
     /// window for a bounded window that ends by itself, to find out whether an
@@ -558,6 +589,8 @@ public sealed class BridgeEngine
         {
             _currentInput = openVr;
         }
+
+        SteamVrSessionReady?.Invoke();
 
         try
         {

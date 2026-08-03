@@ -16,6 +16,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         new() { Interval = 600 };
     private readonly SemaphoreSlim _runtimeGate = new(1, 1);
     private readonly SemaphoreSlim _dashboardGate = new(1, 1);
+    // Session-only viewer content. This deliberately never flows through
+    // UserSettings/UserSettingsStore: it survives an OpenVR worker restart,
+    // not an application restart or a disk inspection.
+    private readonly ChatWorkspaceHistory _chatWorkspace = new();
     private CancellationTokenSource? _bridgeCancellation;
     private Task? _bridgeTask;
     private CancellationTokenSource? _registrationRetryCancellation;
@@ -73,6 +77,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _engine.ShortcutDeleted += DeleteDashboardShortcut;
         _engine.VrSettingsChanged += SaveVrSettingsChange;
         _engine.VrShutdownRequested += OnVrShutdownRequested;
+        _engine.SteamVrSessionReady += RehydrateChatWorkspace;
 
         var menu = new ContextMenuStrip();
         var open = new ToolStripMenuItem("Open SteamVR2Bot");
@@ -747,31 +752,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         BridgeLogLevel.Debug,
                         ContainsUserContent: true));
 
-                if (received.Payload.Target == StreamerBotEventTarget.Notification
-                    && _settings.NotificationsEnabled
-                    && !_engine.ShowNotification(received.Payload))
+                if (received.Payload.Target == StreamerBotEventTarget.Notification)
                 {
-                    // Routine rather than a warning: this only means no worker
-                    // is currently running to draw on, which happens between
-                    // launch and Ready like any other display surface.
-                    OnActivity(
-                        new BridgeActivity(
+                    // History is an account of successfully parsed payloads,
+                    // not a request to display a transient popup. Keep it even
+                    // while notification popups are disabled.
+                    _ = AppendWorkspaceEntry(ChatWorkspaceTab.Events, received);
+                    if (_settings.NotificationsEnabled && !_engine.ShowNotification(received.Payload))
+                    {
+                        OnActivity(new BridgeActivity(
                             "openvr.notification_unavailable",
                             "A notification arrived with no SteamVR session to show it on.",
                             BridgeLogLevel.Debug));
+                    }
                 }
 
-                if (received.Payload.Target == StreamerBotEventTarget.Chat
-                    && _settings.ChatEnabled
-                    && !_engine.ShowChatMessage(received.Payload))
+                if (received.Payload.Target == StreamerBotEventTarget.Chat)
                 {
-                    // Routine, for the same reason as the notification branch
-                    // above.
-                    OnActivity(
-                        new BridgeActivity(
+                    var deliveredToWorkspace = AppendWorkspaceEntry(ChatWorkspaceTab.Chat, received);
+                    if (_settings.ChatEnabled && !deliveredToWorkspace)
+                    {
+                        OnActivity(new BridgeActivity(
                             "openvr.chat_unavailable",
                             "A chat message arrived with no SteamVR session to show it on.",
                             BridgeLogLevel.Debug));
+                    }
                 }
 
                 if (received.Payload.Target == StreamerBotEventTarget.Control)
@@ -814,6 +819,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        if (payload.Surface != ControlSurface.Notifications
+            && payload.Command.Equals("clear", StringComparison.OrdinalIgnoreCase))
+        {
+            _chatWorkspace.Clear(ChatWorkspaceTab.Chat);
+        }
+
         if (!_engine.ApplyControlCommand(payload))
         {
             // Routine, for the same reason as the chat/notification branches
@@ -826,6 +837,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     BridgeLogLevel.Debug));
         }
     }
+
+    private bool AppendWorkspaceEntry(ChatWorkspaceTab tab, StreamerBotEvent received)
+    {
+        var entry = new ChatWorkspaceEntry(received.ReceivedAt, received.Payload);
+        _chatWorkspace.Append(tab, entry);
+        // Events history is rendered on the chat overlay, so it is forwarded
+        // regardless of the transient-notification setting or the selected tab.
+        // A worker that currently has chat disabled retains the mirror without
+        // creating an overlay, ready for a later live-enable.
+        return _engine.AppendChatWorkspaceEntry(tab, entry);
+    }
+
+    private void RehydrateChatWorkspace() =>
+        _ = _engine.RehydrateChatWorkspace(_chatWorkspace.Snapshot());
 
     /// <summary>
     /// The payload kind, which is this app's own routing decision rather than
@@ -1817,7 +1842,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        var delivered = messages.Count(message => _engine.ShowChatMessage(message));
+        var entries = messages
+            .Select(message => new ChatWorkspaceEntry(DateTimeOffset.Now, message))
+            .ToArray();
+        foreach (var entry in entries)
+        {
+            _chatWorkspace.Append(ChatWorkspaceTab.Chat, entry);
+        }
+
+        var delivered = entries.Count(entry => _engine.AppendChatWorkspaceEntry(
+            ChatWorkspaceTab.Chat,
+            entry));
         OnActivity(
             new BridgeActivity(
                 "chat.dev_injected",

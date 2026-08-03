@@ -951,6 +951,7 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
                     301 => OverlayMouseEventKind.ButtonDown,
                     302 => OverlayMouseEventKind.ButtonUp,
                     304 => OverlayMouseEventKind.FocusLeave,
+                    305 => OverlayMouseEventKind.Scroll,
                     _ => (OverlayMouseEventKind?)null
                 };
                 if (kind is not { } eventKind)
@@ -962,13 +963,16 @@ public sealed class OpenVrInput : IOpenVrSession, IVrOverlayApi
                 // an overlay handle sits where x/y do - so its coordinates are
                 // reported as zero rather than as reinterpreted bytes that
                 // would hit-test to a real rectangle.
-                var isMouse = eventKind != OverlayMouseEventKind.FocusLeave;
+                var isMouse = eventKind is not (OverlayMouseEventKind.FocusLeave or OverlayMouseEventKind.Scroll);
                 into.Add(
                     new OverlayMouseEvent(
                         eventKind,
                         isMouse ? BitConverter.Int32BitsToSingle(Marshal.ReadInt32(eventBuffer, 16)) : 0f,
                         isMouse ? BitConverter.Int32BitsToSingle(Marshal.ReadInt32(eventBuffer, 20)) : 0f,
-                        (uint)Marshal.ReadInt32(eventBuffer, 4)));
+                        (uint)Marshal.ReadInt32(eventBuffer, 4),
+                        eventKind == OverlayMouseEventKind.Scroll
+                            ? BitConverter.Int32BitsToSingle(Marshal.ReadInt32(eventBuffer, 20))
+                            : 0f));
             }
         }
         finally

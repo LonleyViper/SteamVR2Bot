@@ -171,6 +171,12 @@ internal sealed partial class OpenVrWorkerSession : IOpenVrSession
     public void ShowChatMessage(StreamerBotEventPayload payload) =>
         SendCommand(new OpenVrWorkerCommand("chat", Payload: payload));
 
+    public void AppendChatWorkspaceEntry(ChatWorkspaceTab tab, ChatWorkspaceEntry entry) =>
+        SendCommand(new OpenVrWorkerCommand("chatHistoryAppend", WorkspaceTab: tab, WorkspaceEntry: entry));
+
+    public void RehydrateChatWorkspace(ChatWorkspaceSnapshot snapshot) =>
+        SendCommand(new OpenVrWorkerCommand("chatHistorySnapshot", WorkspaceSnapshot: snapshot));
+
     /// <summary>
     /// Fire-and-forget, for the same reason as <see cref="ShowChatMessage"/>:
     /// the caller is a background fetch in the tray process, not a user
@@ -790,6 +796,10 @@ internal static class OpenVrWorker
             // reason - and gated behind a user setting one layer up, so most
             // workers never create this at all.
             ChatOverlay? chatOverlay = null;
+            // The authoritative copy is in the tray host. This worker-local
+            // mirror exists solely so an overlay created after its snapshot
+            // command can paint immediately on its owning OpenVR thread.
+            var workspaceHistory = new ChatWorkspaceHistory();
             // An "emoteCatalog" command can arrive before the first chat
             // message does (it is fetched as soon as the event stream
             // connects), i.e. before chatOverlay exists to receive it. Kept
@@ -911,6 +921,8 @@ internal static class OpenVrWorker
                     {
                         chatOverlay.SetEmoteCatalog(latestEmoteCatalog);
                     }
+
+                    chatOverlay.ReplaceWorkspaceHistory(workspaceHistory.Snapshot());
 
                 }
             }
@@ -1214,8 +1226,10 @@ internal static class OpenVrWorker
                     {
                         try
                         {
+                            var entry = new ChatWorkspaceEntry(DateTimeOffset.Now, chatMessage);
+                            workspaceHistory.Append(ChatWorkspaceTab.Chat, entry);
                             EnsureChatOverlay();
-                            chatOverlay?.Enqueue(chatMessage);
+                            chatOverlay?.AppendWorkspaceEntry(ChatWorkspaceTab.Chat, entry);
                         }
                         catch (Exception exception)
                         {
@@ -1225,6 +1239,42 @@ internal static class OpenVrWorker
                                 new OpenVrWorkerMessage(
                                     "log",
                                     Message: $"A chat message could not be shown: {exception.Message}"));
+                        }
+                    }
+
+                    if (command.Kind == "chatHistoryAppend"
+                        && command.WorkspaceTab is { } workspaceTab
+                        && command.WorkspaceEntry is { } workspaceEntry)
+                    {
+                        try
+                        {
+                            workspaceHistory.Append(workspaceTab, workspaceEntry);
+                            if (chatEnabled)
+                            {
+                                EnsureChatOverlay();
+                                chatOverlay?.AppendWorkspaceEntry(workspaceTab, workspaceEntry);
+                            }
+                        }
+                        catch (Exception exception)
+                        {
+                            Emit(new OpenVrWorkerMessage("log", Message: $"Chat history could not be appended: {exception.Message}"));
+                        }
+                    }
+
+                    if (command.Kind == "chatHistorySnapshot" && command.WorkspaceSnapshot is { } workspaceSnapshot)
+                    {
+                        try
+                        {
+                            workspaceHistory.Replace(workspaceSnapshot);
+                            if (chatEnabled)
+                            {
+                                EnsureChatOverlay();
+                                chatOverlay?.ReplaceWorkspaceHistory(workspaceHistory.Snapshot());
+                            }
+                        }
+                        catch (Exception exception)
+                        {
+                            Emit(new OpenVrWorkerMessage("log", Message: $"Chat history could not be rehydrated: {exception.Message}"));
                         }
                     }
 
@@ -1712,7 +1762,10 @@ internal sealed record OpenVrWorkerCommand(
     bool Enabled = false,
     StreamerBotEventPayload? Payload = null,
     IReadOnlyDictionary<string, string>? EmoteCatalog = null,
-    VrSettingsSnapshot? VrSettings = null);
+    VrSettingsSnapshot? VrSettings = null,
+    ChatWorkspaceTab? WorkspaceTab = null,
+    ChatWorkspaceEntry? WorkspaceEntry = null,
+    ChatWorkspaceSnapshot? WorkspaceSnapshot = null);
 
 internal sealed record OpenVrWorkerMessage(
     string Kind,

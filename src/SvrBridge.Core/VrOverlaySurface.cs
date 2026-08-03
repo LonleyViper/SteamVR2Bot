@@ -200,6 +200,9 @@ public enum OverlayMouseEventKind
     /// <summary>The trigger came back up.</summary>
     ButtonUp,
 
+    /// <summary>A SteamVR discrete controller scroll event.</summary>
+    Scroll,
+
     /// <summary>The laser left the panel entirely.</summary>
     FocusLeave
 }
@@ -226,7 +229,8 @@ public readonly record struct OverlayMouseEvent(
     OverlayMouseEventKind Kind,
     float X,
     float Y,
-    uint DeviceIndex);
+    uint DeviceIndex,
+    float ScrollY = 0);
 
 /// <summary>
 /// The overlay calls <see cref="VrOverlaySurface"/> needs, separated from the
@@ -469,6 +473,17 @@ public sealed class VrOverlaySurface : IDisposable
     {
         ThrowIfDisposed();
         _api.SetOverlayFlag(_handle, 1 << 16, interactive);
+    }
+
+    /// <summary>
+    /// Requests <c>VROverlayFlags_SendVRDiscreteScrollEvents</c> (<c>1 &lt;&lt; 6</c>),
+    /// the same header-derived and dashboard-proven flag used for SteamVR
+    /// controller scrolling elsewhere in this app.
+    /// </summary>
+    public void SetSendsDiscreteScrollEvents(bool enabled)
+    {
+        ThrowIfDisposed();
+        _api.SetOverlayFlag(_handle, 1 << 6, enabled);
     }
 
     /// <summary>

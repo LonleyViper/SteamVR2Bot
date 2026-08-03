@@ -29,6 +29,9 @@ internal static class TraySelfTests
         TestWpfRenderThreadStartsAndShutsDownCleanly();
         TestNotificationPixelFormatConversion();
         TestChatRingBufferEviction();
+        TestChatWorkspaceHistoryEvictionAndRehydration();
+        TestChatWorkspaceViewportKeepsIndependentScrollPositions();
+        TestChatWorkspaceControlsUseSharedLayoutAndRespectGate();
         TestChatStartupMessageMakesTheFirstPaintVisible();
         TestChatRepaintThrottleCoalescesBurst();
         TestDashboardRepaintCoordinatorCoalescesBurst();
@@ -38,6 +41,7 @@ internal static class TraySelfTests
         TestGazeFadeTargetsTransparencyIndependentlyOfSize();
         TestGazeScaleAnimationConvergesAndStopsIssuingCalls();
         TestChatRenderWrapsLongUnbrokenString();
+        TestChatWorkspaceTextFitsItsFixedViewport();
         TestChatRenderHandlesEmptyUsernameAndColour();
         TestChatRenderStylesEmoteTokensDistinctly();
         TestChatImageCacheFetchesDecodesAndCaches();
@@ -58,7 +62,10 @@ internal static class TraySelfTests
         TestChatHandleHitTestMatchesTheDrawnRectangle();
         TestChatRendererOnlyShowsHandleWhenInteractive();
         TestChatOverlayCanvasKeepsCardSizeAndPlacement();
+        TestChatWorkspaceChromeStaysOutsideTheReadArea();
+        TestChatWorkspaceScrollbarTracksViewport();
         TestChatHoverRepaintsOncePerRectangleCrossed();
+        TestChatWorkspaceHoverDoesNotRepaint();
         TestChatInputIsRejectedWhenLaserIsDisarmed();
         TestControllerRayArmsChatLaserInputOnlyOverThePanel();
         TestChatLaserInputRequiresPointerOverPanel();
@@ -1524,7 +1531,7 @@ internal static class TraySelfTests
         });
 
         Assert(
-            hiddenChildren == 1 && visibleChildren == 2,
+            hiddenChildren == 3 && visibleChildren == 4,
             "The move tab was not omitted while the chat interaction gate was off, "
             + "or it was not added when the gate was armed.");
     }
@@ -1554,6 +1561,41 @@ internal static class TraySelfTests
                     cardWidth * ChatOverlayLayout.ChatCardHeight / (float)ChatOverlayLayout.ChatCardWidth),
                 $"The expanded texture changed the visible card height for {cardWidth:0.00} m.");
         }
+    }
+
+    private static void TestChatWorkspaceChromeStaysOutsideTheReadArea()
+    {
+        var card = ChatOverlayLayout.ChatCardBounds;
+        Assert(
+            ChatOverlayLayout.ChatTabBounds.Bottom <= card.Top
+            && ChatOverlayLayout.EventsTabBounds.Bottom <= card.Top,
+            "Chat/Event tabs overlapped the readable chat card.");
+        Assert(
+            ChatOverlayLayout.ContentBounds.Top >= card.Top
+            && ChatOverlayLayout.ContentBounds.Bottom <= card.Bottom,
+            "The message viewport escaped the chat card after moving the controls outside it.");
+        Assert(
+            ChatOverlayLayout.ScrollbarTrackBounds.Left >= ChatOverlayLayout.ContentBounds.Right
+            && ChatOverlayLayout.ScrollbarTrackBounds.Right <= card.Right
+            && ChatOverlayLayout.ScrollbarTrackBounds.Top >= ChatOverlayLayout.ContentBounds.Top
+            && ChatOverlayLayout.ScrollbarTrackBounds.Bottom <= ChatOverlayLayout.ContentBounds.Bottom,
+            "The passive scroll indicator overlapped text or escaped the chat card.");
+    }
+
+    private static void TestChatWorkspaceScrollbarTracksViewport()
+    {
+        var track = ChatOverlayLayout.ScrollbarTrackBounds;
+        var noOverflow = ChatOverlayLayout.ScrollbarThumbBounds(ChatWorkspaceViewport.PageSize, 0);
+        Assert(noOverflow == track, "A short workspace did not show a full-height scroll indicator.");
+
+        var newest = ChatOverlayLayout.ScrollbarThumbBounds(ChatWorkspaceViewport.PageSize * 4, 0);
+        var oldest = ChatOverlayLayout.ScrollbarThumbBounds(ChatWorkspaceViewport.PageSize * 4, 1);
+        Assert(
+            newest.Bottom == track.Bottom
+            && oldest.Top == track.Top
+            && newest.Height < track.Height
+            && newest.Height == oldest.Height,
+            "The workspace scroll indicator did not move from newest-bottom to oldest-top.");
     }
 
     /// <summary>
@@ -2064,6 +2106,46 @@ internal static class TraySelfTests
         Assert(
             fresh.EnabledKeys.Count == 0,
             "A picker built from a catalog alone enabled something by itself.");
+    }
+
+    private static void TestChatWorkspaceHoverDoesNotRepaint()
+    {
+        var input = new ChatOverlayInput();
+        input.SetLaserInputArmed(true);
+        _ = input.TakeRepaintOwed(); // arming changes move-tab visibility once.
+
+        foreach (var index in new[]
+                 {
+                     ChatOverlayLayout.ChatTabIndex,
+                     ChatOverlayLayout.EventsTabIndex
+                 })
+        {
+            var bounds = ChatOverlayLayout.Buttons[index];
+            Move(input, bounds.Left + (bounds.Width / 2f), bounds.Top + (bounds.Height / 2f));
+            Assert(
+                !input.TakeRepaintOwed(),
+                $"Hovering {ChatOverlayLayout.LabelFor(index)} requested a texture repaint and would blink in SteamVR.");
+        }
+
+        var move = ChatOverlayLayout.MoveHandleBounds;
+        Move(input, move.Left + (move.Width / 2f), move.Top + (move.Height / 2f));
+        Assert(input.TakeRepaintOwed(), "The external move handle lost its deliberate hover feedback.");
+
+        input.SetLaserInputArmed(false);
+        Assert(
+            input.Handle(new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.Scroll, 0, 0, 0, ScrollY: 1))
+            == ChatInputOutcome.None,
+            "A disarmed chat overlay accepted controller scroll input.");
+        input.SetLaserInputArmed(true);
+        Assert(
+            input.Handle(new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.Scroll, 0, 0, 0, ScrollY: 1))
+            == ChatInputOutcome.WorkspaceScrollOlder
+            && input.Handle(new SvrBridge.Core.OverlayMouseEvent(
+                SvrBridge.Core.OverlayMouseEventKind.Scroll, 0, 0, 0, ScrollY: -1))
+            == ChatInputOutcome.WorkspaceScrollNewer,
+            "Discrete SteamVR scroll did not map to older/newer workspace history.");
     }
 
     private static void TestControllerRayArmsChatLaserInputOnlyOverThePanel()
@@ -3203,6 +3285,136 @@ internal static class TraySelfTests
     }
 
     /// <summary>
+    /// The persistent tray-owned history is intentionally larger than the old
+    /// worker-local 40-line buffer, oldest-first, and a fresh worker receives
+    /// only this bounded snapshot after recovery.
+    /// </summary>
+    private static void TestChatWorkspaceHistoryEvictionAndRehydration()
+    {
+        var host = new SvrBridge.Core.ChatWorkspaceHistory(capacityPerStream: 3);
+        for (var index = 0; index < 4; index++)
+        {
+            host.Append(
+                SvrBridge.Core.ChatWorkspaceTab.Chat,
+                new SvrBridge.Core.ChatWorkspaceEntry(DateTimeOffset.UnixEpoch.AddMinutes(index), ChatMessageFor($"chat-{index}")));
+        }
+        host.Append(
+            SvrBridge.Core.ChatWorkspaceTab.Events,
+            new SvrBridge.Core.ChatWorkspaceEntry(
+                DateTimeOffset.UnixEpoch,
+                new SvrBridge.Core.StreamerBotEventPayload
+                {
+                    Target = SvrBridge.Core.StreamerBotEventTarget.Notification,
+                    Source = "Twitch.Follow",
+                    Title = "Followed"
+                }));
+
+        var snapshot = host.Snapshot();
+        Assert(
+            snapshot.Chat.Select(entry => entry.Payload.Text).SequenceEqual(["chat-1", "chat-2", "chat-3"])
+            && snapshot.Events.Count == 1,
+            "Workspace history did not evict oldest chat first or route notification history to Events.");
+
+        var recoveredWorker = new SvrBridge.Core.ChatWorkspaceHistory(capacityPerStream: 3);
+        recoveredWorker.Replace(snapshot);
+        var rehydrated = recoveredWorker.Snapshot();
+        Assert(
+            rehydrated.Chat.Select(entry => entry.Payload.Text).SequenceEqual(snapshot.Chat.Select(entry => entry.Payload.Text))
+            && rehydrated.Events.Single().Payload.Target == SvrBridge.Core.StreamerBotEventTarget.Notification,
+            "A worker-restart snapshot did not rehydrate both bounded workspace streams.");
+
+        // A peer can never enlarge the worker mirror by sending an oversized
+        // snapshot; rehydration applies the same documented bound.
+        recoveredWorker.Replace(new SvrBridge.Core.ChatWorkspaceSnapshot(
+            Enumerable.Range(0, 5)
+                .Select(index => new SvrBridge.Core.ChatWorkspaceEntry(DateTimeOffset.UnixEpoch, ChatMessageFor($"oversize-{index}")))
+                .ToArray(),
+            []));
+        Assert(
+            recoveredWorker.Snapshot().Chat.Select(entry => entry.Payload.Text).SequenceEqual(["oversize-2", "oversize-3", "oversize-4"]),
+            "An oversized rehydration snapshot bypassed oldest-first capacity eviction.");
+    }
+
+    private static void TestChatWorkspaceViewportKeepsIndependentScrollPositions()
+    {
+        var history = new SvrBridge.Core.ChatWorkspaceHistory(capacityPerStream: 80);
+        for (var index = 0; index < 60; index++)
+        {
+            history.Append(SvrBridge.Core.ChatWorkspaceTab.Chat, new SvrBridge.Core.ChatWorkspaceEntry(DateTimeOffset.UnixEpoch, ChatMessageFor($"chat-{index}")));
+            history.Append(SvrBridge.Core.ChatWorkspaceTab.Events, new SvrBridge.Core.ChatWorkspaceEntry(
+                DateTimeOffset.UnixEpoch,
+                new SvrBridge.Core.StreamerBotEventPayload { Target = SvrBridge.Core.StreamerBotEventTarget.Notification, Title = $"event-{index}" }));
+        }
+
+        var viewport = new ChatWorkspaceViewport();
+        var snapshot = history.Snapshot();
+        viewport.Reconcile(snapshot);
+        Assert(
+            viewport.VisibleEntries(snapshot).First().Payload.Text == $"chat-{60 - ChatWorkspaceViewport.PageSize}",
+            "A fresh Chat viewport did not start at the latest page.");
+        Assert(viewport.ScrollOlder(snapshot), "Controller scroll did not move Chat toward older history.");
+        Assert(
+            viewport.OffsetFromLatest(SvrBridge.Core.ChatWorkspaceTab.Chat) == ChatWorkspaceViewport.ScrollStep,
+            "Controller scroll did not use its small Chat increment.");
+
+        viewport.Select(SvrBridge.Core.ChatWorkspaceTab.Events);
+        Assert(viewport.ScrollOlder(snapshot), "Controller scroll did not move Events toward older history.");
+        Assert(
+            viewport.OffsetFromLatest(SvrBridge.Core.ChatWorkspaceTab.Events) == ChatWorkspaceViewport.ScrollStep
+            && viewport.OffsetFromLatest(SvrBridge.Core.ChatWorkspaceTab.Chat) == ChatWorkspaceViewport.ScrollStep,
+            "Chat and Events did not retain independent scroll positions.");
+
+        viewport.Select(SvrBridge.Core.ChatWorkspaceTab.Chat);
+        history.Append(SvrBridge.Core.ChatWorkspaceTab.Chat, new SvrBridge.Core.ChatWorkspaceEntry(DateTimeOffset.UnixEpoch, ChatMessageFor("chat-60")));
+        snapshot = history.Snapshot();
+        viewport.Reconcile(snapshot);
+        Assert(
+            viewport.VisibleEntries(snapshot).Select(entry => entry.Payload.Text).SequenceEqual(
+                Enumerable.Range(
+                    60 - ChatWorkspaceViewport.PageSize - ChatWorkspaceViewport.ScrollStep,
+                    ChatWorkspaceViewport.PageSize).Select(index => $"chat-{index}")),
+            "An incoming chat entry snapped a scrolled-back reader away from the page they were reading.");
+        viewport.Latest();
+        Assert(
+            viewport.VisibleEntries(snapshot).Last().Payload.Text == "chat-60" && !viewport.CanNext,
+            "Latest did not return the active tab to the newest entry.");
+    }
+
+    private static void TestChatWorkspaceControlsUseSharedLayoutAndRespectGate()
+    {
+        var input = new ChatOverlayInput();
+        var chatTab = ChatOverlayLayout.Buttons[ChatOverlayLayout.ChatTabIndex];
+        var centreX = chatTab.Left + (chatTab.Width / 2f);
+        var centreY = chatTab.Top + (chatTab.Height / 2f);
+
+        Move(input, centreX, centreY);
+        Assert(Press(input) == ChatInputOutcome.None, "A hidden/disarmed Chat tab activated.");
+        input.SetLaserInputArmed(true);
+        Move(input, centreX, centreY);
+        Assert(
+            Press(input) == ChatInputOutcome.WorkspaceControlActivated
+            && input.ActivatedControlIndex == ChatOverlayLayout.ChatTabIndex,
+            "The shared layout did not route a visible Chat-tab hit to its matching control.");
+        Assert(
+            ChatOverlayLayout.IndexAt(ChatOverlayLayout.Buttons, centreX, centreY) == ChatOverlayLayout.ChatTabIndex,
+            "The renderer/input shared control table disagreed about the Chat tab rectangle.");
+
+        foreach (var index in new[] { ChatOverlayLayout.EventsTabIndex })
+        {
+            var bounds = ChatOverlayLayout.Buttons[index];
+            Move(input, bounds.Left + (bounds.Width / 2f), bounds.Top + (bounds.Height / 2f));
+            Assert(
+                Press(input) == ChatInputOutcome.WorkspaceControlActivated
+                && input.ActivatedControlIndex == index
+                && ChatOverlayLayout.IndexAt(
+                    ChatOverlayLayout.Buttons,
+                    bounds.Left + (bounds.Width / 2f),
+                    bounds.Top + (bounds.Height / 2f)) == index,
+                $"Workspace control {ChatOverlayLayout.LabelFor(index)} did not use one shared hit/draw rectangle.");
+        }
+    }
+
+    /// <summary>
     /// The chat overlay paints this local message before it is shown. A real
     /// chat payload once happened to be the first texture upload, which made
     /// an enabled window look absent until someone typed in chat.
@@ -3792,6 +4004,30 @@ internal static class TraySelfTests
         Assert(
             containerCount == 1,
             "A cheer whose visible token differs from its catalog name did not render from its event image URL.");
+    }
+
+    private static void TestChatWorkspaceTextFitsItsFixedViewport()
+    {
+        using var thread = new WpfRenderThread("self-test workspace text fit");
+        var fits = thread.Invoke(() =>
+        {
+            var body = WpfChatRenderer.BuildTextBlock(
+                Enumerable.Range(0, ChatWorkspaceViewport.PageSize)
+                    .Select(index => ChatMessageFor($"fill-{index}"))
+                    .ToArray());
+            WpfChatRenderer.FitWorkspaceTextToBounds(body);
+            body.Measure(new System.Windows.Size(
+                ChatOverlayLayout.ContentBounds.Width,
+                double.PositiveInfinity));
+            var scale = body.RenderTransform is System.Windows.Media.ScaleTransform transform
+                ? transform.ScaleY
+                : 1d;
+            return body.FontSize <= 24
+                   && body.FontSize >= 13
+                   && body.DesiredSize.Height * scale <= ChatOverlayLayout.ContentBounds.Height + 1;
+        });
+
+        Assert(fits, "A full workspace page did not scale into the fixed chat viewport.");
     }
 
     /// <summary>
