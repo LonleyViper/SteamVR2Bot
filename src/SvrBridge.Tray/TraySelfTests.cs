@@ -55,8 +55,9 @@ internal static class TraySelfTests
         TestOverlayPlacementArgumentRoundTrip();
         TestChatHandleHitTestMatchesTheDrawnRectangle();
         TestChatHoverRepaintsOncePerRectangleCrossed();
-        TestChatInputIsRejectedOutsideTheGazedState();
-        TestChatLaserInputRequiresExplicitPositioning();
+        TestChatInputIsRejectedWhenLaserIsDisarmed();
+        TestControllerRayArmsChatLaserInputOnlyOverThePanel();
+        TestChatLaserInputRequiresPointerOverPanel();
         TestOnlyTheHandleStartsAndEndsAGrab();
         TestHandPlacedOffsetClearsAStreamerBotOverride();
         TestSurfaceOverrideStateAppliesAndResetsControlCommands();
@@ -662,8 +663,7 @@ internal static class TraySelfTests
             .. VrDashboardLayout.NotificationAnchorHand,
             .. VrDashboardLayout.GazeSensitivity,
             VrDashboardLayout.ResetPlacement,
-            VrDashboardLayout.GazeScaleToggle,
-            VrDashboardLayout.PositionChatToggle
+            VrDashboardLayout.GazeScaleToggle
         ];
         foreach (var control in allControls)
         {
@@ -707,10 +707,6 @@ internal static class TraySelfTests
             VrDashboardLayout.GazeScaleToggle.Left == VrDashboardLayout.ChatToggle.Left
             && VrDashboardLayout.GazeScaleToggle.Width == VrDashboardLayout.ChatToggle.Width,
             "The grow-on-gaze toggle is not aligned with the column of on/off toggles above it.");
-        Assert(
-            VrDashboardLayout.PositionChatToggle.Top >= VrDashboardLayout.ResetPlacement.Bottom,
-            "The explicit chat move control overlaps the reset/grow row above it.");
-
         // The List page's row count dropped from 6 to 5 to make room for the
         // tab strip - its last row must still clear the bottom bar.
         var lastListRowBottom = VrDashboardLayout.ListRowsStartY
@@ -1473,7 +1469,7 @@ internal static class TraySelfTests
         // the rule has to hold for the table as it grows.
         Rectangle[] buttons = [new(400, 10, 60, 60), new(300, 10, 60, 60)];
         var input = new ChatOverlayInput(buttons);
-        input.SetGazing(true);
+        input.SetLaserInputArmed(true);
 
         Move(input, 410, 20);
         Move(input, 430, 30);
@@ -1513,12 +1509,11 @@ internal static class TraySelfTests
     }
 
     /// <summary>
-    /// §B2: input is accepted only while the window is in its gazed-at state,
-    /// so an accidental grab needs the wearer to be both looking at the window
-    /// and pointing at it. Losing gaze mid-drag abandons the drag rather than
-    /// leaving one running on a window that has shrunk away.
+    /// Input is accepted only while the controller-pointer gate has armed the
+    /// panel. Disarming mid-drag abandons the drag rather than leaving one
+    /// running after SteamVR has stopped routing input to the panel.
     /// </summary>
-    private static void TestChatInputIsRejectedOutsideTheGazedState()
+    private static void TestChatInputIsRejectedWhenLaserIsDisarmed()
     {
         var handle = ChatOverlayLayout.Buttons[ChatOverlayLayout.MoveHandleIndex];
         var centreX = handle.Left + (handle.Width / 2f);
@@ -1528,21 +1523,21 @@ internal static class TraySelfTests
         Move(input, centreX, centreY);
         Assert(
             input.HoveredIndex == ChatOverlayLayout.NoButton && input.HoverRepaintCount == 0,
-            "The window highlighted a control while the wearer was not looking at it.");
+            "The window highlighted a control while its laser input was disarmed.");
         Assert(
             Press(input) == ChatInputOutcome.None && !input.IsHolding,
-            "A laser click started a drag while the wearer was not looking at the window.");
+            "A laser click started a drag while its input was disarmed.");
 
-        input.SetGazing(true);
+        input.SetLaserInputArmed(true);
         Move(input, centreX, centreY);
         Assert(
             Press(input) == ChatInputOutcome.DragBegan && input.IsHolding,
-            "A laser click on the handle did not start a drag while gazing.");
+            "A laser click on the handle did not start a drag while armed.");
 
-        input.SetGazing(false);
+        input.SetLaserInputArmed(false);
         Assert(
             !input.IsHolding && input.HoveredIndex == ChatOverlayLayout.NoButton,
-            "Looking away left a drag running on a window that had shrunk away.");
+            "Disarming input left a drag running after pointer exit.");
 
         // The invariant ChatOverlay's per-tick reconcile depends on: every
         // path that withdraws input also drops the hold, so "a live drag with
@@ -1553,7 +1548,7 @@ internal static class TraySelfTests
         // which is exactly what shipped and had to be fixed.
         foreach (var withdraw in new (string Name, Action<ChatOverlayInput> Act)[]
                  {
-                     ("looking away", i => i.SetGazing(false)),
+                     ("pointer exit", i => i.SetLaserInputArmed(false)),
                      ("the laser leaving the panel", i => i.Handle(
                          new SvrBridge.Core.OverlayMouseEvent(
                              SvrBridge.Core.OverlayMouseEventKind.FocusLeave,
@@ -1564,7 +1559,7 @@ internal static class TraySelfTests
                  })
         {
             var held = new ChatOverlayInput();
-            held.SetGazing(true);
+            held.SetLaserInputArmed(true);
             Move(held, centreX, centreY);
             Assert(
                 Press(held) == ChatInputOutcome.DragBegan && held.IsHolding,
@@ -1589,7 +1584,7 @@ internal static class TraySelfTests
         var centreX = handle.Left + (handle.Width / 2f);
         var centreY = handle.Top + (handle.Height / 2f);
         var input = new ChatOverlayInput();
-        input.SetGazing(true);
+        input.SetLaserInputArmed(true);
 
         // Chat text, not a control: this is where most of the panel is, and
         // grabbing the window every time the wearer points at a message would
@@ -1969,23 +1964,59 @@ internal static class TraySelfTests
             "A picker built from a catalog alone enabled something by itself.");
     }
 
-    private static void TestChatLaserInputRequiresExplicitPositioning()
+    private static void TestControllerRayArmsChatLaserInputOnlyOverThePanel()
+    {
+        var panel = SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, -1f);
+        Assert(
+            SvrBridge.Core.OverlayRayHitTest.IntersectsPanel(
+                SvrBridge.Core.VrOverlayTransform.Identity,
+                panel,
+                panelWidthMeters: 1f,
+                panelHeightMeters: 1f),
+            "A controller pointing through the middle of chat did not arm its laser input.");
+        Assert(
+            !SvrBridge.Core.OverlayRayHitTest.IntersectsPanel(
+                SvrBridge.Core.VrOverlayTransform.Translation(0.6f, 0f, 0f),
+                panel,
+                panelWidthMeters: 1f,
+                panelHeightMeters: 1f),
+            "A controller ray missing chat still armed SteamVR overlay input.");
+        Assert(
+            !SvrBridge.Core.OverlayRayHitTest.IntersectsPanel(
+                SvrBridge.Core.VrOverlayTransform.RotationY(MathF.PI),
+                panel,
+                panelWidthMeters: 1f,
+                panelHeightMeters: 1f),
+            "A controller pointing away from chat still armed its input.");
+
+        var rotatedPanel = SvrBridge.Core.VrOverlayTransform.Translation(0.2f, -0.1f, -1.4f)
+                           * SvrBridge.Core.VrOverlayTransform.RotationY(0.4f);
+        Assert(
+            SvrBridge.Core.OverlayRayHitTest.IntersectsPanel(
+                rotatedPanel * SvrBridge.Core.VrOverlayTransform.Translation(0f, 0f, 1f),
+                rotatedPanel,
+                panelWidthMeters: 1f,
+                panelHeightMeters: 1f),
+            "The panel-ray gate failed when chat was rotated on a wrist.");
+    }
+
+    private static void TestChatLaserInputRequiresPointerOverPanel()
     {
         Assert(
             !ChatOverlay.ShouldEnableLaserInput(
-                positioningEnabled: false,
+                pointerOverPanel: false,
                 laserInputAvailable: true,
                 inputProbeRunning: false),
-            "Reading a gazed-at chat window still enabled SteamVR's global laser mode.");
+            "A chat panel outside the controller pointer still enabled SteamVR's global laser mode.");
         Assert(
             ChatOverlay.ShouldEnableLaserInput(
-                positioningEnabled: true,
+                pointerOverPanel: true,
                 laserInputAvailable: true,
                 inputProbeRunning: false),
-            "Explicit chat positioning did not enable laser input.");
+            "A controller pointer over chat did not enable laser input.");
         Assert(
             ChatOverlay.ShouldEnableLaserInput(
-                positioningEnabled: false,
+                pointerOverPanel: false,
                 laserInputAvailable: true,
                 inputProbeRunning: true),
             "The time-bounded laser diagnostic probe did not enable input.");

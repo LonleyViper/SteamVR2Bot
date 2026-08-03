@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.InteropServices;
 
 namespace SvrBridge.Core;
@@ -83,6 +84,18 @@ public readonly record struct VrOverlayTransform(
         M00, M10, M20, -((M00 * M03) + (M10 * M13) + (M20 * M23)),
         M01, M11, M21, -((M01 * M03) + (M11 * M13) + (M21 * M23)),
         M02, M12, M22, -((M02 * M03) + (M12 * M13) + (M22 * M23)));
+
+    /// <summary>Applies this OpenVR column-vector transform to a position.</summary>
+    public Vector3 TransformPoint(Vector3 point) => new(
+        (M00 * point.X) + (M01 * point.Y) + (M02 * point.Z) + M03,
+        (M10 * point.X) + (M11 * point.Y) + (M12 * point.Z) + M13,
+        (M20 * point.X) + (M21 * point.Y) + (M22 * point.Z) + M23);
+
+    /// <summary>Applies this transform's rotation to a direction.</summary>
+    public Vector3 TransformDirection(Vector3 direction) => new(
+        (M00 * direction.X) + (M01 * direction.Y) + (M02 * direction.Z),
+        (M10 * direction.X) + (M11 * direction.Y) + (M12 * direction.Z),
+        (M20 * direction.X) + (M21 * direction.Y) + (M22 * direction.Z));
 
     /// <summary>
     /// Whether this is a transform SteamVR can actually place a panel with:

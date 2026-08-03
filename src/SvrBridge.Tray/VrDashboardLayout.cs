@@ -115,9 +115,6 @@ internal static class VrDashboardLayout
 
     public const int ResetPlacementY = 650;
 
-    /// <summary>Explicit, transient move mode for chat; reading chat must not capture game input.</summary>
-    public const int ChatPositioningY = 770;
-
     public static readonly Rectangle GazeCalibration =
         new(60, GazeCalibrationY, 560, SettingsRowHeight);
 
@@ -144,9 +141,6 @@ internal static class VrDashboardLayout
     /// </summary>
     public static readonly Rectangle GazeScaleToggle =
         new(1090, ResetPlacementY, 250, SettingsRowHeight);
-
-    public static readonly Rectangle PositionChatToggle =
-        new(1090, ChatPositioningY, 250, SettingsRowHeight);
 
     /// <summary>On/off toggle for the chat window.</summary>
     public static readonly Rectangle ChatToggle = new(1090, ChatControlsY, 250, SettingsRowHeight);

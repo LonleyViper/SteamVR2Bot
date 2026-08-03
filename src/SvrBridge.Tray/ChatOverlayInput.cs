@@ -27,10 +27,9 @@ internal enum ChatInputOutcome
 /// </para>
 /// <list type="number">
 /// <item>
-/// Input is accepted only while the window is gazed at, per §B2. Leaving the
-/// gazed state also clears the hover and abandons a drag in progress, so a
-/// window that shrank away cannot still be being dragged by a laser the wearer
-/// has stopped looking along.
+/// Input is accepted only while the controller laser is armed for this panel.
+/// Disarming clears the hover and abandons a drag in progress, so a panel that
+/// is no longer accepting laser events cannot stay held indefinitely.
 /// </item>
 /// <item>
 /// A repaint is owed when the <em>index</em> of the rectangle under the
@@ -49,7 +48,7 @@ internal sealed class ChatOverlayInput
 {
     private readonly IReadOnlyList<Rectangle> _buttons;
     private bool _holding;
-    private bool _gazing;
+    private bool _laserInputArmed;
     private bool _repaintOwed;
 
     /// <param name="buttons">
@@ -94,20 +93,19 @@ internal sealed class ChatOverlayInput
     }
 
     /// <summary>
-    /// Reports whether the wearer is looking at the window. Losing gaze is
-    /// treated as losing input entirely: hover clears (which is itself a
-    /// repaint, so the highlight does not stay lit on a window nobody is
-    /// looking at) and any drag is abandoned where it stands.
+    /// Arms or disarms laser input for the panel. Disarming clears hover and
+    /// abandons any drag, because queued events after the laser leaves must
+    /// never be replayed against controls later.
     /// </summary>
-    public void SetGazing(bool gazing)
+    public void SetLaserInputArmed(bool armed)
     {
-        if (_gazing == gazing)
+        if (_laserInputArmed == armed)
         {
             return;
         }
 
-        _gazing = gazing;
-        if (!gazing)
+        _laserInputArmed = armed;
+        if (!armed)
         {
             _holding = false;
             SetHovered(ChatOverlayLayout.NoButton);
@@ -123,8 +121,8 @@ internal sealed class ChatOverlayInput
     public ChatInputOutcome Handle(in OverlayMouseEvent laserEvent)
     {
         // Rule 1, applied before anything is read off the event: events can
-        // still be in the queue from before gaze was lost.
-        if (!_gazing)
+        // still be in the queue from before the pointer left the panel.
+        if (!_laserInputArmed)
         {
             return ChatInputOutcome.None;
         }

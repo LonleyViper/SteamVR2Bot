@@ -8,7 +8,6 @@ internal sealed class VrDashboardController : IDisposable
     private readonly Action<ShortcutConfig> _shortcutSaved;
     private readonly Action<string> _shortcutDeleted;
     private readonly Action<VrSettingsSnapshot> _settingsChanged;
-    private readonly Action<bool> _chatPositioningChanged;
     private readonly Action<bool> _notificationPositioningChanged;
     private readonly Func<bool> _startChatGazeCalibration;
     private readonly Action<string> _log;
@@ -58,7 +57,6 @@ internal sealed class VrDashboardController : IDisposable
     /// to place the frame and back off when done.
     /// </summary>
     private bool _positioningNotifications;
-    private bool _positioningChat;
     private bool _chatGazeCalibrationInProgress;
 
     public VrDashboardController(
@@ -71,7 +69,6 @@ internal sealed class VrDashboardController : IDisposable
         Action<ShortcutConfig> shortcutSaved,
         Action<string> shortcutDeleted,
         Action<VrSettingsSnapshot> settingsChanged,
-        Action<bool> chatPositioningChanged,
         Action<bool> notificationPositioningChanged,
         Func<bool> startChatGazeCalibration,
         Action<string> log)
@@ -97,7 +94,6 @@ internal sealed class VrDashboardController : IDisposable
         _shortcutSaved = shortcutSaved;
         _shortcutDeleted = shortcutDeleted;
         _settingsChanged = settingsChanged;
-        _chatPositioningChanged = chatPositioningChanged;
         _notificationPositioningChanged = notificationPositioningChanged;
         _startChatGazeCalibration = startChatGazeCalibration;
         _log = log;
@@ -729,8 +725,7 @@ internal sealed class VrDashboardController : IDisposable
             DashboardPage.ChatSettings,
             () => VrDashboardRenderer.RenderChatSettings(
                 _settings,
-                _chatGazeCalibrationInProgress,
-                _positioningChat));
+                _chatGazeCalibrationInProgress));
 
     private void ShowNotificationSettings() =>
         ShowPage(
@@ -823,16 +818,6 @@ internal sealed class VrDashboardController : IDisposable
             return;
         }
 
-        if (IsWithinRow(y, VrDashboardLayout.ChatPositioningY, VrDashboardLayout.SettingsRowHeight))
-        {
-            var toggle = VrDashboardLayout.PositionChatToggle;
-            if (x >= toggle.Left && x <= toggle.Right)
-            {
-                _positioningChat = !_positioningChat;
-                _chatPositioningChanged(_positioningChat);
-                ShowChatSettings();
-            }
-        }
     }
 
     private void HandleNotificationSettingsClick(float x, float y)
@@ -1061,12 +1046,6 @@ internal sealed class VrDashboardController : IDisposable
         // capturing the laser indefinitely just because the wearer moved on
         // to something else. The toggle itself remains the way to turn it
         // back on.
-        if (page != DashboardPage.ChatSettings && _positioningChat)
-        {
-            _positioningChat = false;
-            _chatPositioningChanged(false);
-        }
-
         if (page != DashboardPage.NotificationSettings && _positioningNotifications)
         {
             _positioningNotifications = false;

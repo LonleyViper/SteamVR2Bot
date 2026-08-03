@@ -137,10 +137,11 @@ setup**. Everything below applies live — no restart, and no Save button.
 
 Turn on **Show chat messages on your wrist**. Your Twitch and YouTube chat appear in a
 window anchored to a controller or to your head, with real emote and badge
-images. To move it, open the VR dashboard's **Chat** tab, turn on **Move chat
-window**, then drag its handle; turn the mode off when finished. Reading or
-growing chat never captures game controller input. The placement is saved per
-anchor mode, and the same tab has a reset if you put it somewhere unreachable.
+images. To move it, point a controller laser at the chat window and drag its
+handle — no dashboard mode is needed. SteamVR2Bot turns on overlay interaction
+only while that laser is on the chat panel, then releases the controller back
+to the game as soon as it leaves. The placement is saved per anchor mode, and
+the **Chat** tab has a reset if you put it somewhere unreachable.
 
 **Grow on gaze** is off by default. Turned on, the window grows and brightens
 when you look at it.

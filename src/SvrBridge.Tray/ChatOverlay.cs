@@ -38,11 +38,11 @@ namespace SvrBridge.Tray;
 /// is a continuous recompute of a value that already exists and release is
 /// simply "stop recomputing" - there is no world-to-local conversion step and
 /// no <c>SetOverlayTransformAbsolute</c>, which true world-lock would need and
-/// which stays deferred. And the interaction is gated on the gaze signal this
-/// class already computes for the scale animation, so an accidental grab needs
-/// the wearer to be both looking at the window and pointing at it. The grab is
-/// rigid: the panel keeps whatever relationship it had to the grabbing
-/// controller, so turning the wrist turns the panel - see
+/// which stays deferred. Interaction is pre-armed only while a controller's
+/// local laser ray intersects the panel, so SteamVR's global laser mode is not
+/// enabled while the wearer is merely looking at chat. The grab is rigid: the
+/// panel keeps whatever relationship it had to the grabbing controller, so
+/// turning the wrist turns the panel - see
 /// <see cref="OverlayDrag"/>.
 /// </para>
 /// </summary>
@@ -103,8 +103,6 @@ internal sealed class ChatOverlay : IDisposable
 
     private uint? _dragPointerDeviceIndex;
     private bool _inputEnabled;
-    private bool _isGazing;
-    private bool _positioning;
 
     /// <summary>
     /// Hides the window when it is turned away from the wearer or has been
@@ -122,10 +120,8 @@ internal sealed class ChatOverlay : IDisposable
     /// its configured size and opacity permanently.
     /// <para>
     /// Only the animation is switched off, never the gaze measurement itself:
-    /// gaze still gates whether the window accepts the laser, and that gate is
-    /// a safety property rather than a visual one - it is what stops a
-    /// permanently-present panel putting SteamVR into system-wide laser mouse
-    /// mode for an entire play session.
+    /// visibility and calibration still need the measurement, while laser
+    /// input has its own controller-ray safety gate.
     /// </para>
     /// </summary>
     private bool _gazeScaleEnabled = true;
@@ -141,7 +137,7 @@ internal sealed class ChatOverlay : IDisposable
 
     /// <summary>
     /// Reset every time input is switched on, so the log records the first
-    /// laser event of each gaze rather than one line per pointer move.
+    /// laser event of each pointer entry rather than one line per move.
     /// <para>
     /// This exists because "the handle does not respond" is not a diagnosis.
     /// It has two very different causes - SteamVR sending this overlay nothing
@@ -461,30 +457,6 @@ internal sealed class ChatOverlay : IDisposable
     public void SetGazeScaleEnabled(bool enabled) => _gazeScaleEnabled = enabled;
 
     /// <summary>
-    /// Enables the transient move mode from the Chat settings tab. Ordinary
-    /// reading, including gaze enlargement, must never enable SteamVR's
-    /// system-wide laser mode and steal a running game's controller input.
-    /// </summary>
-    public void SetPositioningEnabled(bool enabled)
-    {
-        if (_disposed || _positioning == enabled)
-        {
-            return;
-        }
-
-        _positioning = enabled;
-        if (!enabled)
-        {
-            CancelDrag("chat positioning was turned off");
-        }
-
-        SetInputEnabled(ShouldEnableLaserInput(_positioning, _laserInputAvailable, _inputProbeExpiresAtMs is not null));
-        _input.SetGazing(_positioning && _laserInputAvailable);
-        _log(enabled
-            ? "Chat positioning is on. Point at the move handle and drag the window; turn it off when finished."
-            : "Chat positioning is off. Game controller input is no longer captured by chat.");
-    }
-
     /// <summary>
     /// Developer-only: switches this surface between the default
     /// <c>SetOverlayRaw</c> path and the persistent-texture path - see
@@ -553,8 +525,7 @@ internal sealed class ChatOverlay : IDisposable
             // otherwise leave an invisible panel still following the wearer's
             // hand, and this branch also returns before the reconcile in
             // UpdateLaserInput that would otherwise catch it.
-            _isGazing = false;
-            _input.SetGazing(false);
+            _input.SetLaserInputArmed(false);
             if (_drag is not null)
             {
                 CancelDrag("the window was hidden");
@@ -575,8 +546,8 @@ internal sealed class ChatOverlay : IDisposable
         }
 
         AnimateGaze(view, currentGazeDirection, nowMs);
-        // After the gaze update and before the repaint: moving the panel is an
-        // explicit mode, never an incidental side effect of reading it.
+        // After the gaze update and before the repaint: the controller ray,
+        // not gaze enlargement, decides whether SteamVR may send chat input.
         UpdateLaserInput(openVr);
         RepaintIfOwed(nowMs);
     }
@@ -662,8 +633,6 @@ internal sealed class ChatOverlay : IDisposable
         // wearer has hold of the thing, so they are unambiguously interacting
         // with it, whichever way they happen to be looking.
         isGazing |= _drag is not null || _gazeCalibrationStartedAtMs is not null;
-        _isGazing = isGazing;
-
         // With the animation switched off the window sits at its full size and
         // opacity and stays there. Deliberately the large state rather than
         // some average: a window that never grows has to be readable as it is.
@@ -728,35 +697,33 @@ internal sealed class ChatOverlay : IDisposable
 
     /// <summary>
     /// Reconciles whether this overlay accepts the laser, drains whatever it
-    /// received, and advances a drag in progress. Input is on only for the
-    /// explicit positioning mode or the time-bounded developer probe.
+    /// received, and advances a drag in progress. Input is on only while a
+    /// controller laser ray already intersects this panel, or for the
+    /// time-bounded developer probe.
     /// <para>
     /// The developer probe overrides the gate while it runs, which is the
     /// whole point of it: it exists to answer what an always-on input method
     /// does to a running game.
     /// </para>
     /// <para>
-    /// Note what the gate means in head-anchor mode. <see cref="GazeDot"/>
-    /// reports a head-anchored window as always gazed at - it sits directly
-    /// ahead of the wearer by construction, so there is no "not looking at it"
-    /// state to detect - which leaves input permanently on there. That is the
-    /// existing, hardware-tuned gaze model rather than a decision taken here,
-    /// and the probe result says a running game keeps its trigger regardless;
-    /// the handle is still a small target in one corner, so a grab needs
-    /// deliberate aim either way.
+    /// SteamVR produces its own overlay hover events only after its global
+    /// interactive flag is enabled, so the ray test intentionally happens
+    /// before those events exist. It uses the same live controller and panel
+    /// transforms SteamVR uses for placement; a panel miss leaves the game
+    /// completely outside overlay input mode.
     /// </para>
     /// </summary>
     private void UpdateLaserInput(OpenVrInput openVr)
     {
         var wantInput = ShouldEnableLaserInput(
-            _positioning,
+            _drag is not null || IsControllerPointerOverPanel(openVr),
             _laserInputAvailable,
             _inputProbeExpiresAtMs is not null);
         SetInputEnabled(wantInput);
-        _input.SetGazing(_positioning && _laserInputAvailable);
+        _input.SetLaserInputArmed(wantInput);
 
         // Drained even when input is off, so a queue that filled just before
-        // gaze was lost cannot be replayed against the panel later. The router
+        // the pointer left cannot be replayed against the panel later. The router
         // discards them; this just stops them accumulating.
         _surface.PollMouseEvents(_laserEvents);
         if (_laserEvents.Count > 0)
@@ -782,10 +749,35 @@ internal sealed class ChatOverlay : IDisposable
     }
 
     internal static bool ShouldEnableLaserInput(
-        bool positioningEnabled,
+        bool pointerOverPanel,
         bool laserInputAvailable,
         bool inputProbeRunning) =>
-        laserInputAvailable && (positioningEnabled || inputProbeRunning);
+        laserInputAvailable && (pointerOverPanel || inputProbeRunning);
+
+    /// <summary>
+    /// Tests both controller rays against the panel's current, anchor-relative
+    /// transform. The width is the current animated width, matching the size
+    /// SteamVR is displaying this tick rather than either animation endpoint.
+    /// </summary>
+    private bool IsControllerPointerOverPanel(OpenVrInput openVr)
+    {
+        if (_anchorTracker.BoundDeviceIndex is not { } anchorIndex
+            || !openVr.TryGetDevicePose(anchorIndex, out var anchorPose))
+        {
+            return false;
+        }
+
+        var panelPose = anchorPose * _placement.ToTransform(_anchorTracker.Anchor.Mode);
+        var width = _gazeAnimation.Width;
+        var height = width * ChatOverlayLayout.PanelHeight / ChatOverlayLayout.PanelWidth;
+        return ControllerRayHitsPanel(ControllerHand.Left)
+               || ControllerRayHitsPanel(ControllerHand.Right);
+
+        bool ControllerRayHitsPanel(ControllerHand hand) =>
+            openVr.TryGetControllerDeviceIndex(hand) is { } deviceIndex
+            && openVr.TryGetDevicePose(deviceIndex, out var controllerPose)
+            && OverlayRayHitTest.IntersectsPanel(controllerPose, panelPose, width, height);
+    }
 
     private void HandleLaserEvents(OpenVrInput openVr)
     {
@@ -971,7 +963,7 @@ internal sealed class ChatOverlay : IDisposable
 
     /// <summary>
     /// The single writer of both halves of "this overlay is interactive", so
-    /// the gaze gate and the developer probe cannot fight over either.
+    /// the pointer gate and the developer probe cannot fight over either.
     /// Idempotent, because this is called on every poll.
     /// <para>
     /// Both halves, because one alone does nothing.
@@ -1045,6 +1037,7 @@ internal sealed class ChatOverlay : IDisposable
 
         _inputProbeExpiresAtMs = nowMs + InputProbeDurationMs;
         SetInputEnabled(true);
+        _input.SetLaserInputArmed(true);
         _log(
             $"Laser input probe ON for the chat window for {InputProbeDurationMs / 1000} seconds. "
             + "Point a controller at it in a running game and pull the trigger: does the game "
@@ -1063,7 +1056,8 @@ internal sealed class ChatOverlay : IDisposable
         }
 
         _inputProbeExpiresAtMs = null;
-        SetInputEnabled(ShouldEnableLaserInput(_positioning, _laserInputAvailable, inputProbeRunning: false));
+        SetInputEnabled(false);
+        _input.SetLaserInputArmed(false);
         _log(expired
             ? "Laser input probe OFF for the chat window - the timer ran out, as designed."
             : "Laser input probe OFF for the chat window.");
