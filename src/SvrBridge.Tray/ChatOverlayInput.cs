@@ -64,6 +64,13 @@ internal sealed class ChatOverlayInput
     public int HoveredIndex { get; private set; } = ChatOverlayLayout.NoButton;
 
     /// <summary>
+    /// Whether the existing controller-ray gate has armed this surface. The
+    /// renderer uses this same state to decide whether the external tab is
+    /// visible; input still applies the gate before reading any event.
+    /// </summary>
+    public bool IsLaserInputArmed => _laserInputArmed;
+
+    /// <summary>
     /// Whether the wearer is holding the move handle down. Says nothing about
     /// whether a usable grab was established from it - poses can be missing at
     /// the moment of the press - which is why <c>ChatOverlay</c> keeps its own
@@ -105,6 +112,9 @@ internal sealed class ChatOverlayInput
         }
 
         _laserInputArmed = armed;
+        // The tab itself appears/disappears with this gate, so a state change
+        // owes a repaint even when the pointer was not over a rectangle.
+        _repaintOwed = true;
         if (!armed)
         {
             _holding = false;

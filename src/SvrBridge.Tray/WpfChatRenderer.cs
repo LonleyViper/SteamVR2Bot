@@ -23,8 +23,8 @@ namespace SvrBridge.Tray;
 /// </summary>
 internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
 {
-    public const int PanelWidth = 512;
-    public const int PanelHeight = 768;
+    public const int PanelWidth = ChatOverlayLayout.PanelWidth;
+    public const int PanelHeight = ChatOverlayLayout.PanelHeight;
     private const double Padding = 20;
     private const double FontSize = 20;
     private const double EmoteImageHeight = FontSize * 1.2;
@@ -91,31 +91,39 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
     /// </summary>
     internal static Border BuildPanel(ChatContent content, ChatImageCache? chatImages = null)
     {
-        // The padding moved off the outer Border and onto the text's own so
-        // the grid below shares the panel's coordinate space exactly. Controls
-        // are positioned from ChatOverlayLayout, whose rectangles are in the
-        // same panel pixels SteamVR reports mouse events in; an inset origin
-        // would put every hit rectangle 20 px away from what was drawn.
+        // The texture is wider than the visible card so the move tab can live
+        // outside it. The symmetric gutters keep the card centred at the
+        // existing overlay placement. Controls are positioned from
+        // ChatOverlayLayout, whose rectangles are in the same panel pixels
+        // SteamVR reports mouse events in.
         var grid = new Grid { Width = PanelWidth, Height = PanelHeight };
         grid.Children.Add(
             new Border
             {
+                Width = ChatOverlayLayout.ChatCardWidth,
+                Height = ChatOverlayLayout.ChatCardHeight,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(
+                    ChatOverlayLayout.ChatCardBounds.Left,
+                    ChatOverlayLayout.ChatCardBounds.Top,
+                    0,
+                    0),
+                Background = new SolidColorBrush(BackgroundColor),
+                ClipToBounds = true,
                 Padding = new Thickness(Padding),
                 Child = BuildTextBlock(content.Messages, chatImages)
             });
-        grid.Children.Add(BuildControl(ChatOverlayLayout.MoveHandleIndex, content.HoveredButtonIndex));
+        if (content.MoveHandleVisible)
+        {
+            grid.Children.Add(BuildControl(ChatOverlayLayout.MoveHandleIndex, content.HoveredButtonIndex));
+        }
 
         return new Border
         {
             Width = PanelWidth,
             Height = PanelHeight,
-            Background = new SolidColorBrush(BackgroundColor),
-            // The ring buffer already bounds message count, but the rendered
-            // height of that many messages does not always fit the panel.
-            // Clipping plus bottom alignment below means overflow trims from
-            // the top - the oldest messages - leaving the newest visible,
-            // which is what "newest at the bottom" in §B3 requires.
-            ClipToBounds = true,
+            Background = System.Windows.Media.Brushes.Transparent,
             Child = grid
         };
     }
@@ -161,7 +169,7 @@ internal sealed class WpfChatRenderer : IVrPanelRenderer<ChatContent>
             // than allowed to overflow it, per §B3.
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Bottom,
-            Width = PanelWidth - (Padding * 2)
+            Width = ChatOverlayLayout.ChatCardWidth - (Padding * 2)
         };
 
         foreach (var message in messages)

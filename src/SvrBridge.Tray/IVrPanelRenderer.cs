@@ -42,9 +42,15 @@ public readonly record struct NotificationContent(
 /// caller that has no pointer - the notification path, and every self-test
 /// about text - stays unchanged.
 /// </param>
+/// <param name="MoveHandleVisible">
+/// Whether the chat interaction gate is armed. The external move tab is
+/// omitted entirely while false; the hit-test remains separately gated by
+/// <see cref="ChatOverlayInput"/>.
+/// </param>
 public readonly record struct ChatContent(
     IReadOnlyList<SvrBridge.Core.StreamerBotEventPayload> Messages,
-    int HoveredButtonIndex = ChatOverlayLayout.NoButton);
+    int HoveredButtonIndex = ChatOverlayLayout.NoButton,
+    bool MoveHandleVisible = false);
 
 /// <summary>One rendered texture, straight-alpha RGBA, ready for SteamVR.</summary>
 public sealed record RenderedPanel(byte[] Rgba, int Width, int Height);

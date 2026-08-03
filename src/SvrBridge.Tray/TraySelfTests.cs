@@ -56,6 +56,8 @@ internal static class TraySelfTests
         TestOverlayDragCarriesRotationAsWellAsPosition();
         TestOverlayPlacementArgumentRoundTrip();
         TestChatHandleHitTestMatchesTheDrawnRectangle();
+        TestChatRendererOnlyShowsHandleWhenInteractive();
+        TestChatOverlayCanvasKeepsCardSizeAndPlacement();
         TestChatHoverRepaintsOncePerRectangleCrossed();
         TestChatInputIsRejectedWhenLaserIsDisarmed();
         TestControllerRayArmsChatLaserInputOnlyOverThePanel();
@@ -1483,6 +1485,75 @@ internal static class TraySelfTests
             && handle.Left >= 0
             && handle.Top >= 0,
             "The move handle is partly off the panel, so part of it can never be clicked.");
+        Assert(
+            handle.Width >= 64 && handle.Height >= 72,
+            "The move tab hit box is smaller than the widened laser target.");
+        Assert(
+            handle.Left >= ChatOverlayLayout.ChatCardBounds.Right
+            && handle.Right <= ChatOverlayLayout.PanelWidth
+            && handle.Top == ChatOverlayLayout.ChatCardBounds.Top + ChatOverlayLayout.MoveHandleMargin
+            && handle.Bottom <= ChatOverlayLayout.ChatCardBounds.Bottom,
+            "The move tab is not at the top of the right gutter outside the visible chat card.");
+        Assert(
+            ChatOverlayLayout.IndexAt(
+                buttons,
+                ChatOverlayLayout.ChatCardBounds.Right - 1,
+                handle.Top + (handle.Height / 2f)) == ChatOverlayLayout.NoButton,
+            "The chat card's right edge was made clickable by the external move tab.");
+    }
+
+    /// <summary>
+    /// The renderer and the input gate must agree on whether the external tab
+    /// exists. Inspecting the WPF tree keeps this deterministic: a hidden tab
+    /// is absent, not merely transparent and still clickable.
+    /// </summary>
+    private static void TestChatRendererOnlyShowsHandleWhenInteractive()
+    {
+        using var thread = new WpfRenderThread("self-test chat handle visibility");
+        var (hiddenChildren, visibleChildren) = thread.Invoke(() =>
+        {
+            var messages = Array.Empty<SvrBridge.Core.StreamerBotEventPayload>();
+            var hidden = WpfChatRenderer.BuildPanel(new ChatContent(messages));
+            var visible = WpfChatRenderer.BuildPanel(new ChatContent(
+                messages,
+                ChatOverlayLayout.NoButton,
+                MoveHandleVisible: true));
+            return (
+                ((System.Windows.Controls.Grid)hidden.Child).Children.Count,
+                ((System.Windows.Controls.Grid)visible.Child).Children.Count);
+        });
+
+        Assert(
+            hiddenChildren == 1 && visibleChildren == 2,
+            "The move tab was not omitted while the chat interaction gate was off, "
+            + "or it was not added when the gate was armed.");
+    }
+
+    /// <summary>
+    /// Expanding the texture canvas must not change the visible card's physical
+    /// width, height, or centred placement. The overlay width is adjusted by
+    /// the same ratio as the symmetric gutters.
+    /// </summary>
+    private static void TestChatOverlayCanvasKeepsCardSizeAndPlacement()
+    {
+        Assert(
+            ChatOverlayLayout.ChatCardBounds.Left == ChatOverlayLayout.GutterWidth
+            && ChatOverlayLayout.ChatCardBounds.Right
+                == ChatOverlayLayout.PanelWidth - ChatOverlayLayout.GutterWidth,
+            "The transparent gutters are not symmetric, so the chat card would shift at its anchor.");
+
+        foreach (var cardWidth in new[] { 0.12f, 0.32f })
+        {
+            var overlayWidth = ChatOverlay.ResolveOverlayWidth(cardWidth);
+            Assert(
+                Close(ChatOverlayLayout.CardWidthForOverlayWidth(overlayWidth), cardWidth),
+                $"The expanded texture changed the visible card width for {cardWidth:0.00} m.");
+            Assert(
+                Close(
+                    ChatOverlayLayout.CardHeightForOverlayWidth(overlayWidth),
+                    cardWidth * ChatOverlayLayout.ChatCardHeight / (float)ChatOverlayLayout.ChatCardWidth),
+                $"The expanded texture changed the visible card height for {cardWidth:0.00} m.");
+        }
     }
 
     /// <summary>
@@ -2012,6 +2083,15 @@ internal static class TraySelfTests
                 panelWidthMeters: 1f,
                 panelHeightMeters: 1f),
             "A controller ray missing chat still armed SteamVR overlay input.");
+        Assert(
+            ChatOverlay.ResolveLaserActivationWidth(1f) > 1f
+            && ChatOverlay.ResolveLaserActivationHeight(1f) > 1f
+            && SvrBridge.Core.OverlayRayHitTest.IntersectsPanel(
+                SvrBridge.Core.VrOverlayTransform.Translation(0.51f, 0f, 0f),
+                panel,
+                ChatOverlay.ResolveLaserActivationWidth(1f),
+                ChatOverlay.ResolveLaserActivationHeight(1f)),
+            "The laser activation halo did not extend beyond the exact panel edge.");
         Assert(
             !SvrBridge.Core.OverlayRayHitTest.IntersectsPanel(
                 SvrBridge.Core.VrOverlayTransform.RotationY(MathF.PI),

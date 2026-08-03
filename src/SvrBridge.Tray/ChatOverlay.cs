@@ -64,6 +64,12 @@ internal sealed class ChatOverlay : IDisposable
     private const float SmallAlpha = 0.35f;
     private const float LargeAlpha = 0.95f;
 
+    // SteamVR laser activation is a pre-hover gate: a ray must first reach
+    // the overlay before SteamVR starts producing the mouse events that can
+    // hit-test the tab. A small non-clickable halo prevents that gate from
+    // dropping exactly at the tab's outer edge.
+    private const float LaserActivationMarginMeters = 0.025f;
+
     /// <summary>
     /// A 150 ms time constant for the gaze-scale ease: fast enough that
     /// looking at the window feels immediate, slow enough that the grow and
@@ -244,6 +250,14 @@ internal sealed class ChatOverlay : IDisposable
     }
 
     /// <summary>
+    /// The overlay texture now includes symmetric transparent gutters for the
+    /// external move tab. Scale the quad by the same ratio so the visible chat
+    /// card keeps the width it had before the texture grew.
+    /// </summary>
+    internal static float ResolveOverlayWidth(float cardWidthMeters) =>
+        ChatOverlayLayout.OverlayWidthForCardWidth(cardWidthMeters);
+
+    /// <summary>
     /// Creates the surface and shows it immediately at
     /// <paramref name="defaultAnchor"/>. Its initial size and alpha honour
     /// the gaze settings so fade-on-gaze does not flash a visible panel before
@@ -280,7 +294,8 @@ internal sealed class ChatOverlay : IDisposable
             var resolvedOpacity = (float)Math.Clamp(opacity, 0.2, 1.0);
             var resolvedSizeScale = (float)Math.Clamp(sizeScale, 0.5, 2.0);
             var initialGrown = !gazeScaleEnabled;
-            var initialWidth = (initialGrown ? LargeWidthMeters : SmallWidthMeters) * resolvedSizeScale;
+            var initialCardWidth = (initialGrown ? LargeWidthMeters : SmallWidthMeters) * resolvedSizeScale;
+            var initialWidth = ResolveOverlayWidth(initialCardWidth);
             var initialAlpha = gazeFadeEnabled
                 ? 0f
                 : initialGrown
@@ -712,7 +727,8 @@ internal sealed class ChatOverlay : IDisposable
         var largeAlpha = (float)_opacity;
         var smallAlpha = largeAlpha * (SmallAlpha / LargeAlpha);
         var sizeScale = (float)_sizeScale;
-        var targetWidth = (grown ? LargeWidthMeters : SmallWidthMeters) * sizeScale;
+        var targetCardWidth = (grown ? LargeWidthMeters : SmallWidthMeters) * sizeScale;
+        var targetWidth = ResolveOverlayWidth(targetCardWidth);
         var targetAlpha = ResolveGazeAlpha(isGazing, grown, _gazeFadeEnabled, smallAlpha, largeAlpha);
 
         // Exponential ease towards the target rather than an instant jump,
@@ -839,6 +855,12 @@ internal sealed class ChatOverlay : IDisposable
         bool inputProbeRunning) =>
         laserInputAvailable && (pointerOverPanel || inputProbeRunning);
 
+    internal static float ResolveLaserActivationWidth(float panelWidthMeters) =>
+        panelWidthMeters + (2f * LaserActivationMarginMeters);
+
+    internal static float ResolveLaserActivationHeight(float panelHeightMeters) =>
+        panelHeightMeters + (2f * LaserActivationMarginMeters);
+
     /// <summary>
     /// Tests both controller rays against the panel's current, anchor-relative
     /// transform. The width is the current animated width, matching the size
@@ -855,13 +877,19 @@ internal sealed class ChatOverlay : IDisposable
         var panelPose = anchorPose * _placement.ToTransform(_anchorTracker.Anchor.Mode);
         var width = _gazeAnimation.Width;
         var height = width * ChatOverlayLayout.PanelHeight / ChatOverlayLayout.PanelWidth;
+        var activationWidth = ResolveLaserActivationWidth(width);
+        var activationHeight = ResolveLaserActivationHeight(height);
         return ControllerRayHitsPanel(ControllerHand.Left)
                || ControllerRayHitsPanel(ControllerHand.Right);
 
         bool ControllerRayHitsPanel(ControllerHand hand) =>
             openVr.TryGetControllerDeviceIndex(hand) is { } deviceIndex
             && openVr.TryGetDevicePose(deviceIndex, out var controllerPose)
-            && OverlayRayHitTest.IntersectsPanel(controllerPose, panelPose, width, height);
+            && OverlayRayHitTest.IntersectsPanel(
+                controllerPose,
+                panelPose,
+                activationWidth,
+                activationHeight);
     }
 
     private void HandleLaserEvents(OpenVrInput openVr)
@@ -1181,7 +1209,8 @@ internal sealed class ChatOverlay : IDisposable
             return;
         }
 
-        var rendered = _renderer.Render(new ChatContent(snapshot, _input.HoveredIndex));
+        var rendered = _renderer.Render(
+            new ChatContent(snapshot, _input.HoveredIndex, _input.IsLaserInputArmed));
         _uploader.Upload(rendered.Rgba, rendered.Width, rendered.Height);
         _repaintThrottle.MarkPainted(combinedVersion, nowMs);
     }
