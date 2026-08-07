@@ -9,6 +9,14 @@ namespace SvrBridge.Core;
 /// from <see cref="TwitchChatMessageMapper"/>: Streamer.bot owns each
 /// platform connection, while this app only translates its already-normalised
 /// websocket events at the boundary.
+/// <para>
+/// Streamer.bot 1.0.5's Twitch chat rework - IRC to EventSub, legacy
+/// <c>message</c> wrapper removed - does not touch this event, and 1.0.5's own
+/// YouTube additions (Jewel gifting, subscriber polling) are new event types
+/// rather than changes to <c>YouTube.Message</c>. Field reads still go through
+/// <see cref="ChatPayloadJson"/> for the same case-insensitivity reason the
+/// Twitch mapper does.
+/// </para>
 /// </summary>
 public static class YouTubeChatMessageMapper
 {
@@ -24,29 +32,23 @@ public static class YouTubeChatMessageMapper
             return false;
         }
 
-        var text = ReadString(data, "message");
-        if (text.Length == 0)
-        {
-            text = ReadString(data, "text");
-        }
-
+        var text = ChatPayloadJson.ReadFirstString(data, "message", "text");
         if (text.Length == 0)
         {
             rejection = "the YouTube chat message had no text";
             return false;
         }
 
-        var user = data.TryGetProperty("user", out var userElement)
-                   && userElement.ValueKind == JsonValueKind.Object
-            ? userElement
-            : data;
-        var displayName = ReadFirstString(user, "display", "name", "displayName", "username", "login");
+        var user = ChatPayloadJson.ObjectOr(data, "user", data);
+        var displayName = ChatPayloadJson.ReadFirstString(
+            user, "display", "name", "displayName", "username", "login");
 
         payload = new StreamerBotEventPayload
         {
             Target = StreamerBotEventTarget.Chat,
             User = displayName,
-            Colour = StreamerBotEventPayload.NormaliseColour(ReadFirstString(user, "color", "colour")),
+            Colour = StreamerBotEventPayload.NormaliseColour(
+                ChatPayloadJson.ReadFirstString(user, "color", "colour")),
             Text = text,
             EmoteNames = ReadEmoteNames(data),
             Emotes = ReadEmotes(data, text)
@@ -58,14 +60,14 @@ public static class YouTubeChatMessageMapper
     private static IReadOnlyList<string> ReadEmoteNames(JsonElement data)
     {
         var names = new List<string>();
-        if (!data.TryGetProperty("emotes", out var emotes) || emotes.ValueKind != JsonValueKind.Array)
+        if (!ChatPayloadJson.TryGetArray(data, "emotes", out var emotes))
         {
             return names;
         }
 
         foreach (var emote in emotes.EnumerateArray())
         {
-            var name = ReadString(emote, "name");
+            var name = ChatPayloadJson.ReadString(emote, "name");
             if (name.Length > 0)
             {
                 names.Add(name);
@@ -78,19 +80,17 @@ public static class YouTubeChatMessageMapper
     private static IReadOnlyList<ChatEmote> ReadEmotes(JsonElement data, string text)
     {
         var result = new List<ChatEmote>();
-        if (!data.TryGetProperty("emotes", out var emotes) || emotes.ValueKind != JsonValueKind.Array)
+        if (!ChatPayloadJson.TryGetArray(data, "emotes", out var emotes))
         {
             return result;
         }
 
         foreach (var emote in emotes.EnumerateArray())
         {
-            var name = ReadString(emote, "name");
+            var name = ChatPayloadJson.ReadString(emote, "name");
             if (name.Length == 0
-                || !emote.TryGetProperty("startIndex", out var startValue)
-                || !startValue.TryGetInt32(out var startIndex)
-                || !emote.TryGetProperty("endIndex", out var endValue)
-                || !endValue.TryGetInt32(out var endIndex)
+                || !ChatPayloadJson.TryReadInt32(emote, "startIndex", out var startIndex)
+                || !ChatPayloadJson.TryReadInt32(emote, "endIndex", out var endIndex)
                 || startIndex < 0
                 || endIndex < startIndex
                 || endIndex >= text.Length)
@@ -98,30 +98,10 @@ public static class YouTubeChatMessageMapper
                 continue;
             }
 
-            result.Add(new ChatEmote(name, startIndex, endIndex, ReadString(emote, "imageUrl")));
+            result.Add(
+                new ChatEmote(name, startIndex, endIndex, ChatPayloadJson.ReadString(emote, "imageUrl")));
         }
 
         return result;
     }
-
-    private static string ReadFirstString(JsonElement body, params string[] names)
-    {
-        foreach (var name in names)
-        {
-            var value = ReadString(body, name);
-            if (value.Length > 0)
-            {
-                return value;
-            }
-        }
-
-        return "";
-    }
-
-    private static string ReadString(JsonElement body, string name) =>
-        body.ValueKind == JsonValueKind.Object
-        && body.TryGetProperty(name, out var value)
-        && value.ValueKind == JsonValueKind.String
-            ? value.GetString() ?? ""
-            : "";
 }

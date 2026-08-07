@@ -26,10 +26,44 @@ namespace SvrBridge.Core;
 /// <c>user.badges</c>.</item>
 /// </list>
 /// <para>
-/// Both are read defensively here rather than assuming one - a field that is
+/// <b>Streamer.bot 1.0.5 settles which one survives.</b> That release moved
+/// Twitch chat off IRC onto EventSub and lists under its own breaking changes:
+/// "The legacy <c>message</c> object in WebSocket payloads has been removed."
+/// The published 1.0.5 schema is the newer shape above - top-level
+/// <c>text</c>, a nullable <c>user</c> object carrying <c>name</c>,
+/// <c>color</c>, <c>badges</c> and <c>subscribed</c> - which this mapper
+/// already preferred, so the migration costs nothing here: the
+/// <c>message</c>-wrapper branch simply stops matching. It is kept rather than
+/// deleted because an instance that has not updated yet still sends the older
+/// shape, and nothing forces a viewer's Streamer.bot to be current.
+/// </para>
+/// <para>
+/// Two 1.0.5 fields are read for their absence rather than their presence.
+/// <c>cheerEmotes</c> is gone from the schema - cheers now arrive as ordinary
+/// <c>emotes</c> entries - and the older shape's root-level <c>subscriber</c>
+/// flag is gone with the wrapper that held it, leaving <c>user.subscribed</c>.
+/// Both are still read below, because reading a field that no longer exists
+/// costs a failed lookup and dropping one that a not-yet-updated instance
+/// still sends costs a wrong badge.
+/// </para>
+/// <para>
+/// The one genuinely new thing 1.0.5 carries is <c>parts</c>
+/// (EventSub's message fragments). It is deliberately <b>not</b> read here:
+/// <c>emotes</c> is still in the schema and still carries the ranges and image
+/// URLs this app needs, and the derived part types are undocumented beyond
+/// their <c>type</c>/<c>text</c> base. Guessing at their field names would be
+/// exactly the hardcoded-shape bet this file exists to avoid. If a live 1.0.5
+/// capture ever shows <c>emotes</c> arriving null with <c>parts</c> populated,
+/// the shape probe in <see cref="StreamerBotEventStream"/> will say so in the
+/// activity log and that is the moment to add it.
+/// </para>
+/// <para>
+/// Every shape is read defensively rather than assuming one - a field that is
 /// missing, renamed again, or the wrong type costs one dropped chat message,
 /// never the feed, exactly like
 /// <see cref="StreamerBotEventPayload.TryParse(JsonElement, out StreamerBotEventPayload, out string)"/>.
+/// Field lookups are case-insensitive; see <see cref="ChatPayloadJson"/> for
+/// the casing inconsistency in Streamer.bot's own schema that motivates it.
 /// This has not been confirmed against a live payload from a running
 /// Streamer.bot instance; treat that as outstanding until one is captured
 /// from the activity log and checked against this mapping.
@@ -55,59 +89,37 @@ public static class TwitchChatMessageMapper
             return false;
         }
 
-        // Older shape wraps everything in "message"; newer shape does not,
-        // so falling back to the root element handles both with one path.
-        var record = data.TryGetProperty("message", out var wrapped)
-            && wrapped.ValueKind == JsonValueKind.Object
-                ? wrapped
-                : data;
+        // Older shape wraps everything in "message"; 1.0.5 removed that
+        // wrapper, so falling back to the root element handles both with one
+        // path and is what a current instance always takes.
+        var record = ChatPayloadJson.ObjectOr(data, "message", data);
 
         // Newer shape nests user fields under "user"; older shape has no
         // such object and keeps them directly on "record" - falling back to
-        // record itself handles both the same way.
-        var user = record.TryGetProperty("user", out var userElement)
-            && userElement.ValueKind == JsonValueKind.Object
-                ? userElement
-                : record;
+        // record itself handles both the same way, and also covers 1.0.5
+        // sending "user": null for an anonymous message.
+        var user = ChatPayloadJson.ObjectOr(record, "user", record);
 
         // Both shapes name the text field "text" or "message"; the older
         // shape's inner field happens to be named "message" too, confusingly
         // the same as its own wrapper, which is exactly why this is tried
         // second rather than assumed absent.
-        var text = ReadString(record, "text");
-        if (text.Length == 0)
-        {
-            text = ReadString(record, "message");
-        }
-
+        var text = ChatPayloadJson.ReadFirstString(record, "text", "message");
         if (text.Length == 0)
         {
             rejection = "the Twitch chat message had no text";
             return false;
         }
 
-        var displayName = ReadString(user, "name");
-        if (displayName.Length == 0)
-        {
-            displayName = ReadString(user, "displayName");
-        }
-
-        if (displayName.Length == 0)
-        {
-            displayName = ReadString(user, "username");
-        }
-
-        if (displayName.Length == 0)
-        {
-            displayName = ReadString(user, "login");
-        }
+        var displayName = ChatPayloadJson.ReadFirstString(
+            user, "name", "displayName", "username", "login");
 
         var badges = ReadBadges(user, record);
         payload = new StreamerBotEventPayload
         {
             Target = StreamerBotEventTarget.Chat,
             User = displayName,
-            Colour = StreamerBotEventPayload.NormaliseColour(ReadString(user, "color")),
+            Colour = StreamerBotEventPayload.NormaliseColour(ChatPayloadJson.ReadString(user, "color")),
             // First entry mirrored onto the singular fields for anything
             // still reading them directly - see StreamerBotEventPayload's
             // own remarks on why both exist.
@@ -123,12 +135,13 @@ public static class TwitchChatMessageMapper
     }
 
     /// <summary>
-    /// Both known schema shapes place an <c>emotes</c> array at the same
+    /// Every known schema shape places an <c>emotes</c> array at the same
     /// level as the message text - see the field-name table in
     /// <c>LIVE_TEST_RESULTS.md</c> - so this needs no shape branching. The
-    /// older shape additionally carries bit-cheer emotes separately; both
-    /// are merged into one flat list since the renderer treats every emote
-    /// name the same way.
+    /// pre-1.0.5 shape additionally carried bit-cheer emotes separately;
+    /// both are merged into one flat list since the renderer treats every
+    /// emote name the same way, and 1.0.5 dropping <c>cheerEmotes</c> just
+    /// makes the second pass find nothing.
     /// </summary>
     private static IReadOnlyList<string> ReadEmoteNames(JsonElement record)
     {
@@ -158,19 +171,17 @@ public static class TwitchChatMessageMapper
         string text,
         List<ChatEmote> result)
     {
-        if (!record.TryGetProperty(propertyName, out var emotes) || emotes.ValueKind != JsonValueKind.Array)
+        if (!ChatPayloadJson.TryGetArray(record, propertyName, out var emotes))
         {
             return;
         }
 
         foreach (var emote in emotes.EnumerateArray())
         {
-            var name = ReadString(emote, "name");
+            var name = ChatPayloadJson.ReadString(emote, "name");
             if (name.Length == 0
-                || !emote.TryGetProperty("startIndex", out var startValue)
-                || !startValue.TryGetInt32(out var startIndex)
-                || !emote.TryGetProperty("endIndex", out var endValue)
-                || !endValue.TryGetInt32(out var endIndex)
+                || !ChatPayloadJson.TryReadInt32(emote, "startIndex", out var startIndex)
+                || !ChatPayloadJson.TryReadInt32(emote, "endIndex", out var endIndex)
                 || startIndex < 0
                 || endIndex < startIndex
                 || endIndex >= text.Length)
@@ -178,20 +189,21 @@ public static class TwitchChatMessageMapper
                 continue;
             }
 
-            result.Add(new ChatEmote(name, startIndex, endIndex, ReadString(emote, "imageUrl")));
+            result.Add(
+                new ChatEmote(name, startIndex, endIndex, ChatPayloadJson.ReadString(emote, "imageUrl")));
         }
     }
 
     private static void AppendEmoteNames(JsonElement record, string propertyName, List<string> names)
     {
-        if (!record.TryGetProperty(propertyName, out var emotes) || emotes.ValueKind != JsonValueKind.Array)
+        if (!ChatPayloadJson.TryGetArray(record, propertyName, out var emotes))
         {
             return;
         }
 
         foreach (var emote in emotes.EnumerateArray())
         {
-            var name = ReadString(emote, "name");
+            var name = ChatPayloadJson.ReadString(emote, "name");
             if (name.Length > 0)
             {
                 names.Add(name);
@@ -228,27 +240,32 @@ public static class TwitchChatMessageMapper
     private static IReadOnlyList<ChatBadge> ReadBadges(JsonElement user, JsonElement record)
     {
         var result = new List<ChatBadge>();
-        if (user.TryGetProperty("badges", out var badges) && badges.ValueKind == JsonValueKind.Array)
+        if (ChatPayloadJson.TryGetArray(user, "badges", out var badges))
         {
             foreach (var entry in badges.EnumerateArray())
             {
-                var name = ReadString(entry, "name");
+                var name = ChatPayloadJson.ReadString(entry, "name");
                 if (name.Length == 0)
                 {
                     continue;
                 }
 
-                result.Add(new ChatBadge(FriendlyBadgeLabel(name), ReadString(entry, "imageUrl")));
+                result.Add(
+                    new ChatBadge(
+                        FriendlyBadgeLabel(name),
+                        ChatPayloadJson.ReadString(entry, "imageUrl")));
             }
         }
 
         // Badge lists are not guaranteed to include every role a chatter
-        // holds - both shapes separately carry an explicit subscriber flag,
+        // holds - every shape separately carries an explicit subscriber flag,
         // worth a fallback for the one role that matters most for a chat
         // window when the badges array did not already cover it. No image
-        // is available through this fallback path.
+        // is available through this fallback path. 1.0.5 keeps
+        // "user.subscribed" and drops the wrapper that held "subscriber".
         if (result.TrueForAll(badge => badge.Label != "Sub")
-            && (ReadBool(user, "subscribed") || ReadBool(record, "subscriber")))
+            && (ChatPayloadJson.ReadBool(user, "subscribed")
+                || ChatPayloadJson.ReadBool(record, "subscriber")))
         {
             result.Add(new ChatBadge("Sub", ""));
         }
@@ -313,17 +330,4 @@ public static class TwitchChatMessageMapper
 
         return rawName;
     }
-
-    private static string ReadString(JsonElement body, string name) =>
-        body.ValueKind == JsonValueKind.Object
-        && body.TryGetProperty(name, out var value)
-        && value.ValueKind == JsonValueKind.String
-            ? value.GetString() ?? ""
-            : "";
-
-    private static bool ReadBool(JsonElement body, string name) =>
-        body.ValueKind == JsonValueKind.Object
-        && body.TryGetProperty(name, out var value)
-        && value.ValueKind is JsonValueKind.True or JsonValueKind.False
-        && value.GetBoolean();
 }

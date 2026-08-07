@@ -996,6 +996,104 @@ internal static class SelfTests
             "Not every badge on the message was kept - Prime or the unrecognised "
             + "channel-specific badge was dropped.");
 
+        // Streamer.bot 1.0.5: Twitch chat moved from IRC to EventSub and the
+        // legacy "message" wrapper was removed, so this is the shape a current
+        // instance actually sends - published schema field-for-field, including
+        // the nullable "user", the "meta" object that now holds firstMessage,
+        // the "parts" fragments this app deliberately does not read, and the
+        // absence of "cheerEmotes" and the root-level "subscriber" flag.
+        var eventSub = MapTwitchChatMessage(
+            """
+            {
+              "user": {
+                "id": "5150",
+                "login": "viper",
+                "name": "Viper",
+                "type": "",
+                "role": 4,
+                "badges": [
+                  { "name": "broadcaster", "version": "1", "imageUrl": "https://a.test/bc.png", "info": "" },
+                  { "name": "subscriber", "version": "12", "imageUrl": "https://a.test/sub.png", "info": "12" }
+                ],
+                "color": "#00FF7F",
+                "subscribed": true,
+                "subscriptionTier": "1000",
+                "monthsSubscribed": 12
+              },
+              "messageId": "0HeGLB",
+              "meta": { "firstMessage": false, "isMe": false, "isHighlighted": false },
+              "anonymous": false,
+              "text": "eventsub says hello Kappa",
+              "emotes": [
+                { "type": "twitch", "name": "Kappa", "startIndex": 20, "endIndex": 24,
+                  "imageUrl": "https://a.test/kappa.png" }
+              ],
+              "parts": [ { "type": "text", "text": "eventsub says hello " } ],
+              "isReply": false,
+              "reply": null,
+              "isInSharedChat": false,
+              "createdAt": "2026-08-07T10:00:00Z",
+              "isTest": false
+            }
+            """);
+        Assert(
+            eventSub is { Target: StreamerBotEventTarget.Chat }
+            && eventSub.User == "Viper"
+            && eventSub.Colour == "#00FF7F"
+            && eventSub.Text == "eventsub says hello Kappa"
+            && eventSub.Badge == "Broadcaster"
+            && eventSub.BadgeImageUrl == "https://a.test/bc.png"
+            && eventSub.EmoteNames.SequenceEqual(["Kappa"])
+            && eventSub.Emotes.SequenceEqual(
+                [new ChatEmote("Kappa", 20, 24, "https://a.test/kappa.png")]),
+            "The Streamer.bot 1.0.5 EventSub Twitch.ChatMessage shape did not map correctly.");
+        // The bug this guards: the badges array already carries a subscriber
+        // badge and user.subscribed is true as well, so the Sub fallback must
+        // not fire and double-count it. Only the flag's location changed in
+        // 1.0.5 - the root-level "subscriber" the fallback also reads went away
+        // with the wrapper - so the interaction still needs covering.
+        Assert(
+            eventSub.Badges.SequenceEqual(
+                [
+                    new ChatBadge("Broadcaster", "https://a.test/bc.png"),
+                    new ChatBadge("Sub", "https://a.test/sub.png")
+                ]),
+            "A 1.0.5 payload with both a subscriber badge and user.subscribed did not keep "
+            + "exactly one Sub badge with its own image.");
+
+        // "user": null is explicitly allowed by the 1.0.5 schema. It must map
+        // as an anonymous message rather than reading the record as a user or
+        // rejecting the message outright.
+        var anonymous = MapTwitchChatMessage(
+            """{"user":null,"anonymous":true,"text":"who said that","emotes":null,"parts":null}""");
+        Assert(
+            anonymous is { User: "", Colour: "", Text: "who said that" }
+            && anonymous.Badges.Count == 0
+            && anonymous.Emotes.Count == 0,
+            "A 1.0.5 payload with a null user and null emotes was not mapped safely.");
+
+        // Streamer.bot's published 1.0.5 schema documents the Emote entries as
+        // Type/Name/StartIndex/EndIndex/ImageUrl while every sibling type on
+        // the same payload is camelCase. camelCase is what the live
+        // TwitchGetEmotes capture showed, so this is probably the schema page
+        // showing declared C# names - but being wrong would silently drop every
+        // emote image in chat, so both casings must map.
+        var pascalCaseEmotes = MapTwitchChatMessage(
+            """
+            {
+              "text": "casing check Kappa",
+              "emotes": [
+                { "Type": "twitch", "Name": "Kappa", "StartIndex": 13, "EndIndex": 17,
+                  "ImageUrl": "https://a.test/kappa.png" }
+              ]
+            }
+            """);
+        Assert(
+            pascalCaseEmotes.EmoteNames.SequenceEqual(["Kappa"])
+            && pascalCaseEmotes.Emotes.SequenceEqual(
+                [new ChatEmote("Kappa", 13, 17, "https://a.test/kappa.png")]),
+            "A PascalCase emote entry, as Streamer.bot's own 1.0.5 schema documents it, was dropped.");
+
         var older = MapTwitchChatMessage(
             """
             {

@@ -19,6 +19,33 @@ making claims about a new live result.
 - Chat, emotes, badges, notifications, VR settings, anchors, and live apply
 - Chat laser placement, persistence, gaze behaviour, and visibility rules
 
+## Streamer.bot 1.0.5 compatibility
+
+Audited 2026-08-07 against the published v1.0.5 changelog and schema. Code
+reviewed and adjusted; **not yet confirmed against a running 1.0.5 instance.**
+
+- Twitch chat moved IRC -> EventSub and the legacy `message` wrapper was
+  removed. `TwitchChatMessageMapper` already preferred the unwrapped shape, so
+  that branch simply stops matching; it is kept for instances still on 1.0.4.
+- `cheerEmotes` and the root-level `subscriber` flag are gone from the 1.0.5
+  schema. Both are still read, because a stale instance still sends them.
+- `parts` (EventSub fragments) is deliberately not read. `emotes` still carries
+  the ranges and image URLs; the derived part types are undocumented.
+- Chat field reads are now case-insensitive (`ChatPayloadJson`). The 1.0.5
+  schema documents `Emote` as `Name`/`StartIndex`/`ImageUrl` while every
+  sibling type is camelCase; being wrong would silently drop every emote image.
+- Requests are unchanged: `Hello`/`Authenticate`/`Subscribe`/`GetEvents`/
+  `GetActions`/`DoAction` all still apply. The Kestrel move is server-side.
+
+Open items for a live 1.0.5 session, in order:
+
+1. Read the `streamerbot.chat_shape` Debug line - the first chat message per
+   connection logs its field names (never its content) - and diff it against
+   what the mapper reads.
+2. Confirm emote and badge images still render in the wrist overlay.
+3. Watch for a `streamerbot.events_unreported` warning: 1.0.5 moved Twitch
+   Watch Streaks to EventSub, and a renamed event silently kills a saved alert.
+
 ## Important limits
 
 - Vive is the only hardware-validated controller preset.

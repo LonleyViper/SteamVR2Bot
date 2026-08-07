@@ -198,6 +198,11 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
             });
     private readonly ConcurrentDictionary<string, PendingRequest> _pending =
         new(StringComparer.Ordinal);
+    // Which chat events have already had their field names recorded on this
+    // connection - see LogChatShapeOnce. Cleared per connection so an upgrade
+    // and restart of Streamer.bot re-probes.
+    private readonly ConcurrentDictionary<string, byte> _loggedChatShapes =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource _stopping = new();
     private readonly object _startGate = new();
 
@@ -385,6 +390,7 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         await ShakeHandsAsync(socket, cancellationToken);
 
         using var connection = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _loggedChatShapes.Clear();
         _socket = socket;
         var reader = ReadLoopAsync(socket, connection.Token);
         try
@@ -741,11 +747,13 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         else if (eventSource.Equals("Twitch", StringComparison.OrdinalIgnoreCase)
             && eventType.Equals("ChatMessage", StringComparison.OrdinalIgnoreCase))
         {
+            LogChatShapeOnce(eventSource, eventType, data);
             mapped = TwitchChatMessageMapper.TryMap(data, out payload, out rejection);
         }
         else if (eventSource.Equals("YouTube", StringComparison.OrdinalIgnoreCase)
             && eventType.Equals("Message", StringComparison.OrdinalIgnoreCase))
         {
+            LogChatShapeOnce(eventSource, eventType, data);
             mapped = YouTubeChatMessageMapper.TryMap(data, out payload, out rejection);
         }
         else if (IsEnabledNotificationEvent(eventSource, eventType))
@@ -777,6 +785,59 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
         }
 
         _events.Writer.TryWrite(new StreamerBotEvent(DateTimeOffset.Now, payload!));
+    }
+
+    /// <summary>
+    /// Records the <b>field names</b> of the first chat message of each kind
+    /// on this connection, so a schema change is one log line rather than an
+    /// investigation.
+    /// <para>
+    /// Streamer.bot changes this payload between versions and does not always
+    /// say how: 1.0.5's "the legacy <c>message</c> object in WebSocket payloads
+    /// has been removed" is the whole published description of a shape change,
+    /// and <see cref="TwitchChatMessageMapper"/>'s entire design - read every
+    /// known shape defensively, never assume one - exists because of that. The
+    /// failure it protects against is silent: names, colours, badges or emotes
+    /// quietly go missing while messages still arrive, which looks like a
+    /// renderer bug from inside the headset. One line naming the fields that
+    /// actually turned up turns that into an obvious diff against what the
+    /// mapper reads.
+    /// </para>
+    /// <para>
+    /// <b>Names only, never values.</b> Unlike the notification payload dump,
+    /// which logs an alert verbatim because its wording is the thing being
+    /// debugged, this is somebody's chat: who said it and what they typed have
+    /// no place in a log file that gets pasted into an issue. The keys answer
+    /// the question on their own.
+    /// </para>
+    /// <para>
+    /// Once per event kind per connection, not per message - the point is the
+    /// shape, and chat volume would otherwise flood the log.
+    /// </para>
+    /// </summary>
+    private void LogChatShapeOnce(string source, string type, JsonElement data)
+    {
+        var key = $"{source}.{type}";
+        if (!_loggedChatShapes.TryAdd(key, 0))
+        {
+            return;
+        }
+
+        var fields = ChatPayloadJson.DescribeKeys(data);
+        var user = ChatPayloadJson.ObjectOr(data, "user", default);
+        var userFields = user.ValueKind == JsonValueKind.Object
+            ? $" user: {ChatPayloadJson.DescribeKeys(user)}."
+            : " No user object.";
+        var emoteFields = ChatPayloadJson.TryGetArray(data, "emotes", out var emotes)
+                          && emotes.GetArrayLength() > 0
+            ? $" emotes[0]: {ChatPayloadJson.DescribeKeys(emotes[0])}."
+            : " No emotes on this message.";
+
+        _log(
+            new BridgeActivity(
+                "streamerbot.chat_shape",
+                $"First {key} of this connection. Fields: {fields}.{userFields}{emoteFields}",
+                BridgeLogLevel.Debug));
     }
 
     /// <summary>
@@ -885,13 +946,20 @@ public sealed class StreamerBotEventStream : IAsyncDisposable
 
         if (unreported.Count > 0)
         {
+            // Warning, not Debug. This was quiet while the assumption was that
+            // a mismatch meant a half-loaded integration, but a Streamer.bot
+            // upgrade can also rename or move an event - 1.0.5 moved Twitch
+            // Watch Streaks onto EventSub - and then a saved alert stops firing
+            // with nothing anywhere to say why. The subscription is still sent
+            // either way, for the reason in this method's own remarks; this
+            // only makes the mismatch visible to whoever has to explain it.
             _log(
                 new BridgeActivity(
                     "streamerbot.events_unreported",
                     "Still subscribing to alerts this Streamer.bot instance did not list: "
-                    + $"{string.Join(", ", unreported)}. They will simply never fire if it "
-                    + "genuinely cannot emit them.",
-                    BridgeLogLevel.Debug));
+                    + $"{string.Join(", ", unreported)}. They will never fire if it genuinely "
+                    + "cannot emit them - check whether a Streamer.bot update renamed them.",
+                    BridgeLogLevel.Warning));
         }
 
         return bySource.ToDictionary(
